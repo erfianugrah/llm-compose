@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:0.5.7
+    hostname: ollama 
+    container_name: ollama 
+    restart: unless-stopped
+    # expose:
+    #   - 11434
+    ports:
+      - 11434:11434
+    deploy:
+      resources:
+      #   limits:
+      #     cpus: '6'
+      #     memory: 2048M
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  
+              capabilities: [gpu,video,compute,graphics,utility,compat32,display]
+    volumes:
+      - ~/docker-volumes/ollama:/root/.ollama
+    networks:
+      ollama:
+        ipv4_address: 172.19.8.2
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui
+    hostname: open_webui
+    container_name: open_webui
+    restart: unless-stopped
+    environment:
+      - OLLAMA_BASE_URL=http://172.19.8.2:11434
+    # expose:
+    #   - 8080
+    ports:
+      - 3000:8080
+    volumes:
+      - ~/docker-volumes/webui:/app/backend/data
+    networks:
+      ollama:
+        ipv4_address: 172.19.8.3
+
+  cloudflared:
+    image: cloudflare/cloudflared:2024.11.0
+    container_name: cloudflared
+    hostname: cloudflared
+    restart: always
+    # privileged: true
+    # network_mode: host
+    command: 'tunnel --no-autoupdate --logfile ${LOG} --loglevel debug --metrics ${METRICS_ENDPOINT} --metrics-update-freq 5s run --token ${TOKEN}'
+    entrypoint: cloudflared
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 8192M
+    volumes:
+      - ~/docker-volumes/cloudflared:/etc/cloudflared
+    environment:
+      - TZ=Europe/Amsterdam
+    networks:
+      ollama:
+        ipv4_address: 172.19.8.4
+
+networks:
+  ollama:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.19.8.0/24
+          gateway: 172.19.8.1
