@@ -44,7 +44,7 @@ services:
         ipv4_address: 172.19.8.3
 
   cloudflared:
-    image: cloudflare/cloudflared:2025.1.0
+    image: cloudflare/cloudflared:2025.2.0
     container_name: cloudflared
     hostname: cloudflared
     restart: always
