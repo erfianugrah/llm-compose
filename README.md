@@ -5,6 +5,17 @@ Local LLM inference stack (llama.cpp + Open WebUI) for WSL2 with NVIDIA GPU.
 Runs **Gemma 4 26B MoE** at **167 tok/s** on an RTX 5090 with flash attention,
 quantized KV cache, and 64k context — all inside Docker.
 
+## Quick start
+
+```bash
+make setup   # one-time: .env, volumes, mmproj download, image build (~10 min)
+make up      # start the stack
+```
+
+Open the UI at [http://localhost:3000](http://localhost:3000).
+
+Run `make help` for all available targets.
+
 ## Prerequisites
 
 ### NVIDIA Container Toolkit (WSL2)
@@ -27,28 +38,38 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 
 ## Setup
 
+The recommended way is `make setup` (see Quick start above). For manual setup:
+
 1. Create the `.env` file and volume directories:
 
 ```bash
 echo "WEBUI_SECRET_KEY=$(openssl rand -hex 32)" > .env
-mkdir -p ~/docker-volumes/{llama-server,webui}
+mkdir -p ~/docker-volumes/llama-server/models ~/docker-volumes/webui
 ```
 
-2. Build the llama-server image (one-time, ~10 min):
+2. Download the multimodal projector for vision (image) support:
+
+```bash
+curl -L --progress-bar \
+  -o ~/docker-volumes/llama-server/models/mmproj-gemma-4-26B-A4B-it-f16.gguf \
+  "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-gemma-4-26B-A4B-it-f16.gguf"
+```
+
+3. Build the llama-server image (one-time, ~10 min):
 
 ```bash
 docker compose build llama-server
 ```
 
-3. Start the stack:
+4. Start the stack:
 
 ```bash
 docker compose up -d
 ```
 
-The model (~18 GB) auto-downloads from HuggingFace on first start.
+The text model (~18 GB) auto-downloads from HuggingFace on first start.
 
-4. Open the UI at [http://localhost:3000](http://localhost:3000)
+5. Open the UI at [http://localhost:3000](http://localhost:3000)
 
 ## Architecture
 
@@ -61,9 +82,10 @@ Both ports are bound to `127.0.0.1` only — not exposed to the network.
 
 ### Monitoring
 
-- **Health:** `curl http://localhost:11434/health`
-- **Metrics:** `curl http://localhost:11434/metrics` (Prometheus format)
-- **GPU:** `nvidia-smi --query-gpu=utilization.gpu,power.draw,memory.used --format=csv`
+- **Health:** `make health` or `curl http://localhost:11434/health`
+- **Metrics:** `make metrics` or `curl http://localhost:11434/metrics` (Prometheus format)
+- **GPU:** `make gpu` or `nvidia-smi --query-gpu=utilization.gpu,power.draw,memory.used --format=csv`
+- **Status:** `make status` — container status + health check
 
 ## Why llama.cpp instead of Ollama?
 
@@ -108,9 +130,35 @@ To rebuild after a llama.cpp update:
 
 ```bash
 # Update the version in llama-server.Dockerfile, then:
-docker compose build llama-server
-docker compose up -d llama-server
+make rebuild
 ```
+
+## Vision (image) support
+
+Gemma 4 is a multimodal model that can process both text and images. Vision requires
+a separate **multimodal projector** (mmproj) GGUF file that handles image encoding
+before the language model sees it.
+
+`make setup` downloads the mmproj automatically. If you set up manually, see step 2
+in the Setup section.
+
+The mmproj is loaded at runtime via `--mmproj` — no image rebuild required.
+The `libmtmd.so` library that powers multimodal inference is already compiled into
+the Docker image.
+
+### How it works
+
+1. The text model GGUF (`gemma-4-26B-A4B-it-Q4_K_M.gguf`) handles language
+2. The mmproj GGUF (`mmproj-gemma-4-26B-A4B-it-f16.gguf`) handles image encoding
+3. llama-server combines both via `libmtmd` to process multimodal inputs
+
+### Disabling vision
+
+To run text-only (saves ~1.1 GB disk, negligible VRAM):
+
+1. Remove the `--mmproj` and its path from `docker-compose.yml`
+2. Remove the `/models` volume mount
+3. Run `docker compose up -d`
 
 ## Using with OpenCode
 

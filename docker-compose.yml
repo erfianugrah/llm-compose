@@ -17,6 +17,10 @@ services:
       - ggml-org/gemma-4-26b-a4b-it-GGUF
       - --hf-file
       - gemma-4-26B-A4B-it-Q4_K_M.gguf
+      # Multimodal projector for vision (image) support.
+      # Downloaded separately via `make setup` — see README.
+      - --mmproj
+      - /models/mmproj-gemma-4-26B-A4B-it-f16.gguf
       # Chat template is auto-detected from the GGUF metadata.
       # Gemma 4 models embed a jinja template that triggers the dedicated gemma4
       # code path (PEG_GEMMA4) with proper tool-calling support.
@@ -72,6 +76,8 @@ services:
     volumes:
       # Persistent model cache so HF downloads survive restarts
       - ~/docker-volumes/llama-server:/root/.cache
+      # Multimodal projector (downloaded by `make setup`)
+      - ~/docker-volumes/llama-server/models:/models
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 30s
