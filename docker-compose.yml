@@ -10,23 +10,31 @@ services:
     environment:
       # Flash attention -- critical for Blackwell (5090) performance
       - OLLAMA_FLASH_ATTENTION=1
-      # Concurrent request handling -- 5090's 32GB VRAM can handle parallel loads
-      - OLLAMA_NUM_PARALLEL=4
-      # Keep multiple models hot in VRAM -- 32GB gives room for several
-      - OLLAMA_MAX_LOADED_MODELS=3
+      # Concurrent requests -- the 26b MoE (3.8B active params) is much lighter
+      # than the 31B dense model, so parallel=2 fits comfortably in 32GB VRAM
+      # with 64k context. VRAM cost: NUM_PARALLEL * CONTEXT_LENGTH for KV cache.
+      - OLLAMA_NUM_PARALLEL=2
+      # The 26b MoE + 64k context uses ~20GB VRAM, leaving room for a second
+      # small model if needed
+      - OLLAMA_MAX_LOADED_MODELS=2
       # KV cache quantization -- reduces VRAM usage for long contexts with
       # minimal quality loss, lets you run bigger models or more in parallel
       - OLLAMA_KV_CACHE_TYPE=q8_0
       # Keep models loaded for 24h instead of default 5m -- avoids cold-start
       # lag when switching back to a model you used recently
       - OLLAMA_KEEP_ALIVE=24h
-      # Default context window -- 32k is a good baseline for 32GB VRAM
-      # Individual models can still override this via their Modelfile
-      - OLLAMA_CONTEXT_LENGTH=32768
+      # Context window -- Ollama docs recommend at least 64k for agentic tools
+      # like OpenCode (system prompt alone can exceed 22k tokens).
+      # VRAM budget: 20GB model + ~6GB KV cache (64k*1 parallel, q8_0) ≈ 26-28GB.
+      - OLLAMA_CONTEXT_LENGTH=65536
       # Large models (70B+) can take a while to load into VRAM
       - OLLAMA_LOAD_TIMEOUT=10m
     deploy:
       resources:
+        limits:
+          # Explicit CPU limit silences the "failed to parse CPU allowed micro
+          # secs" warning that Ollama logs inside cgroup-v2 containers.
+          cpus: "8"
         reservations:
           devices:
             - driver: nvidia
@@ -55,6 +63,30 @@ services:
     networks:
       ollama:
         ipv4_address: 172.28.0.2
+
+  # One-shot init container that pre-loads the default model into VRAM so the
+  # first real request doesn't trigger a ~50s cold-start (which causes 500s
+  # from Open WebUI and timeouts from OpenCode).
+  warmup:
+    image: curlimages/curl:8.12.1
+    container_name: ollama_warmup
+    depends_on:
+      ollama:
+        condition: service_healthy
+    # A minimal completion request is enough to force Ollama to load the model.
+    entrypoint: ["sh", "-c", "echo 'Warming up gemma4:26b...' && curl -sf --max-time 300 -H 'Content-Type: application/json' -d '{\"model\":\"gemma4:26b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}' http://172.28.0.2:11434/v1/chat/completions && echo 'Model loaded.' || echo 'Warmup failed (model may not be pulled yet).'"]
+    restart: "no"
+    networks:
+      ollama:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:v0.8.12

@@ -42,7 +42,7 @@ docker compose up -d
 ## Pull and run a model
 
 ```bash
-docker exec -it ollama ollama run llama3.3:70b
+docker exec -it ollama ollama run gemma4:26b
 ```
 
 ## Architecture
@@ -58,10 +58,10 @@ Both ports are bound to `127.0.0.1` only -- not exposed to the network.
 
 You can use your local Ollama instance as a provider for [OpenCode](https://opencode.ai).
 
-1. Pull a model with tool-calling support (recommended `num_ctx` of 16k-32k):
+1. Pull a model with tool-calling support (Ollama recommends at least 64k context for OpenCode):
 
 ```bash
-docker exec -it ollama ollama pull gemma4:31b
+docker exec -it ollama ollama pull gemma4:26b
 ```
 
 2. Add the provider to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
@@ -77,8 +77,8 @@ docker exec -it ollama ollama pull gemma4:31b
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "gemma4:31b": {
-          "name": "Gemma 4 31B (local)"
+        "gemma4:26b": {
+          "name": "Gemma 4 26B MoE (local)"
         }
       }
     }
