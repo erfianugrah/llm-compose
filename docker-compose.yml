@@ -8,8 +8,11 @@ services:
     ports:
       - "127.0.0.1:11434:11434"
     environment:
-      # Flash attention -- critical for Blackwell (5090) performance
-      - OLLAMA_FLASH_ATTENTION=1
+      # Flash attention DISABLED -- Ollama 0.20.x has a bug where FA causes
+      # Gemma 4 models to run on CPU despite reporting 100% GPU.
+      # See: https://github.com/ollama/ollama/issues/15237
+      # Re-enable once the fix is merged (likely 0.21+).
+      - OLLAMA_FLASH_ATTENTION=0
       # Single request at a time -- keeps KV cache small and maximizes GPU
       # utilization. OpenCode sends one request at a time anyway.
       - OLLAMA_NUM_PARALLEL=1
