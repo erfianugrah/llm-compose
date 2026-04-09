@@ -1,6 +1,9 @@
-# ollama-compose
+# llm-compose
 
-Local LLM inference stack (Ollama + Open WebUI) for WSL2 with NVIDIA GPU.
+Local LLM inference stack (llama.cpp + Open WebUI) for WSL2 with NVIDIA GPU.
+
+Runs **Gemma 4 26B MoE** at **167 tok/s** on an RTX 5090 with flash attention,
+quantized KV cache, and 64k context — all inside Docker.
 
 ## Prerequisites
 
@@ -27,98 +30,104 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 1. Create the `.env` file:
 
 ```bash
-# Generate a secret key for Open WebUI session persistence
 echo "WEBUI_SECRET_KEY=$(openssl rand -hex 32)" > .env
 ```
 
-2. Start the stack:
+2. Build the llama-server image (one-time, ~10 min):
+
+```bash
+docker compose build llama-server
+```
+
+3. Start the stack:
 
 ```bash
 docker compose up -d
 ```
 
-3. Open the UI at [http://localhost:3000](http://localhost:3000)
+The model (~18 GB) auto-downloads from HuggingFace on first start.
 
-## Pull and run a model
-
-```bash
-docker exec -it ollama ollama run gemma4:26b
-```
+4. Open the UI at [http://localhost:3000](http://localhost:3000)
 
 ## Architecture
 
 | Service | Address | Purpose |
 |---|---|---|
-| Ollama | `127.0.0.1:11434` | LLM inference engine (GPU) |
+| llama-server | `127.0.0.1:11434` | LLM inference (GPU), OpenAI-compatible API |
 | Open WebUI | `127.0.0.1:3000` | Browser-based chat interface |
-| Warmup | (one-shot) | Pre-loads model into VRAM on startup |
 
-Both ports are bound to `127.0.0.1` only -- not exposed to the network.
+Both ports are bound to `127.0.0.1` only — not exposed to the network.
 
-## Model choice: gemma4:26b MoE
+### Monitoring
 
-The 26B MoE (Mixture of Experts) variant is the best fit for 32GB VRAM GPUs like the RTX 5090:
+- **Health:** `curl http://localhost:11434/health`
+- **Metrics:** `curl http://localhost:11434/metrics` (Prometheus format)
+- **GPU:** `nvidia-smi --query-gpu=utilization.gpu,power.draw,memory.used --format=csv`
 
-| Model | Disk | Active params | VRAM usage (64k ctx) | GPU util | Warm response |
-|---|---|---|---|---|---|
-| `gemma4:26b` MoE | 18 GB | 3.8B | ~22 GB (100% GPU) | 82%, 237W | 0.36s |
-| `gemma4:31b` Dense | 20 GB | 30.7B | ~32 GB (85% GPU) | 28%, 126W | 17.4s |
+## Why llama.cpp instead of Ollama?
 
-The 26b MoE is **48x faster** on 32GB VRAM because it fits entirely on GPU. The 31b dense
-model spills layers to CPU, creating a GPU-CPU bottleneck. Benchmark scores are nearly
-identical (LiveCodeBench: 77.1% vs 80.0%, AIME 2026: 88.3% vs 89.2%).
+We switched from Ollama to llama-server (llama.cpp) for three reasons:
 
-## Known issues
+1. **Ollama 0.20.x has a bug** where flash attention causes Gemma 4 to run on CPU
+   despite reporting 100% GPU ([ollama#15237](https://github.com/ollama/ollama/issues/15237)).
+2. **llama.cpp is faster** — 167 tok/s generation vs ~35 tok/s on Ollama (same model,
+   same hardware) because FA + quantized KV cache work correctly.
+3. **No abstraction overhead** — llama.cpp is the engine Ollama wraps. Direct access
+   means fewer bugs and more control.
 
-### Flash attention bug with Gemma 4 (Ollama 0.20.x)
+### Performance comparison (RTX 5090, Gemma 4 26B MoE Q4_K_M)
 
-`OLLAMA_FLASH_ATTENTION=1` causes Gemma 4 models to run on CPU despite `ollama ps` reporting
-`100% GPU`. This is a [known Ollama bug](https://github.com/ollama/ollama/issues/15237).
+| | Ollama 0.20.2 (FA off) | llama-server (FA on) |
+|---|---|---|
+| Generation | ~35 tok/s | **167 tok/s** |
+| Prompt eval | ~40 tok/s | **190 tok/s** |
+| GPU utilization | 28% | **85%** |
+| Power draw | 126W | **228W** |
+| KV cache | f16 (FA required for q8_0) | **q8_0** |
 
-**Workaround:** Flash attention is disabled in this stack's `docker-compose.yml`. Re-enable
-once the fix is merged upstream (likely Ollama 0.21+).
+## Model choice: Gemma 4 26B MoE
 
-**Side effect:** Without flash attention, `OLLAMA_KV_CACHE_TYPE=q8_0` is ignored (quantized
-KV cache requires FA). The KV cache falls back to f16, using ~2x VRAM. This is still fine
-for the 26b MoE at 64k context (~22 GB total).
+The 26B MoE (Mixture of Experts) is the best fit for 32 GB VRAM:
 
-### Gemma 4 thinking mode and OpenAI-compatible API
+- **18 GB** on disk (Q4_K_M quantization)
+- Only **3.8B parameters active** per token (8/128 experts + 1 shared)
+- **256K native context** (we use 64k for the VRAM/quality balance)
+- Near-identical benchmarks to the 31B dense (LiveCodeBench: 77% vs 80%)
+- Fits **100% on GPU** with flash attention + q8_0 KV cache at 64k context
 
-Gemma 4 has thinking/reasoning enabled by default. Without `reasoning_effort` set, the model
-puts all output into the `reasoning` field and leaves `content` empty. The `@ai-sdk/openai-compatible`
-provider (used by OpenCode) only reads `content`, so it appears to hang.
+## Custom Docker image
 
-**Fix:** Set `"reasoningEffort": "high"` (or `"low"`, `"medium"`) in the model options.
-This tells Ollama to populate both `reasoning` and `content` fields.
+The `llama-server.Dockerfile` builds llama.cpp from source with:
+
+- **CUDA 12.8** with native **sm_120** (Blackwell) kernels — no PTX JIT overhead
+- Only the `llama-server` binary + shared libs in the runtime image (~5.7 GB)
+- Multi-stage build: `nvidia/cuda:12.8.1-devel` → `nvidia/cuda:12.8.1-runtime`
+
+To rebuild after a llama.cpp update:
+
+```bash
+# Update the version in llama-server.Dockerfile, then:
+docker compose build llama-server
+docker compose up -d llama-server
+```
 
 ## Using with OpenCode
 
-You can use your local Ollama instance as a provider for [OpenCode](https://opencode.ai).
-
-1. Pull the model (Ollama recommends at least 64k context for OpenCode):
-
-```bash
-docker exec -it ollama ollama pull gemma4:26b
-```
-
-2. Add the provider to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
+Add the provider to `~/.config/opencode/opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "ollama": {
+    "llama-server": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (local)",
+      "name": "llama.cpp (local)",
       "options": {
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "gemma4:26b": {
-          "name": "Gemma 4 26B MoE (local)",
-          "options": {
-            "reasoningEffort": "high"
-          }
+        "gemma-4-26b-a4b-it-Q4_K_M": {
+          "name": "Gemma 4 26B MoE (local)"
         }
       }
     }
@@ -126,27 +135,26 @@ docker exec -it ollama ollama pull gemma4:26b
 }
 ```
 
-3. In OpenCode, run `/models` and select the local model.
+Then in OpenCode, run `/models` and select the local model.
 
-## Verify GPU is actually being used
+### Gemma 4 thinking mode
 
-`ollama ps` can report `100% GPU` while inference runs on CPU (see flash attention bug above).
-Always verify with `nvidia-smi`:
+Gemma 4 has built-in chain-of-thought reasoning. The thinking trace appears in the
+`reasoning_content` field of the OpenAI-compatible API response. The `@ai-sdk/openai-compatible`
+provider reads this field automatically.
 
-```bash
-# During active inference, GPU-Util should be 50-90% and power draw 150-300W
-nvidia-smi --query-gpu=utilization.gpu,power.draw,memory.used --format=csv,noheader
-```
+The chat template is auto-detected from the GGUF metadata — do **not** set
+`--chat-template gemma` (that forces the legacy Gemma 1/2 template and breaks tool calling).
 
-## Alternatives to Ollama
+## Known issues
 
-If you hit Ollama bugs or need more performance, consider:
+### Gemma 4 thinking consumes token budget before responding
 
-| Tool | Best for | Gemma 4 support | Notes |
-|---|---|---|---|
-| **llama.cpp** (`llama-server`) | Max single-user speed | Full (GGUF) | ~44 tok/s on 26b with 12GB VRAM. FA works correctly. OpenAI-compatible API built in. |
-| **vLLM** | Multi-user / production | Full (HuggingFace) | 3-5x better concurrent throughput. Requires CUDA. |
-| **LM Studio** | GUI model browser | Full (GGUF) | Desktop app, good for evaluation. |
+With default thinking enabled, short `max_tokens` budgets may be entirely consumed by
+the reasoning trace, leaving `content` empty. This is expected — the model thinks first,
+then responds. OpenCode handles this automatically with adequate token budgets.
 
-For a single-user coding setup, `llama-server` (from llama.cpp) is the fastest option and
-avoids Ollama's abstraction layer. Ollama wins on convenience (Docker, model management, one-command pulls).
+### First request is slow after container start
+
+The model takes ~60-90 seconds to load into VRAM on first request. Subsequent requests
+are instant. The `start_period: 120s` in the healthcheck accounts for this.

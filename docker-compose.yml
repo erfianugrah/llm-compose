@@ -88,7 +88,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      ollama:
+      llm:
         ipv4_address: 172.28.0.2
 
   open-webui:
@@ -136,11 +136,11 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      ollama:
+      llm:
         ipv4_address: 172.28.0.3
 
 networks:
-  ollama:
+  llm:
     driver: bridge
     ipam:
       config:
