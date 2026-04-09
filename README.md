@@ -53,3 +53,37 @@ docker exec -it ollama ollama run llama3.3:70b
 | Open WebUI | `127.0.0.1:3000` | Browser-based chat interface |
 
 Both ports are bound to `127.0.0.1` only -- not exposed to the network.
+
+## Using with OpenCode
+
+You can use your local Ollama instance as a provider for [OpenCode](https://opencode.ai).
+
+1. Pull a model with tool-calling support (recommended `num_ctx` of 16k-32k):
+
+```bash
+docker exec -it ollama ollama pull gemma4:31b
+```
+
+2. Add the provider to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "gemma4:31b": {
+          "name": "Gemma 4 31B (local)"
+        }
+      }
+    }
+  }
+}
+```
+
+3. In OpenCode, run `/models` and select the local model.
