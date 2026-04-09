@@ -1,56 +1,83 @@
 services:
-  ollama:
-    image: ollama/ollama:0.20.2
-    hostname: ollama
-    container_name: ollama
+  llama-server:
+    build:
+      context: .
+      dockerfile: llama-server.Dockerfile
+    image: local/llama-server:cuda12.8-sm120
+    hostname: llama-server
+    container_name: llama_server
     restart: unless-stopped
     # Bind to localhost only -- reachable from WSL2/Windows host but not the LAN
     ports:
-      - "127.0.0.1:11434:11434"
-    environment:
-      # Flash attention DISABLED -- Ollama 0.20.x has a bug where FA causes
-      # Gemma 4 models to run on CPU despite reporting 100% GPU.
-      # See: https://github.com/ollama/ollama/issues/15237
-      # Re-enable once the fix is merged (likely 0.21+).
-      - OLLAMA_FLASH_ATTENTION=0
-      # Single request at a time -- keeps KV cache small and maximizes GPU
-      # utilization. OpenCode sends one request at a time anyway.
-      - OLLAMA_NUM_PARALLEL=1
-      - OLLAMA_MAX_LOADED_MODELS=1
-      # KV cache quantization -- reduces VRAM usage for long contexts with
-      # minimal quality loss, lets you run bigger models or more in parallel
-      - OLLAMA_KV_CACHE_TYPE=q8_0
-      # Keep models loaded for 24h instead of default 5m -- avoids cold-start
-      # lag when switching back to a model you used recently
-      - OLLAMA_KEEP_ALIVE=24h
-      # Context window -- Ollama docs recommend at least 64k for agentic tools
-      # like OpenCode (system prompt alone can exceed 22k tokens).
-      # VRAM budget: 20GB model + ~6GB KV cache (64k*1 parallel, q8_0) ≈ 26-28GB.
-      - OLLAMA_CONTEXT_LENGTH=65536
-      # Large models (70B+) can take a while to load into VRAM
-      - OLLAMA_LOAD_TIMEOUT=10m
+      - "127.0.0.1:11434:8080"
+    # llama-server flags for Gemma 4 26B MoE
+    # -hf auto-downloads the GGUF from HuggingFace on first run
+    command:
+      - --hf-repo
+      - ggml-org/gemma-4-26b-a4b-it-GGUF
+      - --hf-file
+      - gemma-4-26B-A4B-it-Q4_K_M.gguf
+      # Chat template is auto-detected from the GGUF metadata.
+      # Gemma 4 models embed a jinja template that triggers the dedicated gemma4
+      # code path (PEG_GEMMA4) with proper tool-calling support.
+      # Do NOT use --chat-template gemma — that forces the simpler Gemma 1/2 template.
+      - --port
+      - "8080"
+      - --host
+      - 0.0.0.0
+      # Offload all layers to GPU
+      - -ngl
+      - "99"
+      # Flash attention -- works correctly in llama.cpp (broken in Ollama 0.20.x)
+      - --flash-attn
+      - "on"
+      # Quantized KV cache -- halves VRAM usage with minimal quality loss
+      - -ctk
+      - q8_0
+      - -ctv
+      - q8_0
+      # Context window -- 64k for agentic tools like OpenCode
+      - -c
+      - "65536"
+      # Gemma 4 best-practice sampling parameters
+      - --temp
+      - "1.0"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "64"
+      # Batch sizes for prompt processing
+      - -b
+      - "2048"
+      - -ub
+      - "512"
+      # Threads for CPU-side work
+      - --threads
+      - "8"
+      - --threads-batch
+      - "8"
+      # Verbose logging — shows token rates, VRAM usage, prompt eval stats
+      - -v
+      # Prometheus metrics endpoint at /metrics
+      - --metrics
     deploy:
       resources:
-        limits:
-          # Explicit CPU limit silences the "failed to parse CPU allowed micro
-          # secs" warning that Ollama logs inside cgroup-v2 containers.
-          cpus: "8"
         reservations:
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu, compute, utility]
-    # Larger shared memory for model weight transfers and CUDA IPC
+    # Larger shared memory for CUDA IPC
     shm_size: "2g"
     volumes:
-      - ~/docker-volumes/ollama:/root/.ollama
+      # Persistent model cache so HF downloads survive restarts
+      - ~/docker-volumes/llama-server:/root/.cache
     healthcheck:
-      # The ollama image does not include curl; use the built-in CLI instead
-      test: ["CMD", "ollama", "list"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 120s
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -64,37 +91,17 @@ services:
       ollama:
         ipv4_address: 172.28.0.2
 
-  # One-shot init container that pre-loads the default model into VRAM so the
-  # first real request doesn't trigger a ~50s cold-start (which causes 500s
-  # from Open WebUI and timeouts from OpenCode).
-  warmup:
-    image: curlimages/curl:8.12.1
-    container_name: ollama_warmup
-    depends_on:
-      ollama:
-        condition: service_healthy
-    # A minimal completion request is enough to force Ollama to load the model.
-    entrypoint: ["sh", "-c", "echo 'Warming up gemma4:26b...' && curl -sf --max-time 300 -H 'Content-Type: application/json' -d '{\"model\":\"gemma4:26b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}' http://172.28.0.2:11434/v1/chat/completions && echo 'Model loaded.' || echo 'Warmup failed (model may not be pulled yet).'"]
-    restart: "no"
-    networks:
-      ollama:
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "1"
-
   open-webui:
     image: ghcr.io/open-webui/open-webui:v0.8.12
     hostname: open_webui
     container_name: open_webui
     restart: unless-stopped
     environment:
-      - OLLAMA_BASE_URL=http://172.28.0.2:11434
+      # Open WebUI connects via the OpenAI-compatible endpoint
+      - OPENAI_API_BASE_URL=http://172.28.0.2:8080/v1
+      - OPENAI_API_KEY=not-needed
+      # Disable Ollama integration since we're using llama-server directly
+      - OLLAMA_BASE_URL=
       # Persistent secret key so sessions survive container restarts.
       # Generate once with: openssl rand -hex 32
       # Then add WEBUI_SECRET_KEY=<value> to your .env file.
@@ -111,7 +118,7 @@ services:
     tmpfs:
       - /tmp:noexec,nosuid,size=256m
     depends_on:
-      ollama:
+      llama-server:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
