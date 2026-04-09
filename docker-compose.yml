@@ -17,6 +17,14 @@ services:
       # KV cache quantization -- reduces VRAM usage for long contexts with
       # minimal quality loss, lets you run bigger models or more in parallel
       - OLLAMA_KV_CACHE_TYPE=q8_0
+      # Keep models loaded for 24h instead of default 5m -- avoids cold-start
+      # lag when switching back to a model you used recently
+      - OLLAMA_KEEP_ALIVE=24h
+      # Default context window -- 32k is a good baseline for 32GB VRAM
+      # Individual models can still override this via their Modelfile
+      - OLLAMA_CONTEXT_LENGTH=32768
+      # Large models (70B+) can take a while to load into VRAM
+      - OLLAMA_LOAD_TIMEOUT=10m
     deploy:
       resources:
         reservations:
@@ -59,6 +67,10 @@ services:
       # Generate once with: openssl rand -hex 32
       # Then add WEBUI_SECRET_KEY=<value> to your .env file.
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      # Disable telemetry
+      - ANONYMIZED_TELEMETRY=false
+      - DO_NOT_TRACK=true
+      - SCARF_NO_ANALYTICS=true
     # Bind to localhost -- accessible from Windows browser via WSL2 networking
     ports:
       - "127.0.0.1:3000:8080"
