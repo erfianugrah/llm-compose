@@ -27,10 +27,11 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 
 ## Setup
 
-1. Create the `.env` file:
+1. Create the `.env` file and volume directories:
 
 ```bash
 echo "WEBUI_SECRET_KEY=$(openssl rand -hex 32)" > .env
+mkdir -p ~/docker-volumes/{llama-server,webui}
 ```
 
 2. Build the llama-server image (one-time, ~10 min):
