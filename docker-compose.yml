@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: llama-server.Dockerfile
-    image: local/llama-server:cuda12.8-sm120
+    image: erfianugrah/llama-server:cuda12.8-sm120
     hostname: llama-server
     container_name: llama_server
     restart: unless-stopped

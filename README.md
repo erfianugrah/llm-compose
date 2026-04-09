@@ -140,12 +140,22 @@ Then in OpenCode, run `/models` and select the local model.
 
 ### Gemma 4 thinking mode
 
-Gemma 4 has built-in chain-of-thought reasoning. The thinking trace appears in the
-`reasoning_content` field of the OpenAI-compatible API response. The `@ai-sdk/openai-compatible`
-provider reads this field automatically.
+Gemma 4 has built-in chain-of-thought reasoning enabled by default. The thinking trace
+appears in the `reasoning_content` field of the OpenAI-compatible API response. The
+`@ai-sdk/openai-compatible` provider reads this field automatically.
 
-The chat template is auto-detected from the GGUF metadata — do **not** set
-`--chat-template gemma` (that forces the legacy Gemma 1/2 template and breaks tool calling).
+**Controlling thinking depth:**
+
+- Thinking is unrestricted by default (`--reasoning-budget -1`).
+- Gemma 4 decides how deeply to think based on the **prompt complexity**, not an API parameter.
+- `reasoning_effort` in the OpenAI API is **not supported** by llama-server for Gemma 4
+  (it's a model-specific training feature, not a generic parameter).
+- To disable thinking entirely, add `--reasoning-budget 0` to the docker-compose command.
+- See [Google's Gemma 4 prompting guide](https://ai.google.dev/gemma/docs/core/prompt-formatting-gemma4#adaptive-thought-efficiency)
+  for prompt techniques that influence thinking depth.
+
+**Important:** Do **not** set `--chat-template gemma` — that forces the legacy Gemma 1/2
+template and breaks tool calling. The Gemma 4 template is auto-detected from the GGUF metadata.
 
 ## Known issues
 
