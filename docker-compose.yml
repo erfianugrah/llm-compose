@@ -1,69 +1,92 @@
-version: "3.9"
-
 services:
   ollama:
-    image: ollama/ollama:0.5.7
-    hostname: ollama 
-    container_name: ollama 
+    image: ollama/ollama:0.18.3
+    hostname: ollama
+    container_name: ollama
     restart: unless-stopped
-    # expose:
-    #   - 11434
+    # Bind to localhost only -- reachable from WSL2/Windows host but not the LAN
     ports:
-      - 11434:11434
+      - "127.0.0.1:11434:11434"
+    environment:
+      # Flash attention -- critical for Blackwell (5090) performance
+      - OLLAMA_FLASH_ATTENTION=1
+      # Concurrent request handling -- 5090's 32GB VRAM can handle parallel loads
+      - OLLAMA_NUM_PARALLEL=4
+      # Keep multiple models hot in VRAM -- 32GB gives room for several
+      - OLLAMA_MAX_LOADED_MODELS=3
+      # KV cache quantization -- reduces VRAM usage for long contexts with
+      # minimal quality loss, lets you run bigger models or more in parallel
+      - OLLAMA_KV_CACHE_TYPE=q8_0
     deploy:
       resources:
-      #   limits:
-      #     cpus: '6'
-      #     memory: 2048M
         reservations:
           devices:
             - driver: nvidia
-              count: all  
-              capabilities: [gpu,video,compute,graphics,utility,compat32,display]
+              count: all
+              capabilities: [gpu, compute, utility]
+    # Larger shared memory for model weight transfers and CUDA IPC
+    shm_size: "2g"
     volumes:
       - ~/docker-volumes/ollama:/root/.ollama
+    healthcheck:
+      # The ollama image does not include curl; use the built-in CLI instead
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     networks:
       ollama:
         ipv4_address: 172.19.8.2
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui
+    image: ghcr.io/open-webui/open-webui:v0.8.12
     hostname: open_webui
     container_name: open_webui
     restart: unless-stopped
     environment:
       - OLLAMA_BASE_URL=http://172.19.8.2:11434
-    # expose:
-    #   - 8080
+      # Persistent secret key so sessions survive container restarts.
+      # Generate once with: openssl rand -hex 32
+      # Then add WEBUI_SECRET_KEY=<value> to your .env file.
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+    # Bind to localhost -- accessible from Windows browser via WSL2 networking
     ports:
-      - 3000:8080
+      - "127.0.0.1:3000:8080"
     volumes:
       - ~/docker-volumes/webui:/app/backend/data
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     networks:
       ollama:
         ipv4_address: 172.19.8.3
-
-  cloudflared:
-    image: cloudflare/cloudflared:2025.2.0
-    container_name: cloudflared
-    hostname: cloudflared
-    restart: always
-    # privileged: true
-    # network_mode: host
-    command: 'tunnel --no-autoupdate --logfile ${LOG} --loglevel debug --metrics ${METRICS_ENDPOINT} --metrics-update-freq 5s run --token ${TOKEN}'
-    entrypoint: cloudflared
-    deploy:
-      resources:
-        limits:
-          cpus: '8'
-          memory: 8192M
-    volumes:
-      - ~/docker-volumes/cloudflared:/etc/cloudflared
-    environment:
-      - TZ=Europe/Amsterdam
-    networks:
-      ollama:
-        ipv4_address: 172.19.8.4
 
 networks:
   ollama:
