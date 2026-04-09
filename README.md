@@ -78,7 +78,10 @@ docker exec -it ollama ollama pull gemma4:26b
       },
       "models": {
         "gemma4:26b": {
-          "name": "Gemma 4 26B MoE (local)"
+          "name": "Gemma 4 26B MoE (local)",
+          "options": {
+            "reasoningEffort": "high"
+          }
         }
       }
     }

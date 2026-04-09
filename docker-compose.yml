@@ -10,13 +10,10 @@ services:
     environment:
       # Flash attention -- critical for Blackwell (5090) performance
       - OLLAMA_FLASH_ATTENTION=1
-      # Concurrent requests -- the 26b MoE (3.8B active params) is much lighter
-      # than the 31B dense model, so parallel=2 fits comfortably in 32GB VRAM
-      # with 64k context. VRAM cost: NUM_PARALLEL * CONTEXT_LENGTH for KV cache.
-      - OLLAMA_NUM_PARALLEL=2
-      # The 26b MoE + 64k context uses ~20GB VRAM, leaving room for a second
-      # small model if needed
-      - OLLAMA_MAX_LOADED_MODELS=2
+      # Single request at a time -- keeps KV cache small and maximizes GPU
+      # utilization. OpenCode sends one request at a time anyway.
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
       # KV cache quantization -- reduces VRAM usage for long contexts with
       # minimal quality loss, lets you run bigger models or more in parallel
       - OLLAMA_KV_CACHE_TYPE=q8_0
