@@ -29,12 +29,16 @@ All models fit in 32 GB VRAM at Q4_K_M with 64k context.
 
 ### Switching models
 
+**From OpenCode** (recommended): just select a different model in `/models`.
+The proxy detects the mismatch and auto-swaps (~60-90s on first request).
+
+**From terminal:**
+
 ```bash
-make switch MODEL=qwen3-coder   # download assets, update .env
-make up                         # restart with the new model
+make run MODEL=qwen3-coder   # switch + restart in one shot
 ```
 
-List available presets with `make models`.
+List available presets with `make models`. Pre-download all with `make download-all`.
 
 ## Prerequisites
 
@@ -69,12 +73,42 @@ The text model GGUF auto-downloads from HuggingFace on first container start.
 
 ## Architecture
 
+```
+OpenCode / Open WebUI
+        │
+        ▼
+  model-proxy :11434    ← auto-swaps models based on request
+        │
+        ▼
+  llama-server :8080    ← GPU inference (internal, not exposed)
+```
+
 | Service | Address | Purpose |
 |---|---|---|
-| llama-server | `127.0.0.1:11434` | LLM inference (GPU), OpenAI-compatible API |
+| model-proxy | `127.0.0.1:11434` | Reverse proxy, auto model switching |
+| llama-server | internal only | LLM inference (GPU) |
 | Open WebUI | `127.0.0.1:3000` | Browser-based chat interface |
 
-Both ports are bound to `127.0.0.1` only — not exposed to the network.
+All host ports are bound to `127.0.0.1` only — not exposed to the network.
+
+### How model switching works
+
+The proxy intercepts the `model` field in each request. If it differs from
+what's currently loaded, the proxy automatically:
+
+1. Updates `.env` with the new model preset
+2. Recreates the llama-server container via Docker socket
+3. Waits for the model to load (~60-90s, unavoidable VRAM physics)
+4. Forwards the original request
+
+From OpenCode: just select a different model in `/models`. The first request
+takes ~90s while the model loads; subsequent requests are instant.
+
+To pre-download all models so the swap only costs the load time:
+
+```bash
+make download-all
+```
 
 ### Monitoring
 
@@ -197,8 +231,8 @@ you want to use — only the one loaded by llama-server will respond:
 
 Then in OpenCode, run `/models` and select the local model.
 
-**Switching models:** run `make switch MODEL=<name> && make up` on the host,
-then select the corresponding model in OpenCode with `/models`.
+**Switching models:** just select a different model in OpenCode's `/models`
+menu. The proxy auto-swaps (~60-90s). Or from terminal: `make run MODEL=<name>`.
 
 ## Adding custom models
 

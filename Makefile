@@ -20,7 +20,7 @@ setup: .env dirs build
 	fi
 	@echo "\n✓ Setup complete. Run 'make up' to start the stack."
 
-## Build the llama-server Docker image (skips if already present)
+## Build all Docker images (skips if already present)
 build:
 	@if docker image inspect $(IMAGE) >/dev/null 2>&1; then \
 		echo "Image $(IMAGE) already exists (use 'make rebuild' to force)"; \
@@ -28,6 +28,7 @@ build:
 		echo "Building $(IMAGE) (~10 min)..."; \
 		docker compose build llama-server; \
 	fi
+	@docker compose build model-proxy
 
 ## Start the stack in the background
 up:
@@ -65,7 +66,7 @@ clean:
 	docker compose down -v
 
 # ── Model switching ──────────────────────────────────────────────────
-.PHONY: switch models assets
+.PHONY: switch run models assets download-all
 
 ## Switch to a model preset: make switch MODEL=gemma4|qwen3-coder|qwen3
 switch: dirs
@@ -88,6 +89,11 @@ switch: dirs
 	mv .env.tmp .env
 	@$(MAKE) --no-print-directory assets
 	@echo "✓ Switched to $(MODEL). Run 'make up' to start."
+
+## Switch model and restart in one shot: make run MODEL=qwen3-coder
+run:
+	@$(MAKE) --no-print-directory switch MODEL=$(MODEL)
+	@$(MAKE) --no-print-directory up
 
 ## Download model-specific assets (mmproj, templates)
 assets: dirs
@@ -113,6 +119,60 @@ assets: dirs
 			curl -L --progress-bar -o "$(MODELS_DIR)/$$TMPL" "$$TMPL_URL"; \
 		fi; \
 	fi
+
+## Pre-download all model GGUFs and assets so switching is instant
+download-all: dirs
+	@for f in models/*.env; do \
+		name=$$(basename "$$f" .env); \
+		repo=$$(grep '^MODEL_REPO=' "$$f" | cut -d= -f2); \
+		file=$$(grep '^MODEL_FILE=' "$$f" | cut -d= -f2); \
+		mname=$$(grep '^MODEL_NAME=' "$$f" | cut -d= -f2); \
+		echo ""; \
+		echo "── $$mname ──"; \
+		echo ""; \
+		docker run --rm \
+			-v "$(VOLUME_DIR):/root/.cache" \
+			-v "$(MODELS_DIR):/models" \
+			--entrypoint /bin/sh \
+			$(IMAGE) -c " \
+				llama-server \
+					--hf-repo $$repo \
+					--hf-file $$file \
+					--port 9999 --host 127.0.0.1 \
+					-ngl 0 -c 512 &\
+				PID=\$$!; \
+				sleep 5; \
+				while ! curl -sf http://127.0.0.1:9999/health >/dev/null 2>&1; do \
+					sleep 2; \
+				done; \
+				echo 'Download complete'; \
+				kill \$$PID 2>/dev/null; \
+				wait \$$PID 2>/dev/null; \
+				true \
+			"; \
+		mmproj=$$(grep '^MMPROJ_FILE=' "$$f" | cut -d= -f2); \
+		mmproj_url=$$(grep '^MMPROJ_URL=' "$$f" | cut -d= -f2); \
+		if [ -n "$$mmproj" ] && [ -n "$$mmproj_url" ]; then \
+			if [ -f "$(MODELS_DIR)/$$mmproj" ]; then \
+				echo "mmproj: $$mmproj (cached)"; \
+			else \
+				echo "Downloading mmproj: $$mmproj ..."; \
+				curl -L --progress-bar -o "$(MODELS_DIR)/$$mmproj" "$$mmproj_url"; \
+			fi; \
+		fi; \
+		tmpl=$$(grep '^TEMPLATE_FILE=' "$$f" | cut -d= -f2); \
+		tmpl_url=$$(grep '^TEMPLATE_URL=' "$$f" | cut -d= -f2); \
+		if [ -n "$$tmpl" ] && [ -n "$$tmpl_url" ]; then \
+			if [ -f "$(MODELS_DIR)/$$tmpl" ]; then \
+				echo "template: $$tmpl (cached)"; \
+			else \
+				echo "Downloading template: $$tmpl ..."; \
+				curl -L --progress-bar -o "$(MODELS_DIR)/$$tmpl" "$$tmpl_url"; \
+			fi; \
+		fi; \
+	done
+	@echo ""
+	@echo "✓ All models pre-downloaded. Switch instantly with: make switch MODEL=<name>"
 
 ## List available model presets
 models:
@@ -195,10 +255,10 @@ help:
 	@echo "  make up                 Start the stack"
 	@echo "  make down               Stop the stack"
 	@echo ""
-	@echo "Model switching:"
+	@echo "Model switching (or just select in OpenCode — proxy auto-swaps):"
 	@echo "  make models             List available model presets"
-	@echo "  make switch MODEL=name  Switch model and download assets"
-	@echo "  make up                 Restart with the new model"
+	@echo "  make run MODEL=name     Switch + restart in one shot"
+	@echo "  make download-all       Pre-download all models for instant switching"
 	@echo ""
 	@echo "Image management:"
 	@echo "  make pull               Pull image from registry"
