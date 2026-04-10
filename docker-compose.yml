@@ -20,6 +20,8 @@ services:
       - PRESETS_DIR=/presets
       - PROJECT_DIR=/project
       - HEALTH_TIMEOUT=180
+      # Pass host HOME so docker compose inside proxy resolves ~ correctly
+      - HOST_HOME=${HOME}
     volumes:
       # Docker socket — needed to recreate llama-server on model swap
       - /var/run/docker.sock:/var/run/docker.sock:ro

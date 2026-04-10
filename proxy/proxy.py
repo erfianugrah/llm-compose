@@ -98,10 +98,17 @@ def switch_model(preset_info):
             content += f"\n{secret}\n"
         env_file.write_text(content)
 
-        # Recreate llama-server with new env (docker compose reads .env)
+        # Recreate llama-server with new env (docker compose reads .env).
+        # Set HOME to the host HOME so ~ in docker-compose.yml volume paths
+        # resolves correctly (the proxy container's HOME is /root).
+        compose_env = os.environ.copy()
+        host_home = os.environ.get("HOST_HOME")
+        if host_home:
+            compose_env["HOME"] = host_home
         result = subprocess.run(
             ["docker", "compose", "up", "-d", "--force-recreate", "llama-server"],
             cwd=str(PROJECT_DIR),
+            env=compose_env,
             capture_output=True,
             text=True,
             timeout=30,
@@ -193,10 +200,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_health(self):
-        """Proxy health check, add switching status."""
+        """Proxy health check. Returns 200 even during switching so Docker
+        doesn't kill us mid-swap. Clients can check the 'status' field."""
         if switching:
             body = json.dumps({"status": "switching"}).encode()
-            self.send_response(503)
+            self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
