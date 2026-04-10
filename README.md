@@ -2,7 +2,7 @@
 
 Local LLM inference stack (llama.cpp + Open WebUI) for WSL2 with NVIDIA GPU.
 
-Runs **Gemma 4 26B MoE** at **167 tok/s** on an RTX 5090 with flash attention,
+Runs **Gemma 4 31B Dense** on an RTX 5090 with flash attention,
 quantized KV cache, and 64k context — all inside Docker.
 
 ## Quick start
@@ -51,8 +51,8 @@ mkdir -p ~/docker-volumes/llama-server/models ~/docker-volumes/webui
 
 ```bash
 curl -L --progress-bar \
-  -o ~/docker-volumes/llama-server/models/mmproj-gemma-4-26B-A4B-it-f16.gguf \
-  "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-gemma-4-26B-A4B-it-f16.gguf"
+  -o ~/docker-volumes/llama-server/models/mmproj-gemma-4-31B-it-f16.gguf \
+  "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/mmproj-gemma-4-31B-it-f16.gguf"
 ```
 
 3. Build the llama-server image (one-time, ~10 min):
@@ -108,15 +108,17 @@ We switched from Ollama to llama-server (llama.cpp) for three reasons:
 | Power draw | 126W | **228W** |
 | KV cache | f16 (FA required for q8_0) | **q8_0** |
 
-## Model choice: Gemma 4 26B MoE
+## Model choice: Gemma 4 31B Dense
 
-The 26B MoE (Mixture of Experts) is the best fit for 32 GB VRAM:
+The 31B Dense is the flagship Gemma 4 model. It fits on 32 GB VRAM at Q4_K_M
+thanks to the hybrid sliding-window attention (50 local layers + 10 global layers):
 
-- **18 GB** on disk (Q4_K_M quantization)
-- Only **3.8B parameters active** per token (8/128 experts + 1 shared)
-- **256K native context** (we use 64k for the VRAM/quality balance)
-- Near-identical benchmarks to the 31B dense (LiveCodeBench: 77% vs 80%)
-- Fits **100% on GPU** with flash attention + q8_0 KV cache at 64k context
+- **18.7 GB** on disk (Q4_K_M quantization)
+- **All 31B parameters active** per token — no routing, no sparsity
+- **256K native context** (we use 64k — only the 10 global layers scale with context)
+- Top benchmarks in its class (LiveCodeBench: 80%, AIME 2026: 89.2%)
+- Fits **100% on GPU** with flash attention + q8_0 KV cache at 64k context (~24.6 GB total)
+- Thinking mode via the interleaved template (PR #21418)
 
 ## Custom Docker image
 
@@ -148,8 +150,8 @@ the Docker image.
 
 ### How it works
 
-1. The text model GGUF (`gemma-4-26B-A4B-it-Q4_K_M.gguf`) handles language
-2. The mmproj GGUF (`mmproj-gemma-4-26B-A4B-it-f16.gguf`) handles image encoding
+1. The text model GGUF (`gemma-4-31B-it-Q4_K_M.gguf`) handles language
+2. The mmproj GGUF (`mmproj-gemma-4-31B-it-f16.gguf`) handles image encoding
 3. llama-server combines both via `libmtmd` to process multimodal inputs
 
 ### Disabling vision
@@ -175,8 +177,8 @@ Add the provider to `~/.config/opencode/opencode.json`:
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "gemma-4-26b-a4b-it-Q4_K_M": {
-          "name": "Gemma 4 26B MoE (local)"
+        "gemma-4-31B-it-Q4_K_M": {
+          "name": "Gemma 4 31B Dense (local)"
         }
       }
     }
@@ -188,30 +190,26 @@ Then in OpenCode, run `/models` and select the local model.
 
 ### Gemma 4 thinking mode
 
-Gemma 4 has built-in chain-of-thought reasoning enabled by default. The thinking trace
-appears in the `reasoning_content` field of the OpenAI-compatible API response. The
-`@ai-sdk/openai-compatible` provider reads this field automatically.
+Thinking is enabled via `--reasoning on` and the interleaved template
+(`google-gemma-4-interleaved.jinja` from [PR #21418](https://github.com/ggml-org/llama.cpp/pull/21418)).
+The interleaved template preserves reasoning between tool calls, which Google's
+[prompting guide](https://ai.google.dev/gemma/docs/core/prompt-formatting-gemma4) recommends
+for agentic workflows.
 
-**Controlling thinking depth:**
+The 31B Dense uses **adaptive thinking** — it decides whether and how deeply to think
+based on prompt complexity. Simple prompts may produce empty thinking blocks; harder
+problems trigger extended reasoning. This is by design.
 
-- Thinking is unrestricted by default (`--reasoning-budget -1`).
-- Gemma 4 decides how deeply to think based on the **prompt complexity**, not an API parameter.
-- `reasoning_effort` in the OpenAI API is **not supported** by llama-server for Gemma 4
-  (it's a model-specific training feature, not a generic parameter).
-- To disable thinking entirely, add `--reasoning-budget 0` to the docker-compose command.
-- See [Google's Gemma 4 prompting guide](https://ai.google.dev/gemma/docs/core/prompt-formatting-gemma4#adaptive-thought-efficiency)
-  for prompt techniques that influence thinking depth.
+**Known limitation:** `--reasoning-budget N` is broken for Gemma 4
+([llama.cpp #21487](https://github.com/ggml-org/llama.cpp/issues/21487)).
+[PR #21697](https://github.com/ggml-org/llama.cpp/pull/21697) (approved, pending merge)
+fixes this by adding the missing `thinking_start_tag` / `thinking_end_tag` to the
+Gemma 4 parser. Once merged, bump `LLAMA_CPP_VERSION` and rebuild to get budget control.
 
 **Important:** Do **not** set `--chat-template gemma` — that forces the legacy Gemma 1/2
 template and breaks tool calling. The Gemma 4 template is auto-detected from the GGUF metadata.
 
 ## Known issues
-
-### Gemma 4 thinking consumes token budget before responding
-
-With default thinking enabled, short `max_tokens` budgets may be entirely consumed by
-the reasoning trace, leaving `content` empty. This is expected — the model thinks first,
-then responds. OpenCode handles this automatically with adequate token budgets.
 
 ### First request is slow after container start
 

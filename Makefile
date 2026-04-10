@@ -2,9 +2,11 @@
 # See README.md for full documentation.
 
 # ── Configuration ────────────────────────────────────────────────────
-HF_REPO     := ggml-org/gemma-4-26b-a4b-it-GGUF
-MMPROJ_FILE := mmproj-gemma-4-26B-A4B-it-f16.gguf
+HF_REPO     := ggml-org/gemma-4-31B-it-GGUF
+MMPROJ_FILE := mmproj-gemma-4-31B-it-f16.gguf
 MMPROJ_URL  := https://huggingface.co/$(HF_REPO)/resolve/main/$(MMPROJ_FILE)
+TEMPLATE_FILE := google-gemma-4-interleaved.jinja
+TEMPLATE_URL  := https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/google-gemma-4-31B-it-interleaved.jinja
 VOLUME_DIR  := $(HOME)/docker-volumes/llama-server
 MODELS_DIR  := $(VOLUME_DIR)/models
 IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
@@ -12,8 +14,8 @@ IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
 # ── Primary targets ──────────────────────────────────────────────────
 .PHONY: setup build up down restart logs status clean help
 
-## First-time setup: generate .env, create volumes, download mmproj, pull or build image
-setup: .env dirs mmproj build
+## First-time setup: generate .env, create volumes, download mmproj + template, pull or build image
+setup: .env dirs mmproj template build
 	@echo "\n✓ Setup complete. Run 'make up' to start the stack."
 
 ## Build the llama-server Docker image (skips if already present)
@@ -78,7 +80,7 @@ release: rebuild push
 	@echo "✓ $(IMAGE) built, pushed, and restarted"
 
 # ── Model management ─────────────────────────────────────────────────
-.PHONY: mmproj dirs
+.PHONY: mmproj template dirs
 
 ## Download the multimodal projector (vision support)
 mmproj: dirs
@@ -88,6 +90,16 @@ mmproj: dirs
 		echo "Downloading mmproj (~1.1 GB)..."; \
 		curl -L --progress-bar -o "$(MODELS_DIR)/$(MMPROJ_FILE)" "$(MMPROJ_URL)"; \
 		echo "✓ Downloaded to $(MODELS_DIR)/$(MMPROJ_FILE)"; \
+	fi
+
+## Download the interleaved thinking template (PR #21418)
+template: dirs
+	@if [ -f "$(MODELS_DIR)/$(TEMPLATE_FILE)" ]; then \
+		echo "Template already downloaded: $(MODELS_DIR)/$(TEMPLATE_FILE)"; \
+	else \
+		echo "Downloading interleaved thinking template..."; \
+		curl -sf -o "$(MODELS_DIR)/$(TEMPLATE_FILE)" "$(TEMPLATE_URL)"; \
+		echo "✓ Downloaded to $(MODELS_DIR)/$(TEMPLATE_FILE)"; \
 	fi
 
 ## Create persistent volume directories (handles root-owned Docker volumes)
