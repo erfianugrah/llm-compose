@@ -2,20 +2,22 @@
 # See README.md for full documentation.
 
 # ── Configuration ────────────────────────────────────────────────────
-HF_REPO     := ggml-org/gemma-4-31B-it-GGUF
-MMPROJ_FILE := mmproj-gemma-4-31B-it-f16.gguf
-MMPROJ_URL  := https://huggingface.co/$(HF_REPO)/resolve/main/$(MMPROJ_FILE)
-TEMPLATE_FILE := google-gemma-4-interleaved.jinja
-TEMPLATE_URL  := https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/google-gemma-4-31B-it-interleaved.jinja
+MODEL       ?= gemma4
 VOLUME_DIR  := $(HOME)/docker-volumes/llama-server
 MODELS_DIR  := $(VOLUME_DIR)/models
 IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
+PRESET      := models/$(MODEL).env
 
 # ── Primary targets ──────────────────────────────────────────────────
 .PHONY: setup build up down restart logs status clean help
 
-## First-time setup: generate .env, create volumes, download mmproj + template, pull or build image
-setup: .env dirs mmproj template build
+## First-time setup: generate secret, create volumes, load default model, pull or build image
+setup: .env dirs build
+	@if ! grep -q MODEL_REPO .env 2>/dev/null; then \
+		$(MAKE) --no-print-directory switch MODEL=$(MODEL); \
+	else \
+		echo "Model already configured in .env"; \
+	fi
 	@echo "\n✓ Setup complete. Run 'make up' to start the stack."
 
 ## Build the llama-server Docker image (skips if already present)
@@ -51,6 +53,9 @@ logs-llama:
 status:
 	@docker compose ps
 	@echo ""
+	@if grep -q MODEL_NAME .env 2>/dev/null; then \
+		echo "Active model: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
+	fi
 	@curl -sf http://localhost:11434/health 2>/dev/null \
 		&& echo "llama-server: healthy" \
 		|| echo "llama-server: not reachable"
@@ -59,8 +64,73 @@ status:
 clean:
 	docker compose down -v
 
+# ── Model switching ──────────────────────────────────────────────────
+.PHONY: switch models assets
+
+## Switch to a model preset: make switch MODEL=gemma4|qwen3-coder|qwen3
+switch: dirs
+	@if [ ! -f "$(PRESET)" ]; then \
+		echo "Error: preset '$(PRESET)' not found"; \
+		echo "Available:"; ls -1 models/*.env | sed 's|models/||;s|\.env||;s|^|  |'; \
+		exit 1; \
+	fi
+	@echo "Switching to $(MODEL)..."
+	@# Preserve WEBUI_SECRET_KEY, replace everything else
+	@SECRET=$$(grep '^WEBUI_SECRET_KEY=' .env 2>/dev/null | head -1); \
+	cp "$(PRESET)" .env.tmp; \
+	if [ -n "$$SECRET" ]; then \
+		echo "" >> .env.tmp; \
+		echo "$$SECRET" >> .env.tmp; \
+	else \
+		echo "" >> .env.tmp; \
+		echo "WEBUI_SECRET_KEY=$$(openssl rand -hex 32)" >> .env.tmp; \
+	fi; \
+	mv .env.tmp .env
+	@$(MAKE) --no-print-directory assets
+	@echo "✓ Switched to $(MODEL). Run 'make up' to start."
+
+## Download model-specific assets (mmproj, templates)
+assets: dirs
+	@# Download mmproj if specified
+	@MMPROJ=$$(grep '^MMPROJ_FILE=' .env 2>/dev/null | cut -d= -f2); \
+	MMPROJ_URL=$$(grep '^MMPROJ_URL=' .env 2>/dev/null | cut -d= -f2); \
+	if [ -n "$$MMPROJ" ] && [ -n "$$MMPROJ_URL" ]; then \
+		if [ -f "$(MODELS_DIR)/$$MMPROJ" ]; then \
+			echo "mmproj: $$MMPROJ (cached)"; \
+		else \
+			echo "Downloading mmproj: $$MMPROJ ..."; \
+			curl -L --progress-bar -o "$(MODELS_DIR)/$$MMPROJ" "$$MMPROJ_URL"; \
+		fi; \
+	fi
+	@# Download template if specified
+	@TMPL=$$(grep '^TEMPLATE_FILE=' .env 2>/dev/null | cut -d= -f2); \
+	TMPL_URL=$$(grep '^TEMPLATE_URL=' .env 2>/dev/null | cut -d= -f2); \
+	if [ -n "$$TMPL" ] && [ -n "$$TMPL_URL" ]; then \
+		if [ -f "$(MODELS_DIR)/$$TMPL" ]; then \
+			echo "template: $$TMPL (cached)"; \
+		else \
+			echo "Downloading template: $$TMPL ..."; \
+			curl -L --progress-bar -o "$(MODELS_DIR)/$$TMPL" "$$TMPL_URL"; \
+		fi; \
+	fi
+
+## List available model presets
+models:
+	@echo "Available models:"
+	@for f in models/*.env; do \
+		name=$$(basename "$$f" .env); \
+		desc=$$(head -1 "$$f" | sed 's/^# //'); \
+		printf "  %-16s %s\n" "$$name" "$$desc"; \
+	done
+	@echo ""
+	@if grep -q MODEL_NAME .env 2>/dev/null; then \
+		echo "Active: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
+	fi
+	@echo ""
+	@echo "Switch with: make switch MODEL=<name>"
+
 # ── Image management ─────────────────────────────────────────────────
-.PHONY: pull push rebuild
+.PHONY: pull push rebuild release
 
 ## Pull the llama-server image from the registry (skips local build)
 pull:
@@ -78,41 +148,6 @@ rebuild:
 ## Rebuild from source, push to registry, and restart
 release: rebuild push
 	@echo "✓ $(IMAGE) built, pushed, and restarted"
-
-# ── Model management ─────────────────────────────────────────────────
-.PHONY: mmproj template dirs
-
-## Download the multimodal projector (vision support)
-mmproj: dirs
-	@if [ -f "$(MODELS_DIR)/$(MMPROJ_FILE)" ]; then \
-		echo "mmproj already downloaded: $(MODELS_DIR)/$(MMPROJ_FILE)"; \
-	else \
-		echo "Downloading mmproj (~1.1 GB)..."; \
-		curl -L --progress-bar -o "$(MODELS_DIR)/$(MMPROJ_FILE)" "$(MMPROJ_URL)"; \
-		echo "✓ Downloaded to $(MODELS_DIR)/$(MMPROJ_FILE)"; \
-	fi
-
-## Download the interleaved thinking template (PR #21418)
-template: dirs
-	@if [ -f "$(MODELS_DIR)/$(TEMPLATE_FILE)" ]; then \
-		echo "Template already downloaded: $(MODELS_DIR)/$(TEMPLATE_FILE)"; \
-	else \
-		echo "Downloading interleaved thinking template..."; \
-		curl -sf -o "$(MODELS_DIR)/$(TEMPLATE_FILE)" "$(TEMPLATE_URL)"; \
-		echo "✓ Downloaded to $(MODELS_DIR)/$(TEMPLATE_FILE)"; \
-	fi
-
-## Create persistent volume directories (handles root-owned Docker volumes)
-dirs:
-	@for d in "$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui"; do \
-		if [ ! -d "$$d" ]; then \
-			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
-		fi; \
-		if [ ! -w "$$d" ]; then \
-			echo "Fixing ownership on $$d (requires sudo)..."; \
-			sudo chown $(shell id -u):$(shell id -g) "$$d"; \
-		fi; \
-	done
 
 # ── Monitoring ───────────────────────────────────────────────────────
 .PHONY: gpu metrics health
@@ -132,7 +167,19 @@ health:
 
 # ── Utilities ────────────────────────────────────────────────────────
 
-## Generate .env with a random secret key
+## Create persistent volume directories (handles root-owned Docker volumes)
+dirs:
+	@for d in "$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui"; do \
+		if [ ! -d "$$d" ]; then \
+			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
+		fi; \
+		if [ ! -w "$$d" ]; then \
+			echo "Fixing ownership on $$d (requires sudo)..."; \
+			sudo chown $$(id -u):$$(id -g) "$$d"; \
+		fi; \
+	done
+
+## Generate .env with a random secret key (only if .env doesn't exist)
 .env:
 	@echo "WEBUI_SECRET_KEY=$$(openssl rand -hex 32)" > .env
 	@echo "✓ Created .env"
@@ -141,30 +188,32 @@ health:
 help:
 	@echo "llm-compose — local LLM inference stack"
 	@echo ""
-	@echo "Usage: make <target>"
+	@echo "Usage: make <target> [MODEL=<name>]"
 	@echo ""
 	@echo "Getting started:"
-	@echo "  make setup     First-time setup (env, volumes, mmproj, build)"
-	@echo "  make up        Start the stack"
-	@echo "  make down      Stop the stack"
+	@echo "  make setup              First-time setup (default: gemma4)"
+	@echo "  make up                 Start the stack"
+	@echo "  make down               Stop the stack"
+	@echo ""
+	@echo "Model switching:"
+	@echo "  make models             List available model presets"
+	@echo "  make switch MODEL=name  Switch model and download assets"
+	@echo "  make up                 Restart with the new model"
 	@echo ""
 	@echo "Image management:"
-	@echo "  make pull      Pull image from registry"
-	@echo "  make push      Push image to registry"
-	@echo "  make rebuild   Rebuild from source and restart"
-	@echo "  make release   Rebuild, push, and restart"
+	@echo "  make pull               Pull image from registry"
+	@echo "  make push               Push image to registry"
+	@echo "  make rebuild            Rebuild from source and restart"
+	@echo "  make release            Rebuild, push, and restart"
 	@echo ""
 	@echo "Operations:"
-	@echo "  make restart   Restart all services"
-	@echo "  make logs      Follow all logs"
-	@echo "  make logs-llama  Follow llama-server logs only"
-	@echo "  make status    Show container status and health"
-	@echo "  make clean     Stop stack and remove volumes"
+	@echo "  make restart            Restart all services"
+	@echo "  make logs               Follow all logs"
+	@echo "  make logs-llama         Follow llama-server logs only"
+	@echo "  make status             Show container status and health"
+	@echo "  make clean              Stop stack and remove volumes"
 	@echo ""
 	@echo "Monitoring:"
-	@echo "  make gpu       Show GPU stats"
-	@echo "  make metrics   Fetch Prometheus metrics"
-	@echo "  make health    Check llama-server health"
-	@echo ""
-	@echo "Model management:"
-	@echo "  make mmproj    Download multimodal projector (vision)"
+	@echo "  make gpu                Show GPU stats"
+	@echo "  make metrics            Fetch Prometheus metrics"
+	@echo "  make health             Check llama-server health"

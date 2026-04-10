@@ -2,19 +2,39 @@
 
 Local LLM inference stack (llama.cpp + Open WebUI) for WSL2 with NVIDIA GPU.
 
-Runs **Gemma 4 31B Dense** on an RTX 5090 with flash attention,
-quantized KV cache, and 64k context — all inside Docker.
+Multi-model local LLM inference on an RTX 5090 with flash attention,
+quantized KV cache, and 64k context — all inside Docker. Swap models without
+rebuilding the image.
 
 ## Quick start
 
 ```bash
-make setup   # one-time: .env, volumes, mmproj download, image build (~10 min)
+make setup   # one-time: .env, volumes, model assets, image build
 make up      # start the stack
 ```
 
 Open the UI at [http://localhost:3000](http://localhost:3000).
 
 Run `make help` for all available targets.
+
+## Available models
+
+| Preset | Model | Type | Size | Vision | Thinking | Best for |
+|---|---|---|---|---|---|---|
+| `gemma4` | Gemma 4 31B Dense | Dense | ~19 GB | Yes | Yes | Multimodal, agentic coding |
+| `qwen3-coder` | Qwen3 Coder 30B A3B | MoE | ~19 GB | No | No | Fast code generation |
+| `qwen3` | Qwen3 32B | Dense | ~20 GB | No | Yes | Research, science, tool use |
+
+All models fit in 32 GB VRAM at Q4_K_M with 64k context.
+
+### Switching models
+
+```bash
+make switch MODEL=qwen3-coder   # download assets, update .env
+make up                         # restart with the new model
+```
+
+List available presets with `make models`.
 
 ## Prerequisites
 
@@ -38,38 +58,14 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 
 ## Setup
 
-The recommended way is `make setup` (see Quick start above). For manual setup:
+The recommended way is `make setup` (see Quick start above). This will:
 
-1. Create the `.env` file and volume directories:
+1. Generate `.env` with a random `WEBUI_SECRET_KEY`
+2. Create volume directories (handling root-owned Docker volumes)
+3. Load the default model preset (`gemma4`) and download its assets
+4. Build or skip the llama-server Docker image
 
-```bash
-echo "WEBUI_SECRET_KEY=$(openssl rand -hex 32)" > .env
-mkdir -p ~/docker-volumes/llama-server/models ~/docker-volumes/webui
-```
-
-2. Download the multimodal projector for vision (image) support:
-
-```bash
-curl -L --progress-bar \
-  -o ~/docker-volumes/llama-server/models/mmproj-gemma-4-31B-it-f16.gguf \
-  "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/mmproj-gemma-4-31B-it-f16.gguf"
-```
-
-3. Build the llama-server image (one-time, ~10 min):
-
-```bash
-docker compose build llama-server
-```
-
-4. Start the stack:
-
-```bash
-docker compose up -d
-```
-
-The text model (~18 GB) auto-downloads from HuggingFace on first start.
-
-5. Open the UI at [http://localhost:3000](http://localhost:3000)
+The text model GGUF auto-downloads from HuggingFace on first container start.
 
 ## Architecture
 
@@ -108,10 +104,12 @@ We switched from Ollama to llama-server (llama.cpp) for three reasons:
 | Power draw | 126W | **228W** |
 | KV cache | f16 (FA required for q8_0) | **q8_0** |
 
-## Model choice: Gemma 4 31B Dense
+## Model details
 
-The 31B Dense is the flagship Gemma 4 model. It fits on 32 GB VRAM at Q4_K_M
-thanks to the hybrid sliding-window attention (50 local layers + 10 global layers):
+### Gemma 4 31B Dense (default)
+
+The flagship Gemma 4 model. Fits on 32 GB VRAM at Q4_K_M thanks to hybrid
+sliding-window attention (50 local layers + 10 global layers):
 
 - **18.7 GB** on disk (Q4_K_M quantization)
 - **All 31B parameters active** per token — no routing, no sparsity
@@ -119,6 +117,27 @@ thanks to the hybrid sliding-window attention (50 local layers + 10 global layer
 - Top benchmarks in its class (LiveCodeBench: 80%, AIME 2026: 89.2%)
 - Fits **100% on GPU** with flash attention + q8_0 KV cache at 64k context (~24.6 GB total)
 - Thinking mode via the interleaved template (PR #21418)
+- **Vision support** via multimodal projector (mmproj)
+
+### Qwen3 Coder 30B A3B
+
+MoE coding specialist — only 3.3B active params per token for fast inference:
+
+- **18.6 GB** on disk (Q4_K_M quantization)
+- **Non-thinking mode** — fast, direct code outputs
+- **262K native context** (we use 64k)
+- Optimized for code generation, refactoring, and agentic coding
+- Tool calling support for OpenCode
+
+### Qwen3 32B
+
+Dense general-purpose model with strong reasoning and tool calling:
+
+- **~20 GB** on disk (Q4_K_M quantization)
+- **Thinking mode** — adaptive chain-of-thought reasoning
+- **131K native context** (we use 64k)
+- Excellent at research, science, daily questions, web search, tool use
+- Strong multilingual support
 
 ## Custom Docker image
 
@@ -137,34 +156,18 @@ make rebuild
 
 ## Vision (image) support
 
-Gemma 4 is a multimodal model that can process both text and images. Vision requires
-a separate **multimodal projector** (mmproj) GGUF file that handles image encoding
-before the language model sees it.
+Gemma 4 includes a multimodal projector (mmproj) for image understanding.
+`make switch MODEL=gemma4` auto-downloads the mmproj (~1.1 GB). Text-only
+models (qwen3-coder, qwen3) skip the mmproj — the `--mmproj` flag is
+conditionally included only when `MMPROJ_FILE` is set in the model preset.
 
-`make setup` downloads the mmproj automatically. If you set up manually, see step 2
-in the Setup section.
-
-The mmproj is loaded at runtime via `--mmproj` — no image rebuild required.
-The `libmtmd.so` library that powers multimodal inference is already compiled into
-the Docker image.
-
-### How it works
-
-1. The text model GGUF (`gemma-4-31B-it-Q4_K_M.gguf`) handles language
-2. The mmproj GGUF (`mmproj-gemma-4-31B-it-f16.gguf`) handles image encoding
-3. llama-server combines both via `libmtmd` to process multimodal inputs
-
-### Disabling vision
-
-To run text-only (saves ~1.1 GB disk, negligible VRAM):
-
-1. Remove the `--mmproj` and its path from `docker-compose.yml`
-2. Remove the `/models` volume mount
-3. Run `docker compose up -d`
+The `libmtmd.so` library that powers multimodal inference is already compiled
+into the Docker image. No rebuild needed.
 
 ## Using with OpenCode
 
-Add the provider to `~/.config/opencode/opencode.json`:
+Add the provider to `~/.config/opencode/opencode.json`. Register all models
+you want to use — only the one loaded by llama-server will respond:
 
 ```json
 {
@@ -179,6 +182,12 @@ Add the provider to `~/.config/opencode/opencode.json`:
       "models": {
         "gemma-4-31B-it-Q4_K_M": {
           "name": "Gemma 4 31B Dense (local)"
+        },
+        "qwen3-coder-30b-a3b-instruct-q4_k_m": {
+          "name": "Qwen3 Coder 30B MoE (local)"
+        },
+        "Qwen3-32B-Q4_K_M": {
+          "name": "Qwen3 32B (local)"
         }
       }
     }
@@ -187,6 +196,35 @@ Add the provider to `~/.config/opencode/opencode.json`:
 ```
 
 Then in OpenCode, run `/models` and select the local model.
+
+**Switching models:** run `make switch MODEL=<name> && make up` on the host,
+then select the corresponding model in OpenCode with `/models`.
+
+## Adding custom models
+
+Create a new file in `models/` following the preset format:
+
+```bash
+# models/my-model.env
+MODEL_REPO=username/My-Model-GGUF
+MODEL_FILE=my-model-Q4_K_M.gguf
+MODEL_NAME=My Model (local)
+MMPROJ_FILE=                    # leave empty for text-only
+MMPROJ_URL=
+TEMPLATE_FILE=                  # leave empty to use GGUF default
+TEMPLATE_URL=
+REASONING=                      # "on" for thinking models, empty to disable
+CONTEXT_SIZE=65536
+TEMPERATURE=0.7
+TOP_P=0.95
+TOP_K=40
+MIN_P=0
+```
+
+Then: `make switch MODEL=my-model && make up`
+
+The Docker image is model-agnostic — it runs any GGUF that llama.cpp supports.
+No rebuild required to add new models.
 
 ### Gemma 4 thinking mode
 

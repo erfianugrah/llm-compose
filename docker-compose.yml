@@ -10,69 +10,46 @@ services:
     # Bind to localhost only -- reachable from WSL2/Windows host but not the LAN
     ports:
       - "127.0.0.1:11434:8080"
-    # llama-server flags for Gemma 4 31B Dense
-    # -hf auto-downloads the GGUF from HuggingFace on first run (~18.7 GB)
+    # Model-agnostic entrypoint — all model-specific config comes from .env
+    # via `make switch MODEL=<name>`. See models/*.env for available presets.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --hf-repo
-      - ggml-org/gemma-4-31B-it-GGUF
-      - --hf-file
-      - gemma-4-31B-it-Q4_K_M.gguf
-      # Multimodal projector for vision (image) support.
-      # Downloaded separately via `make setup` — see README.
-      - --mmproj
-      - /models/mmproj-gemma-4-31B-it-f16.gguf
-      # Chat template is auto-detected from the GGUF metadata.
-      # Gemma 4 models embed a jinja template that triggers the dedicated gemma4
-      # code path (PEG_GEMMA4) with proper tool-calling support.
-      # Do NOT use --chat-template gemma — that forces the simpler Gemma 1/2 template.
-      - --port
-      - "8080"
-      - --host
-      - 0.0.0.0
-      # Offload all layers to GPU
-      - -ngl
-      - "99"
-      # Flash attention -- works correctly in llama.cpp (broken in Ollama 0.20.x)
-      - --flash-attn
-      - "on"
-      # Quantized KV cache -- halves VRAM usage with minimal quality loss
-      - -ctk
-      - q8_0
-      - -ctv
-      - q8_0
-      # Context window -- 64k for agentic tools like OpenCode
-      - -c
-      - "65536"
-      # Gemma 4 best-practice sampling parameters
-      - --temp
-      - "1.0"
-      - --top-p
-      - "0.95"
-      - --top-k
-      - "64"
-      # Batch sizes for prompt processing
-      - -b
-      - "2048"
-      - -ub
-      - "512"
-      # Threads for CPU-side work
-      - --threads
-      - "8"
-      - --threads-batch
-      - "8"
-      # Enable thinking via the interleaved template (PR #21418).
-      # The default GGUF-embedded template doesn't preserve reasoning between
-      # tool calls. The interleaved template fixes this and is recommended for
-      # agentic workflows. Downloaded by `make setup` to /models/.
-      - --jinja
-      - --chat-template-file
-      - /models/google-gemma-4-interleaved.jinja
-      - --reasoning
-      - "on"
-      # Verbose logging — shows token rates, VRAM usage, prompt eval stats
-      - -v
-      # Prometheus metrics endpoint at /metrics
-      - --metrics
+      - |
+        exec llama-server \
+          --hf-repo $${MODEL_REPO} \
+          --hf-file $${MODEL_FILE} \
+          $${MMPROJ_FILE:+--mmproj /models/$${MMPROJ_FILE}} \
+          --jinja \
+          $${TEMPLATE_FILE:+--chat-template-file /models/$${TEMPLATE_FILE}} \
+          $${REASONING:+--reasoning $${REASONING}} \
+          --port 8080 \
+          --host 0.0.0.0 \
+          -ngl 99 \
+          --flash-attn on \
+          -ctk q8_0 \
+          -ctv q8_0 \
+          -c $${CONTEXT_SIZE:-65536} \
+          --temp $${TEMPERATURE:-1.0} \
+          --top-p $${TOP_P:-0.95} \
+          --top-k $${TOP_K:-64} \
+          $${MIN_P:+--min-p $${MIN_P}} \
+          -b 2048 \
+          -ub 512 \
+          --threads 8 \
+          --threads-batch 8 \
+          -v \
+          --metrics
+    environment:
+      - MODEL_REPO=${MODEL_REPO}
+      - MODEL_FILE=${MODEL_FILE}
+      - MMPROJ_FILE=${MMPROJ_FILE}
+      - TEMPLATE_FILE=${TEMPLATE_FILE}
+      - REASONING=${REASONING}
+      - CONTEXT_SIZE=${CONTEXT_SIZE}
+      - TEMPERATURE=${TEMPERATURE}
+      - TOP_P=${TOP_P}
+      - TOP_K=${TOP_K}
+      - MIN_P=${MIN_P}
     deploy:
       resources:
         reservations:
@@ -85,7 +62,7 @@ services:
     volumes:
       # Persistent model cache so HF downloads survive restarts
       - ~/docker-volumes/llama-server:/root/.cache
-      # Multimodal projector (downloaded by `make setup`)
+      # Model assets: mmproj, custom templates (downloaded by `make switch`)
       - ~/docker-volumes/llama-server/models:/models
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
