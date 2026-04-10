@@ -66,10 +66,14 @@ The recommended way is `make setup` (see Quick start above). This will:
 
 1. Generate `.env` with a random `WEBUI_SECRET_KEY`
 2. Create volume directories (handling root-owned Docker volumes)
-3. Load the default model preset (`gemma4`) and download its assets
-4. Build or skip the llama-server Docker image
+3. Load the default model preset (`gemma4`) and download its assets (mmproj, template)
+4. Build the model-proxy and llama-server Docker images (skips if already present)
 
-The text model GGUF auto-downloads from HuggingFace on first container start.
+The text model GGUF (~19 GB) auto-downloads from HuggingFace on first container start.
+To pre-download all models: `make download-all`.
+
+**Note:** The model-proxy container requires access to the Docker socket
+(`/var/run/docker.sock`) to recreate llama-server during model swaps.
 
 ## Architecture
 
@@ -287,3 +291,11 @@ template and breaks tool calling. The Gemma 4 template is auto-detected from the
 
 The model takes ~60-90 seconds to load into VRAM on first request. Subsequent requests
 are instant. The `start_period: 120s` in the healthcheck accounts for this.
+
+### Model switching takes ~60-90 seconds
+
+When the proxy detects a model mismatch, it recreates llama-server with the new model.
+The delay is the GGUF load time into VRAM — there's no way around this with 32 GB VRAM
+(only one ~20 GB model fits at a time). The proxy blocks the triggering request until
+the new model is healthy, then forwards it. Pre-download all models with
+`make download-all` to eliminate network wait on first switch.
