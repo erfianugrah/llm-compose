@@ -399,7 +399,8 @@ you want to use — only the one loaded by llama-server will respond:
       },
       "models": {
         "gemma-4-31B-it-Q4_K_M": {
-          "name": "Gemma 4 31B Dense (local)"
+          "name": "Gemma 4 31B Dense (local)",
+          "attachment": true
         },
         "qwen3-coder-30b-a3b-instruct-q4_k_m": {
           "name": "Qwen3 Coder 30B MoE (local)"

@@ -82,7 +82,7 @@ services:
           --top-k $${TOP_K:-64} \
           $${MIN_P:+--min-p $${MIN_P}} \
           -b 2048 \
-          -ub 512 \
+          -ub 2048 \
           --threads 8 \
           --threads-batch 8 \
           -v \
