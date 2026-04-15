@@ -6,10 +6,11 @@ MODEL       ?= gemma4
 VOLUME_DIR  := $(HOME)/docker-volumes/llama-server
 MODELS_DIR  := $(VOLUME_DIR)/models
 IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
+PROXY_IMAGE := erfianugrah/model-proxy:latest
 PRESET      := models/$(MODEL).env
 
 # ── Primary targets ──────────────────────────────────────────────────
-.PHONY: setup build up down restart logs status clean help
+.PHONY: setup build up down restart logs status clean deploy help
 
 ## First-time setup: generate secret, create volumes, load default model, pull or build image
 setup: .env dirs build
@@ -60,6 +61,10 @@ status:
 	@curl -sf http://localhost:11434/health 2>/dev/null \
 		&& echo "llama-server: healthy" \
 		|| echo "llama-server: not reachable"
+
+## Full deploy: setup, build, push images to registry, start the stack
+deploy: setup push up
+	@echo "\n✓ Deployed. Images pushed to registry."
 
 ## Stop stack and remove volumes (keeps downloaded models)
 clean:
@@ -192,13 +197,15 @@ models:
 # ── Image management ─────────────────────────────────────────────────
 .PHONY: pull push rebuild release
 
-## Pull the llama-server image from the registry (skips local build)
+## Pull all custom images from the registry (skips local build)
 pull:
 	docker pull $(IMAGE)
+	docker pull $(PROXY_IMAGE)
 
-## Push the locally built image to the registry
+## Push all custom images to the registry
 push:
 	docker push $(IMAGE)
+	docker push $(PROXY_IMAGE)
 
 ## Rebuild llama-server from source and restart
 rebuild:
@@ -252,6 +259,7 @@ help:
 	@echo ""
 	@echo "Getting started:"
 	@echo "  make setup              First-time setup (default: gemma4)"
+	@echo "  make deploy             Full deploy: setup + push images + start"
 	@echo "  make up                 Start the stack"
 	@echo "  make down               Stop the stack"
 	@echo ""
@@ -261,8 +269,8 @@ help:
 	@echo "  make download-all       Pre-download all models for instant switching"
 	@echo ""
 	@echo "Image management:"
-	@echo "  make pull               Pull image from registry"
-	@echo "  make push               Push image to registry"
+	@echo "  make pull               Pull all custom images from registry"
+	@echo "  make push               Push all custom images to registry"
 	@echo "  make rebuild            Rebuild from source and restart"
 	@echo "  make release            Rebuild, push, and restart"
 	@echo ""
