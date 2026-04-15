@@ -9,6 +9,10 @@ IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
 PROXY_IMAGE := erfianugrah/model-proxy:latest
 PRESET      := models/$(MODEL).env
 
+# VRAM budget — must match docker-compose.yml proxy env
+VRAM_LIMIT   ?= 32
+VRAM_RESERVE ?= 10
+
 # ── Primary targets ──────────────────────────────────────────────────
 .PHONY: setup build up down restart logs status clean deploy help
 
@@ -79,6 +83,21 @@ switch: dirs
 		echo "Error: preset '$(PRESET)' not found"; \
 		echo "Available:"; ls -1 models/*.env | sed 's|models/||;s|\.env||;s|^|  |'; \
 		exit 1; \
+	fi
+	@# VRAM budget check — reject before writing .env
+	@ESTIMATE=$$(grep '^VRAM_ESTIMATE_GB=' "$(PRESET)" 2>/dev/null | cut -d= -f2); \
+	if [ -n "$$ESTIMATE" ]; then \
+		MAX=$$(echo "$(VRAM_LIMIT) - $(VRAM_RESERVE)" | bc); \
+		OVER=$$(echo "$$ESTIMATE > $$MAX" | bc); \
+		if [ "$$OVER" = "1" ]; then \
+			echo "Error: $(MODEL) needs ~$${ESTIMATE}GB VRAM for weights,"; \
+			echo "       but only $${MAX}GB available after reserving $(VRAM_RESERVE)GB"; \
+			echo "       for KV cache + overhead (total VRAM: $(VRAM_LIMIT)GB)."; \
+			echo "       Use a smaller quant (Q4_K_M) or reduce context size."; \
+			exit 1; \
+		fi; \
+	else \
+		echo "Warning: $(PRESET) missing VRAM_ESTIMATE_GB, skipping budget check"; \
 	fi
 	@echo "Switching to $(MODEL)..."
 	@# Preserve WEBUI_SECRET_KEY, replace everything else

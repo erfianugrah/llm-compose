@@ -27,6 +27,8 @@ PROXY_PORT = int(os.environ.get("PROXY_PORT", "11434"))
 PRESETS_DIR = Path(os.environ.get("PRESETS_DIR", "/presets"))
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/project"))
 HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "180"))
+VRAM_LIMIT_GB = float(os.environ.get("VRAM_LIMIT_GB", "32"))
+VRAM_RESERVE_GB = float(os.environ.get("VRAM_RESERVE_GB", "10"))
 
 # ── State ────────────────────────────────────────────────────────────
 current_model_id = None
@@ -70,6 +72,36 @@ def detect_current_model():
     config = parse_env_file(env_file)
     model_file = config.get("MODEL_FILE", "")
     return model_file.rsplit(".", 1)[0] if model_file else None
+
+
+# ── VRAM budget check ────────────────────────────────────────────────
+def check_vram_budget(preset_info):
+    """Return (ok, message). Rejects if model weights would leave
+    insufficient VRAM for KV cache and CUDA overhead."""
+    estimate = preset_info["config"].get("VRAM_ESTIMATE_GB")
+    if estimate is None:
+        # No estimate in preset — allow but warn
+        log(f"WARNING: preset '{preset_info['preset']}' missing VRAM_ESTIMATE_GB, skipping budget check")
+        return True, ""
+    try:
+        estimate = float(estimate)
+    except ValueError:
+        log(f"WARNING: invalid VRAM_ESTIMATE_GB='{estimate}' in preset '{preset_info['preset']}'")
+        return True, ""
+
+    max_weight = VRAM_LIMIT_GB - VRAM_RESERVE_GB
+    if estimate > max_weight:
+        msg = (
+            f"Model '{preset_info['config'].get('MODEL_NAME', preset_info['model_id'])}' "
+            f"needs ~{estimate}GB VRAM for weights alone, "
+            f"but only {max_weight}GB available after reserving "
+            f"{VRAM_RESERVE_GB}GB for KV cache + overhead "
+            f"(total VRAM: {VRAM_LIMIT_GB}GB). "
+            f"Use a smaller quant (Q4_K_M) or reduce context size."
+        )
+        log(f"REJECTED: {msg}")
+        return False, msg
+    return True, ""
 
 
 # ── Model switching ──────────────────────────────────────────────────
@@ -227,6 +259,23 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if requested_model not in self.presets:
             return True  # Let llama-server handle the unknown model
 
+        # VRAM budget gate — reject before touching anything
+        ok, vram_msg = check_vram_budget(self.presets[requested_model])
+        if not ok:
+            body = json.dumps({
+                "error": {
+                    "message": vram_msg,
+                    "type": "vram_exceeded",
+                    "code": 422,
+                }
+            }).encode()
+            self.send_response(422)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
+
         # Switch needed
         with switch_lock:
             # Re-check after acquiring lock (another thread may have switched)
@@ -321,6 +370,7 @@ if __name__ == "__main__":
 
     log(f"Listening on :{PROXY_PORT}")
     log(f"Backend: {LLAMA_HOST}:{LLAMA_PORT}")
+    log(f"VRAM budget: {VRAM_LIMIT_GB}GB total, {VRAM_RESERVE_GB}GB reserved → {VRAM_LIMIT_GB - VRAM_RESERVE_GB}GB max model weight")
     log(f"Models: {', '.join(presets.keys())}")
     if current_model_id:
         log(f"Active: {current_model_id}")

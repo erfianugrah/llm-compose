@@ -20,6 +20,12 @@ services:
       - PRESETS_DIR=/presets
       - PROJECT_DIR=/project
       - HEALTH_TIMEOUT=180
+      # VRAM budget — reject model swaps that would exceed GPU memory.
+      # LIMIT = total VRAM (RTX 5090 = 32 GB).
+      # RESERVE = headroom for KV cache + CUDA overhead.
+      # A preset loads only if VRAM_ESTIMATE_GB <= LIMIT − RESERVE.
+      - VRAM_LIMIT_GB=32
+      - VRAM_RESERVE_GB=10
       # Pass host HOME so docker compose inside proxy resolves ~ correctly
       - HOST_HOME=${HOME}
     volumes:
