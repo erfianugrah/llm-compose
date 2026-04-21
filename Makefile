@@ -155,35 +155,17 @@ download-all: dirs
 		echo ""; \
 		echo "── $$mname ──"; \
 		echo ""; \
-		docker run --rm --gpus all \
+		docker run --rm -t --gpus all \
 			-v "$(VOLUME_DIR):/root/.cache" \
 			-v "$(MODELS_DIR):/models" \
 			--entrypoint /bin/sh \
 			$(IMAGE) -c " \
-				echo 'Downloading $$file...'; \
-				llama-server \
+				timeout 1200 llama-server \
 					--hf-repo $$repo \
 					--hf-file $$file \
 					--port 9999 --host 127.0.0.1 \
 					-ngl 0 -c 512 \
-					--no-warmup 2>&1 &\
-				PID=\$$!; \
-				SECONDS=0; \
-				TIMEOUT=1200; \
-				sleep 3; \
-				while kill -0 \$$PID 2>/dev/null; do \
-					if curl -sf http://127.0.0.1:9999/health >/dev/null 2>&1; then \
-						echo 'Model loaded — download verified'; \
-						break; \
-					fi; \
-					if [ \$$SECONDS -ge \$$TIMEOUT ]; then \
-						echo 'Timeout (20min) — check network'; \
-						break; \
-					fi; \
-					sleep 5; \
-				done; \
-				kill \$$PID 2>/dev/null; \
-				wait \$$PID 2>/dev/null; \
+					--no-warmup; \
 				true \
 			"; \
 		mmproj=$$(grep '^MMPROJ_FILE=' "$$f" | cut -d= -f2); \
