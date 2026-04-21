@@ -404,6 +404,7 @@ All services are hardened with:
 
 - **`no-new-privileges`** — prevents privilege escalation via setuid/setgid
 - **`cap_drop: ALL`** — drops all Linux capabilities (llama-server, Open WebUI)
+- **`user: "1000:1000"`** — Open WebUI runs as non-root, matching host user UID
 - **Localhost-only ports** — `127.0.0.1` binding, not exposed to LAN
 - **Read-only mounts** — model presets and Docker socket mounted `:ro`
 - **Minimal runtime images** — only essential runtime deps in final stage
@@ -789,6 +790,7 @@ Dense general-purpose model with strong reasoning and tool calling:
 | Target | Description |
 |---|---|
 | `make configure-webui` | Import workspace models + system prompts into Open WebUI |
+| `make reset-webui` | Nuke WebUI database and start fresh |
 
 ### Monitoring
 
@@ -884,6 +886,23 @@ Check the chain:
 docker compose ps                     # all three containers should be "healthy"
 curl -s http://localhost:11434/health  # proxy health
 docker exec llama_server curl -sf http://localhost:8080/health
+```
+
+If Open WebUI is crash-looping with `unable to open database file`, it's a
+permissions issue. The container runs as UID 1000 (`user: "1000:1000"` in
+compose) but Docker may have created subdirectories as root. Fix with:
+
+```bash
+make reset-webui    # nuke and recreate (loses chat history)
+make up && make configure-webui
+```
+
+Or fix permissions without losing data:
+
+```bash
+docker compose stop open-webui
+docker run --rm -v ~/docker-volumes/webui:/data alpine chown -R 1000:1000 /data
+docker compose start open-webui
 ```
 
 ### Building on a different GPU

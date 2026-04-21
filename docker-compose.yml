@@ -135,12 +135,17 @@ services:
         ipv4_address: 172.28.0.2
 
   # ── Chat UI ──────────────────────────────────────────────────────────
+  # Open WebUI's image uses UID 1000. We set user: explicitly so files
+  # created on the bind-mount are owned by the host user, not root.
   open-webui:
     image: ghcr.io/open-webui/open-webui:v0.8.12
     hostname: open_webui
     container_name: open_webui
     restart: unless-stopped
+    user: "1000:1000"
     environment:
+      # Data directory — must match the volume mount
+      - DATA_DIR=/app/backend/data
       # Open WebUI connects via the proxy (which forwards to llama-server)
       - OPENAI_API_BASE_URL=http://172.28.0.4:11434/v1
       - OPENAI_API_KEY=not-needed

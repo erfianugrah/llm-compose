@@ -219,7 +219,7 @@ models:
 	@echo "Switch with: make switch MODEL=<name>"
 
 # ── Open WebUI configuration ─────────────────────────────────────────
-.PHONY: configure-webui
+.PHONY: configure-webui reset-webui
 
 ## Import workspace models (system prompts, params) into Open WebUI
 configure-webui:
@@ -272,10 +272,18 @@ dirs:
 			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
 		fi; \
 		if [ ! -w "$$d" ]; then \
-			echo "Fixing ownership on $$d (requires sudo)..."; \
-			sudo chown $$(id -u):$$(id -g) "$$d"; \
+			echo "Fixing ownership on $$d..."; \
+			sudo chown -R $$(id -u):$$(id -g) "$$d"; \
 		fi; \
 	done
+
+## Reset Open WebUI database (nuke and recreate on next start)
+reset-webui:
+	@echo "Stopping Open WebUI..."
+	@docker compose stop open-webui 2>/dev/null || true
+	@docker run --rm -v "$(HOME)/docker-volumes/webui:/data" alpine sh -c "rm -rf /data/*"
+	@mkdir -p "$(HOME)/docker-volumes/webui"
+	@echo "✓ WebUI data reset. Run 'make up && make configure-webui' to reconfigure."
 
 ## Generate .env with a random secret key (only if .env doesn't exist)
 .env:
@@ -314,6 +322,7 @@ help:
 	@echo ""
 	@echo "Open WebUI:"
 	@echo "  make configure-webui    Import workspace models + system prompts"
+	@echo "  make reset-webui        Nuke WebUI database and start fresh"
 	@echo ""
 	@echo "Monitoring:"
 	@echo "  make gpu                Show GPU stats"

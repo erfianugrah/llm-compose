@@ -15,8 +15,20 @@
 
 set -euo pipefail
 
+# Source project .env if it exists (picks up WEBUI_ADMIN_EMAIL/PASSWORD)
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE="${PROJECT_DIR}/.env"
+if [ -f "$ENV_FILE" ]; then
+    # Export only WEBUI_ADMIN_* vars, skip comments and other vars
+    while IFS='=' read -r key value; do
+        case "$key" in
+            WEBUI_ADMIN_*) export "$key=$value" ;;
+        esac
+    done < <(grep -v '^#' "$ENV_FILE" | grep -v '^\s*$')
+fi
+
 WEBUI_URL="${WEBUI_URL:-http://localhost:3000}"
-MODELS_FILE="${MODELS_FILE:-$(dirname "$0")/../webui/models.json}"
+MODELS_FILE="${MODELS_FILE:-${PROJECT_DIR}/webui/models.json}"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
