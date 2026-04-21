@@ -229,7 +229,7 @@ If it differs from what's currently loaded, the proxy:
 
 1. Validates the VRAM budget (rejects if model weights exceed 22 GB)
 2. Updates `.env` with the new model preset (preserves `WEBUI_SECRET_KEY`)
-3. Runs `docker compose up -d --force-recreate llama-server`
+3. Runs `docker compose -p llm-compose up -d --force-recreate llama-server`
 4. Polls llama-server's `/health` endpoint until `{"status": "ok"}`
    (up to `HEALTH_TIMEOUT` seconds, default 900)
 5. Forwards the original request to the now-loaded model
@@ -622,6 +622,7 @@ All model preset variables above, plus:
 | `VRAM_LIMIT_GB` | `32` | Total GPU VRAM in GB |
 | `VRAM_RESERVE_GB` | `10` | VRAM reserved for KV cache + overhead |
 | `HOST_HOME` | `${HOME}` | Host HOME path (for `~` resolution in compose volumes) |
+| `COMPOSE_PROJECT_NAME` | `llm-compose` | Must match host project name so proxy recreates llama-server on the existing network |
 
 ## Adding custom models
 

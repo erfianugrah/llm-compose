@@ -28,6 +28,9 @@ services:
       - VRAM_RESERVE_GB=10
       # Pass host HOME so docker compose inside proxy resolves ~ correctly
       - HOST_HOME=${HOME}
+      # Project name must match the host compose project so the proxy
+      # recreates llama-server on the existing network, not a new one
+      - COMPOSE_PROJECT_NAME=llm-compose
     volumes:
       # Docker socket — needed to recreate llama-server on model swap
       - /var/run/docker.sock:/var/run/docker.sock:ro

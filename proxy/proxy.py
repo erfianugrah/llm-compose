@@ -29,6 +29,7 @@ PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/project"))
 HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "180"))
 VRAM_LIMIT_GB = float(os.environ.get("VRAM_LIMIT_GB", "32"))
 VRAM_RESERVE_GB = float(os.environ.get("VRAM_RESERVE_GB", "10"))
+COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "llm-compose")
 
 # ── State ────────────────────────────────────────────────────────────
 current_model_id = None
@@ -148,7 +149,7 @@ def switch_model(preset_info):
         if host_home:
             compose_env["HOME"] = host_home
         result = subprocess.run(
-            ["docker", "compose", "up", "-d", "--force-recreate", "llama-server"],
+            ["docker", "compose", "-p", COMPOSE_PROJECT, "up", "-d", "--force-recreate", "llama-server"],
             cwd=str(PROJECT_DIR),
             env=compose_env,
             capture_output=True,
