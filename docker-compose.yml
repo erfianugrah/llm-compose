@@ -84,14 +84,17 @@ services:
           -ngl 99 \
           --flash-attn on \
           -ctk q8_0 \
-          -ctv q8_0 \
-          -c $${CONTEXT_SIZE:-65536} \
+          -ctv q4_0 \
+          -c $${CONTEXT_SIZE:-0} \
+          --fit on \
+          --fit-ctx 32768 \
           --temp $${TEMPERATURE:-1.0} \
           --top-p $${TOP_P:-0.95} \
           --top-k $${TOP_K:-64} \
           $${MIN_P:+--min-p $${MIN_P}} \
-          -b 2048 \
-          -ub 2048 \
+          -np 1 \
+          -b 4096 \
+          -ub 4096 \
           --threads 8 \
           --threads-batch 8 \
           -v \

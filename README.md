@@ -5,7 +5,7 @@ NVIDIA GPU. A model-switching reverse proxy auto-swaps GGUF models on
 demand — no image rebuild, no terminal needed.
 
 Built for an **RTX 5090** (32 GB VRAM) with flash attention, quantized
-KV cache, and 64k context. All inside Docker.
+KV cache, and auto-fit context. All inside Docker.
 
 ## Quick start
 
@@ -40,7 +40,7 @@ Run `make help` for all available targets.
 | `qwen3-coder` | Qwen3 Coder 30B A3B | MoE | ~18.6 GB | 3.3B | No | No | Fast code generation |
 | `qwen3` | Qwen3 32B | Dense | ~20 GB | 32B | No | Yes | Research, science, tool use |
 
-All models fit in 32 GB VRAM at Q4 quantization with 64k context. The "Size"
+All models fit in 32 GB VRAM at Q4 quantization with auto-fit context (typically 130-260K depending on model size). The "Size"
 column includes the mmproj file for multimodal models. The "Active" column
 shows parameters evaluated per token — MoE models activate a small subset of
 total parameters, trading quality for speed.
@@ -66,7 +66,7 @@ List available presets with `make models`. Pre-download all with `make download-
 - The VRAM budget enforces a hard limit: model weight size must be
   ≤ `VRAM_LIMIT - VRAM_RESERVE` (default: 32 - 10 = **22 GB**). The
   remaining 10 GB covers KV cache, CUDA context, and flash attention
-  workspace at 64k context.
+  workspace. Context auto-scales to fit available VRAM.
 
 ### Software
 
@@ -367,10 +367,100 @@ The proxy needs the Docker CLI to run
 Third-party image pulled from GHCR. Not built locally. Pinned to a specific
 version (`v0.8.12`) to avoid breaking changes.
 
-## llama-server runtime flags
+## Performance tuning
 
-The `docker-compose.yml` command block configures llama-server. All values
-come from `.env` (set by model presets):
+The stack is tuned to get the most out of a single GPU (RTX 5090, 32 GB)
+without sacrificing model quality. Here's what each setting does and why.
+
+### How GPU memory is used
+
+When you run a language model, your GPU memory (VRAM) is split between
+three things:
+
+1. **Model weights** (~17-21 GB) — the actual brain of the model, loaded
+   once and stays in VRAM. Larger models are smarter but use more space.
+2. **KV cache** (~2-10 GB) — the model's "short-term memory" of your
+   conversation. Grows with context length (how much text the model can
+   see at once). Longer context = more memory.
+3. **Compute workspace** (~1-2 GB) — scratch space for the math the GPU
+   does during generation. Relatively fixed.
+
+On a 32 GB GPU, after the model weights there's ~11-15 GB left for
+everything else. The settings below maximize what you get from that space.
+
+### Auto-fit context (`--fit`)
+
+Instead of hardcoding a context size, we set `CONTEXT_SIZE=0` (use the
+model's native maximum) and let llama.cpp's `--fit` mechanism auto-scale:
+
+1. llama.cpp calculates how much VRAM the model + full context would need
+2. If it exceeds available VRAM, it **automatically reduces the context**
+   until everything fits
+3. `--fit-ctx 32768` sets the floor — it won't go below 32K tokens
+
+This means each model automatically gets the **largest context window that
+fits in your GPU**. Smaller models get more context, larger models get less.
+No manual calculation needed.
+
+Example log output when context is reduced:
+```
+llama_params_fit_impl: context size reduced from 262144 to 143104
+llama_params_fit_impl: entire model can be fit by reducing context
+```
+
+### Flash attention (`--flash-attn on`)
+
+Flash attention is a faster algorithm for the attention computation (the
+core operation in transformer models). It's not an approximation — it
+produces identical results but uses **less memory and runs faster**.
+
+Without flash attention, the KV cache must be stored in full precision
+(f16). With flash attention enabled, the KV cache can be quantized (see
+below), cutting its memory usage significantly.
+
+### Quantized KV cache (`-ctk q8_0 -ctv q4_0`)
+
+The KV cache (the model's conversation memory) is normally stored in 16-bit
+floating point. Quantization compresses it:
+
+- **K cache at q8_0** (8-bit): Keys are used for attention scoring, where
+  precision matters. 8-bit preserves quality while halving memory vs f16.
+- **V cache at q4_0** (4-bit): Values are just weighted-summed together,
+  which is less sensitive to precision. 4-bit saves 75% memory vs f16
+  with negligible quality impact.
+
+Combined, this cuts KV cache memory by ~62% compared to f16, freeing space
+for longer context or larger models.
+
+### Single slot (`-np 1`)
+
+llama-server can serve multiple users simultaneously using "slots" — each
+slot gets its own KV cache. The default (`auto`) allocates 4 slots, meaning
+4x the KV cache memory.
+
+Since this is a single-user setup (one person using OpenCode or the web UI),
+we set `-np 1`. This frees ~75% of the KV cache memory that would be wasted
+on unused slots.
+
+### Batch sizes (`-b 4096 -ub 4096`)
+
+Batch size controls how many tokens are processed at once during "prompt
+processing" (when the model reads your input before generating a response).
+Larger batches = faster prompt processing on GPUs with enough compute.
+
+The RTX 5090 has massive compute capacity. `-b 4096 -ub 4096` (up from
+the default 2048) roughly doubles prompt processing speed at minimal
+extra memory cost.
+
+### GPU offloading (`-ngl 99`)
+
+Offloads all model layers to the GPU. On a 32 GB card with ~20 GB models,
+everything fits in VRAM with room to spare. No CPU fallback needed.
+
+### llama-server command reference
+
+The `docker-compose.yml` command block configures all of this. Values come
+from `.env` (set by model presets):
 
 ```
 llama-server \
@@ -381,15 +471,17 @@ llama-server \
   --chat-template-file /models/${TEMPLATE_FILE}  # override template (conditional)
   --reasoning ${REASONING}             # thinking mode: on/off (conditional)
   --port 8080 --host 0.0.0.0
-  -ngl 99                              # offload all layers to GPU
-  --flash-attn on                      # flash attention (halves KV cache VRAM)
-  -ctk q8_0 -ctv q8_0                  # quantized KV cache (further VRAM savings)
-  -c ${CONTEXT_SIZE}                   # context window (tokens)
+  -ngl 99                              # all layers on GPU
+  --flash-attn on                      # flash attention
+  -ctk q8_0 -ctv q4_0                  # quantized KV cache (K=8-bit, V=4-bit)
+  -c ${CONTEXT_SIZE}                   # context window (0 = auto from model)
+  --fit on --fit-ctx 32768             # auto-scale context to fit VRAM (min 32K)
   --temp ${TEMPERATURE}                # sampling temperature
   --top-p ${TOP_P}                     # nucleus sampling
   --top-k ${TOP_K}                     # top-k sampling
   --min-p ${MIN_P}                     # min-p sampling (conditional)
-  -b 2048 -ub 2048                     # batch sizes
+  -np 1                                # single slot (single-user)
+  -b 4096 -ub 4096                     # batch sizes (prompt processing speed)
   --threads 8 --threads-batch 8        # CPU threads (for non-GPU ops)
   -v --metrics                         # verbose + Prometheus metrics
 ```
@@ -397,6 +489,18 @@ llama-server \
 Conditional flags (e.g., `--mmproj`, `--chat-template-file`, `--reasoning`,
 `--min-p`) are only included when their corresponding env var is non-empty.
 This is handled by shell parameter expansion: `${VAR:+--flag ${VAR}}`.
+
+### Tuning for different GPUs
+
+| GPU | VRAM | What to change |
+|---|---|---|
+| RTX 4090 (24 GB) | 24 GB | Use Q3_K_M quants (~14 GB), `--fit` auto-adjusts context |
+| RTX 3090 (24 GB) | 24 GB | Same as 4090, change `CMAKE_CUDA_ARCHITECTURES=86` |
+| RTX 4080 (16 GB) | 16 GB | Use 7-14B models only, `--fit-ctx 8192` |
+| 2x GPUs | varies | Add `-ts auto` for tensor split, increase `-np` |
+
+The `--fit` mechanism handles most of this automatically. Just change the
+model preset to a smaller quant and restart.
 
 ## Security
 
@@ -595,7 +699,7 @@ Each preset file defines one model's complete configuration:
 | `TEMPLATE_FILE` | Jinja chat template filename (empty = GGUF default) | `google-gemma-4-interleaved.jinja` |
 | `TEMPLATE_URL` | Download URL for template | GitHub raw URL |
 | `REASONING` | Enable thinking mode (`on` or empty) | `on` |
-| `CONTEXT_SIZE` | Context window size in tokens | `65536` |
+| `CONTEXT_SIZE` | Context window size in tokens (0 = auto from model, `--fit` scales to VRAM) | `0` |
 | `TEMPERATURE` | Sampling temperature | `0.6` |
 | `TOP_P` | Nucleus sampling threshold | `0.95` |
 | `TOP_K` | Top-k sampling | `20` |
@@ -643,7 +747,7 @@ MMPROJ_URL=
 TEMPLATE_FILE=                  # leave empty to use GGUF default
 TEMPLATE_URL=
 REASONING=                      # "on" for thinking models, empty to disable
-CONTEXT_SIZE=65536
+CONTEXT_SIZE=0
 TEMPERATURE=0.7
 TOP_P=0.95
 TOP_K=40
@@ -677,7 +781,7 @@ highest benchmarks in the ≤22 GB VRAM class:
 
 - **16.7 GB** on disk (Q4_K_M) + **~1.3 GB** mmproj = ~18 GB VRAM
 - **27B active parameters** (dense — all params evaluated per token)
-- **262K native context** (capped at 64k for VRAM)
+- **262K native context** (auto-fit to VRAM, typically ~200K+)
 - Native vision + video support via early fusion (not bolted-on)
 - Thinking mode by default (`<think>...</think>` blocks)
 - SWE-bench Verified: 72.4%, GPQA Diamond: 85.5%, MMMU: 82.3%
@@ -689,7 +793,7 @@ Fast MoE variant — only 3B active parameters per token for high throughput:
 
 - **20.7 GB** on disk (Q4_K_S), text-only (no mmproj to fit VRAM budget)
 - **256 experts**, 8 routed + 1 shared active per token
-- **262K native context** (capped at 64k for VRAM)
+- **262K native context** (auto-fit to VRAM)
 - Thinking mode by default
 - SWE-bench Verified: 69.2%, GPQA Diamond: 84.2%
 - Best for fast coding iteration where vision isn't needed
@@ -704,7 +808,7 @@ Google's multimodal model with hybrid sliding-window attention:
 - **256K native context** (50 local + 10 global attention layers)
 - Vision support via multimodal projector
 - Thinking mode via the interleaved template (requires external jinja file)
-- Fits 100% on GPU with flash attention + q8_0 KV cache at 64k context
+- Fits 100% on GPU with flash attention + quantized KV cache
 
 **Gemma 4 thinking mode notes:**
 
@@ -730,7 +834,7 @@ MoE coding specialist — only 3.3B active params per token for fast inference:
 
 - **18.6 GB** on disk (Q4_K_M)
 - **Non-thinking mode** — fast, direct code outputs
-- **262K native context** (capped at 64k)
+- **262K native context** (auto-fit to VRAM)
 - Optimized for code generation, refactoring, and agentic coding
 - Tool calling support for OpenCode
 
@@ -740,7 +844,7 @@ Dense general-purpose model with strong reasoning and tool calling:
 
 - **~20 GB** on disk (Q4_K_M)
 - **Thinking mode** — adaptive chain-of-thought reasoning
-- **131K native context** (capped at 64k)
+- **131K native context** (auto-fit to VRAM)
 - Excellent at research, science, daily questions, web search, tool use
 
 ## Makefile reference
