@@ -231,7 +231,7 @@ If it differs from what's currently loaded, the proxy:
 2. Updates `.env` with the new model preset (preserves `WEBUI_SECRET_KEY`)
 3. Runs `docker compose up -d --force-recreate llama-server`
 4. Polls llama-server's `/health` endpoint until `{"status": "ok"}`
-   (up to `HEALTH_TIMEOUT` seconds, default 180)
+   (up to `HEALTH_TIMEOUT` seconds, default 900)
 5. Forwards the original request to the now-loaded model
 
 From OpenCode: just select a different model in `/models`. The first request
@@ -618,7 +618,7 @@ All model preset variables above, plus:
 | `PROXY_PORT` | `11434` | Port the proxy listens on |
 | `PRESETS_DIR` | `/presets` | Container path to model preset files |
 | `PROJECT_DIR` | `/project` | Container path to project dir (.env, compose file) |
-| `HEALTH_TIMEOUT` | `180` | Seconds to wait for llama-server after model swap |
+| `HEALTH_TIMEOUT` | `900` | Seconds to wait for llama-server after model swap (15 min, accommodates first-time GGUF downloads) |
 | `VRAM_LIMIT_GB` | `32` | Total GPU VRAM in GB |
 | `VRAM_RESERVE_GB` | `10` | VRAM reserved for KV cache + overhead |
 | `HOST_HOME` | `${HOME}` | Host HOME path (for `~` resolution in compose volumes) |
@@ -860,8 +860,9 @@ Common causes:
 
 ### Model switching fails or times out
 
-The proxy has a 180s timeout for model swaps (`HEALTH_TIMEOUT`). If the model
-isn't cached, it must download first. Pre-download all models:
+The proxy has a 900s (15 min) timeout for model swaps (`HEALTH_TIMEOUT`).
+If the model GGUF isn't cached, it downloads first (~20 GB, 5-10 min
+depending on network). Pre-download all models to avoid this:
 
 ```bash
 make download-all
