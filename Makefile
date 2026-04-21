@@ -24,6 +24,7 @@ setup: .env dirs build
 		echo "Model already configured in .env"; \
 	fi
 	@echo "\n✓ Setup complete. Run 'make up' to start the stack."
+	@echo "  After first start, run 'make configure-webui' to set up Open WebUI models."
 
 ## Build all Docker images (skips if already present)
 build:
@@ -213,6 +214,13 @@ models:
 	@echo ""
 	@echo "Switch with: make switch MODEL=<name>"
 
+# ── Open WebUI configuration ─────────────────────────────────────────
+.PHONY: configure-webui
+
+## Import workspace models (system prompts, params) into Open WebUI
+configure-webui:
+	@./scripts/init-webui.sh
+
 # ── Image management ─────────────────────────────────────────────────
 .PHONY: pull push rebuild release
 
@@ -299,6 +307,9 @@ help:
 	@echo "  make logs-llama         Follow llama-server logs only"
 	@echo "  make status             Show container status and health"
 	@echo "  make clean              Stop stack and remove volumes"
+	@echo ""
+	@echo "Open WebUI:"
+	@echo "  make configure-webui    Import workspace models + system prompts"
 	@echo ""
 	@echo "Monitoring:"
 	@echo "  make gpu                Show GPU stats"

@@ -38,21 +38,30 @@ switching = False
 
 # ── Preset loading ───────────────────────────────────────────────────
 def parse_env_file(path):
-    """Parse a KEY=VALUE env file, ignoring comments and blanks."""
+    """Parse a KEY=VALUE env file. Also extracts the first comment line
+    as a description (used by /v1/models for Open WebUI metadata)."""
     config = {}
+    description = ""
     for line in path.read_text().splitlines():
         line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
+        if not line:
+            continue
+        if line.startswith("#"):
+            # First comment = description (strip "# " prefix)
+            if not description:
+                description = line.lstrip("# ").strip()
+            continue
+        if "=" in line:
             key, _, value = line.partition("=")
             config[key.strip()] = value.strip()
-    return config
+    return config, description
 
 
 def load_presets():
     """Build model_id -> preset mapping from models/*.env files."""
     presets = {}
     for f in sorted(PRESETS_DIR.glob("*.env")):
-        config = parse_env_file(f)
+        config, description = parse_env_file(f)
         model_file = config.get("MODEL_FILE", "")
         # Model ID = GGUF filename without extension (matches OpenCode config key)
         model_id = model_file.rsplit(".", 1)[0] if model_file else f.stem
@@ -60,6 +69,7 @@ def load_presets():
             "preset": f.stem,
             "config": config,
             "model_id": model_id,
+            "description": description,
         }
     return presets
 
@@ -69,7 +79,7 @@ def detect_current_model():
     env_file = PROJECT_DIR / ".env"
     if not env_file.exists():
         return None
-    config = parse_env_file(env_file)
+    config, _ = parse_env_file(env_file)
     model_file = config.get("MODEL_FILE", "")
     return model_file.rsplit(".", 1)[0] if model_file else None
 
@@ -207,18 +217,29 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.proxy_request()
 
     def handle_models(self):
-        """Return all presets as available models."""
+        """Return all presets as available models.
+
+        The meta object follows the Open WebUI upstream metadata schema
+        (PR #22441) so capabilities and descriptions are picked up
+        automatically without manual UI configuration.
+        """
         models = []
         for model_id, info in self.presets.items():
             cfg = info["config"]
+            has_vision = bool(cfg.get("MMPROJ_FILE"))
             loaded = model_id == current_model_id
             models.append({
                 "id": model_id,
                 "object": "model",
                 "created": 0,
                 "owned_by": "local",
-                # Extra metadata for visibility
                 "meta": {
+                    # Open WebUI recognized fields (v0.8.12+, PR #22441)
+                    "description": info.get("description", ""),
+                    "capabilities": {
+                        "vision": has_vision,
+                    },
+                    # Custom fields for proxy consumers (OpenCode, scripts)
                     "name": cfg.get("MODEL_NAME", model_id),
                     "loaded": loaded,
                     "preset": info["preset"],

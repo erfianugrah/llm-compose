@@ -1,0 +1,92 @@
+[
+  {
+    "id": "qwen35-27b",
+    "base_model_id": "Qwen3.5-27B-Q4_K_M",
+    "name": "Qwen 3.5 27B Dense",
+    "meta": {
+      "description": "Best general-purpose local model. 27B dense, native multimodal, thinking mode, 64k context.",
+      "capabilities": {
+        "vision": true
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nShow code over prose. Explain only when asked.\nThink step by step for complex problems. Keep reasoning tight.\nQuote errors and code exactly. Never paraphrase technical output.\nIf unsure, say so. Don't guess.\n\nContext: Qwen 3.5 27B Dense, Q4_K_M, 64k context, native vision.",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "function_calling": "native"
+    }
+  },
+  {
+    "id": "qwen35-moe",
+    "base_model_id": "Qwen3.5-35B-A3B-Q4_K_S",
+    "name": "Qwen 3.5 35B MoE",
+    "meta": {
+      "description": "Fast MoE coding model. 3B active params, thinking mode, text-only, 64k context.",
+      "capabilities": {
+        "vision": false
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are a fast coding assistant running locally via llama.cpp.\n\nRespond quickly. Code first, explanations minimal.\nNo filler, no hedging. Fragments OK when meaning is clear.\nOutput working code directly. No preamble.\nIf asked to explain, be brief and precise.\n\nContext: Qwen 3.5 35B-A3B MoE, Q4_K_S, 3B active params, 64k context, text-only.",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "function_calling": "native"
+    }
+  },
+  {
+    "id": "gemma4-31b",
+    "base_model_id": "gemma-4-31B-it-Q4_K_M",
+    "name": "Gemma 4 31B Dense",
+    "meta": {
+      "description": "Google multimodal model. 31B dense, adaptive thinking, vision support, 64k context.",
+      "capabilities": {
+        "vision": true
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nUse thinking blocks for complex problems. Keep reasoning structured.\nShow code over prose. Quote errors exactly.\nFor images: describe what you see, then answer the question.\n\nContext: Gemma 4 31B Dense, Q4_K_M, 64k context, vision via mmproj.",
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "function_calling": "native"
+    }
+  },
+  {
+    "id": "qwen3-coder",
+    "base_model_id": "qwen3-coder-30b-a3b-instruct-q4_k_m",
+    "name": "Qwen3 Coder 30B MoE",
+    "meta": {
+      "description": "Code generation specialist. 3.3B active MoE, non-thinking, fast direct output, 64k context.",
+      "capabilities": {
+        "vision": false
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are a code generation specialist running locally via llama.cpp.\n\nOutput code directly. No preamble, no postamble.\nMinimal comments — only where logic is non-obvious.\nNo filler. No hedging. No prose unless asked.\nWhen refactoring: show the diff or new code, not an explanation.\n\nContext: Qwen3 Coder 30B-A3B MoE, Q4_K_M, 3.3B active params, 64k context, text-only.",
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "function_calling": "native"
+    }
+  },
+  {
+    "id": "qwen3-32b",
+    "base_model_id": "Qwen3-32B-Q4_K_M",
+    "name": "Qwen3 32B",
+    "meta": {
+      "description": "Dense reasoning model. 32B params, thinking mode, strong tool calling, 64k context.",
+      "capabilities": {
+        "vision": false
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are a reasoning assistant running locally via llama.cpp.\n\nThink carefully before answering. Show your reasoning for complex problems.\nBe precise and direct. No filler, no hedging.\nCite sources or evidence when making claims.\nFor multi-step problems: break down, solve each step, verify.\n\nContext: Qwen3 32B Dense, Q4_K_M, 64k context, thinking mode, text-only.",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "function_calling": "native"
+    }
+  }
+]
