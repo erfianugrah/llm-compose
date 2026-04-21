@@ -155,7 +155,7 @@ download-all: dirs
 		echo ""; \
 		echo "── $$mname ──"; \
 		echo ""; \
-		docker run --rm \
+		docker run --rm --gpus all \
 			-v "$(VOLUME_DIR):/root/.cache" \
 			-v "$(MODELS_DIR):/models" \
 			--entrypoint /bin/sh \
