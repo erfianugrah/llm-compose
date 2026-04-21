@@ -225,6 +225,25 @@ models:
 configure-webui:
 	@./scripts/init-webui.sh
 
+# ── Benchmarking ─────────────────────────────────────────────────────
+.PHONY: bench bench-quick bench-all
+
+## Benchmark current model with different flag combinations
+bench:
+	@./scripts/bench.sh
+
+## Quick benchmark: old vs new flags only
+bench-quick:
+	@./scripts/bench.sh --quick
+
+## Benchmark all model presets
+bench-all:
+	@for f in models/*.env; do \
+		name=$$(basename "$$f" .env); \
+		BENCH_MODEL=$$name ./scripts/bench.sh --quick; \
+		echo ""; \
+	done
+
 # ── Image management ─────────────────────────────────────────────────
 .PHONY: pull push rebuild release
 

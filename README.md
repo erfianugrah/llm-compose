@@ -388,25 +388,42 @@ three things:
 On a 32 GB GPU, after the model weights there's ~11-15 GB left for
 everything else. The settings below maximize what you get from that space.
 
-### Auto-fit context (`--fit`)
+### Context window and auto-fit (`--fit`)
 
-Instead of hardcoding a context size, we set `CONTEXT_SIZE=0` (use the
-model's native maximum) and let llama.cpp's `--fit` mechanism auto-scale:
+Each model preset specifies a context size (default 65K tokens). This is the
+amount of conversation the model can "see" at once — roughly 50,000 words.
+65K is a good balance of memory and speed for coding tasks.
 
-1. llama.cpp calculates how much VRAM the model + full context would need
-2. If it exceeds available VRAM, it **automatically reduces the context**
-   until everything fits
+**Why not maximize context?** Larger context uses more VRAM for the KV cache
+and can trigger performance issues. At very high context sizes (>130K), some
+model architectures cause CUDA graph compilation failures that silently push
+compute to the CPU, dropping throughput from ~170 tok/s to ~5 tok/s.
+
+**The `--fit` safety net:** llama.cpp's `--fit` mechanism (on by default)
+acts as a guard rail. If the model + context don't fit in VRAM, it
+**automatically reduces the context** until everything fits:
+
+1. Calculates how much VRAM the model + requested context would need
+2. If it exceeds available VRAM, reduces context until it fits
 3. `--fit-ctx 32768` sets the floor — it won't go below 32K tokens
 
-This means each model automatically gets the **largest context window that
-fits in your GPU**. Smaller models get more context, larger models get less.
-No manual calculation needed.
-
-Example log output when context is reduced:
+This protects against OOM on smaller GPUs or if you manually increase
+`CONTEXT_SIZE` in a preset beyond what fits. Example log output:
 ```
-llama_params_fit_impl: context size reduced from 262144 to 143104
+llama_params_fit_impl: context size reduced from 131072 to 98304
 llama_params_fit_impl: entire model can be fit by reducing context
 ```
+
+To increase context for a specific model, edit its preset and restart:
+```bash
+# In models/qwen35.env, change:
+CONTEXT_SIZE=131072
+# Then:
+make run MODEL=qwen35
+```
+
+If the new size doesn't fit, `--fit` reduces it automatically. Check the
+actual context in the logs: `docker logs llama_server | grep n_ctx`.
 
 ### Flash attention (`--flash-attn on`)
 
@@ -418,19 +435,23 @@ Without flash attention, the KV cache must be stored in full precision
 (f16). With flash attention enabled, the KV cache can be quantized (see
 below), cutting its memory usage significantly.
 
-### Quantized KV cache (`-ctk q8_0 -ctv q4_0`)
+### Quantized KV cache (`-ctk q8_0 -ctv q8_0`)
 
 The KV cache (the model's conversation memory) is normally stored in 16-bit
 floating point. Quantization compresses it:
 
 - **K cache at q8_0** (8-bit): Keys are used for attention scoring, where
   precision matters. 8-bit preserves quality while halving memory vs f16.
-- **V cache at q4_0** (4-bit): Values are just weighted-summed together,
-  which is less sensitive to precision. 4-bit saves 75% memory vs f16
-  with negligible quality impact.
+- **V cache at q8_0** (8-bit): Values are weighted-summed. 8-bit is the
+  sweet spot — still halves memory vs f16 with no quality loss.
 
-Combined, this cuts KV cache memory by ~62% compared to f16, freeing space
-for longer context or larger models.
+Combined, this cuts KV cache memory by ~50% compared to f16.
+
+**Why not q4_0 for V cache?** Benchmarking showed q4_0 V cache halves
+throughput on every tested model (57 → 19 tok/s on Gemma 4, 185 → 118
+tok/s on Qwen 3.5 MoE). The VRAM savings (~1 GB) aren't worth the 2x
+speed penalty. This appears to be a CUDA kernel issue in llama.cpp with
+q4_0 V quantization on sm_120 (Blackwell).
 
 ### Single slot (`-np 1`)
 
@@ -473,7 +494,7 @@ llama-server \
   --port 8080 --host 0.0.0.0
   -ngl 99                              # all layers on GPU
   --flash-attn on                      # flash attention
-  -ctk q8_0 -ctv q4_0                  # quantized KV cache (K=8-bit, V=4-bit)
+  -ctk q8_0 -ctv q8_0                  # quantized KV cache (8-bit K and V)
   -c ${CONTEXT_SIZE}                   # context window (0 = auto from model)
   --fit on --fit-ctx 32768             # auto-scale context to fit VRAM (min 32K)
   --temp ${TEMPERATURE}                # sampling temperature
@@ -897,6 +918,14 @@ Dense general-purpose model with strong reasoning and tool calling:
 | `make configure-webui` | Import workspace models + system prompts into Open WebUI |
 | `make reset-webui` | Nuke WebUI database and start fresh |
 
+### Benchmarking
+
+| Target | Description |
+|---|---|
+| `make bench` | Benchmark current model with different flag combos |
+| `make bench-quick` | Quick benchmark: q8 vs q4 V cache only |
+| `make bench-all` | Benchmark all model presets |
+
 ### Monitoring
 
 | Target | Description |
@@ -912,20 +941,39 @@ We switched from Ollama to llama-server (llama.cpp) for three reasons:
 1. **Ollama 0.20.x has a bug** where flash attention causes Gemma 4 to run
    on CPU despite reporting 100% GPU
    ([ollama#15237](https://github.com/ollama/ollama/issues/15237)).
-2. **llama.cpp is faster** — 167 tok/s generation vs ~35 tok/s on Ollama
-   (same model, same hardware) because FA + quantized KV cache work correctly.
+2. **llama.cpp is faster** — 57 tok/s generation (dense) / 185 tok/s (MoE) vs
+   ~35 tok/s on Ollama because flash attention + quantized KV cache work correctly.
 3. **No abstraction overhead** — llama.cpp is the engine Ollama wraps. Direct
    access means fewer bugs and more control.
 
-### Performance comparison (RTX 5090, Gemma 4 26B MoE Q4_K_M)
+### Benchmarks (RTX 5090, 32 GB VRAM, 65K context)
 
-| | Ollama 0.20.2 (FA off) | llama-server (FA on) |
+All models at Q4 quantization, single slot, q8_0 KV cache, flash attention,
+4096 batch size. Run `make bench` to reproduce.
+
+| Model | Type | Prompt | Generation | VRAM | Context |
+|---|---|---|---|---|---|
+| Qwen 3.5 35B MoE | MoE (3B active) | 600 tok/s | **185 tok/s** | 26.8 GB | 65K |
+| Qwen3 Coder 30B MoE | MoE (3.3B active) | 354 tok/s | **203 tok/s** | 25.2 GB | 65K |
+| Qwen 3.5 27B Dense | Dense (27B) | 461 tok/s | **54 tok/s** | 24.6 GB | 65K |
+| Qwen3 32B | Dense (32B) | 731 tok/s | **60 tok/s** | 31.7 GB | 41K* |
+| Gemma 4 31B Dense | Dense (31B) | 576 tok/s | **57 tok/s** | 30.0 GB | 65K |
+
+*Qwen3 32B auto-fit reduced to 41K (large model, tight VRAM at 65K).
+
+**MoE models are 3-4x faster** at generation because only ~3B parameters
+are evaluated per token. Dense models process prompts faster but generate
+slower because all 27-32B parameters are active.
+
+### vs Ollama (Gemma 4 31B Dense)
+
+| | Ollama 0.20.2 (FA off) | llama-server (this stack) |
 |---|---|---|
-| Generation | ~35 tok/s | **167 tok/s** |
-| Prompt eval | ~40 tok/s | **190 tok/s** |
+| Generation | ~35 tok/s | **57 tok/s** |
+| Prompt eval | ~40 tok/s | **576 tok/s** |
 | GPU utilization | 28% | **85%** |
 | Power draw | 126W | **228W** |
-| KV cache | f16 (FA required for q8_0) | **q8_0** |
+| KV cache | f16 | **q8_0** |
 
 ## Troubleshooting
 
@@ -1068,4 +1116,5 @@ llm-compose/
     models.json               # Open WebUI workspace model configs
   scripts/
     init-webui.sh             # One-shot Open WebUI model import
+    bench.sh                  # Performance benchmark script
 ```

@@ -84,8 +84,8 @@ services:
           -ngl 99 \
           --flash-attn on \
           -ctk q8_0 \
-          -ctv q4_0 \
-          -c $${CONTEXT_SIZE:-0} \
+          -ctv q8_0 \
+          -c $${CONTEXT_SIZE:-65536} \
           --fit on \
           --fit-ctx 32768 \
           --temp $${TEMPERATURE:-1.0} \
