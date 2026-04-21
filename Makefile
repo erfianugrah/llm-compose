@@ -160,12 +160,23 @@ download-all: dirs
 			-v "$(MODELS_DIR):/models" \
 			--entrypoint /bin/sh \
 			$(IMAGE) -c " \
-				timeout 1200 llama-server \
+				llama-server \
 					--hf-repo $$repo \
 					--hf-file $$file \
 					--port 9999 --host 127.0.0.1 \
 					-ngl 0 -c 512 \
-					--no-warmup; \
+					--no-warmup 2>&1 & \
+				PID=\$$!; \
+				for i in \$$(seq 1 240); do \
+					if curl -sf http://127.0.0.1:9999/health >/dev/null 2>&1; then \
+						echo 'GGUF cached ✓'; \
+						kill \$$PID 2>/dev/null; \
+						break; \
+					fi; \
+					kill -0 \$$PID 2>/dev/null || { echo 'GGUF cached ✓'; break; }; \
+					sleep 5; \
+				done; \
+				kill \$$PID 2>/dev/null; wait \$$PID 2>/dev/null; \
 				true \
 			"; \
 		mmproj=$$(grep '^MMPROJ_FILE=' "$$f" | cut -d= -f2); \
