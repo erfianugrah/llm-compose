@@ -67,9 +67,9 @@ status:
 		&& echo "llama-server: healthy" \
 		|| echo "llama-server: not reachable"
 
-## Full deploy: setup, build, push images to registry, start the stack
-deploy: setup push up
-	@echo "\n✓ Deployed. Images pushed to registry."
+## Full deploy: setup, download all models, push images, start, configure UI
+deploy: setup download-all push up configure-webui
+	@echo "\n✓ Deployed. All models cached, images pushed, Open WebUI configured."
 
 ## Stop stack and remove volumes (keeps downloaded models)
 clean:
