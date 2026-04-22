@@ -35,7 +35,7 @@ Run `make help` for all available targets.
 | Preset | Model | Type | Size | Active | Vision | Thinking | Best for |
 |---|---|---|---|---|---|---|---|
 | `qwen35` | Qwen 3.5 27B | Dense | ~18 GB | 27B | Yes | Yes | Multimodal reasoning, agentic coding |
-| `qwen35-moe` | Qwen 3.5 35B-A3B | MoE | ~20.7 GB | 3B | No | Yes | Fast coding, reasoning (text-only) |
+| `qwen36-moe` | Qwen3.6 35B-A3B | MoE | ~22.1 GB | 3B | Yes | Yes | Agentic coding, frontend, repo-level reasoning |
 | `gemma4` | Gemma 4 31B | Dense | ~20.2 GB | 31B | Yes | Yes | Multimodal, agentic coding |
 | `qwen3-coder` | Qwen3 Coder 30B A3B | MoE | ~18.6 GB | 3.3B | No | No | Fast code generation |
 | `qwen3` | Qwen3 32B | Dense | ~20 GB | 32B | No | Yes | Research, science, tool use |
@@ -565,10 +565,12 @@ you want to use — the proxy auto-swaps to whichever one you select:
           "modalities": { "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 65536, "output": 32768 }
         },
-        "Qwen3.5-35B-A3B-Q4_K_S": {
-          "name": "Qwen 3.5 35B MoE (local)",
+        "Qwen3.6-35B-A3B-UD-Q4_K_M": {
+          "name": "Qwen3.6 35B MoE (local)",
+          "attachment": true,
           "reasoning": true,
           "tool_call": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 65536, "output": 32768 }
         },
         "gemma-4-31B-it-Q4_K_M": {
@@ -808,17 +810,16 @@ highest benchmarks in the ≤22 GB VRAM class:
 - SWE-bench Verified: 72.4%, GPQA Diamond: 85.5%, MMMU: 82.3%
 - Sampling: Qwen recommended "thinking coding" params (temp 0.6, top_p 0.95)
 
-### Qwen 3.5 35B-A3B MoE
+### Qwen3.6 35B-A3B MoE
 
-Fast MoE variant — only 3B active parameters per token for high throughput:
+Agentic coding MoE — only 3B active parameters per token, successor to Qwen3.5-35B-A3B:
 
-- **20.7 GB** on disk (Q4_K_S), text-only (no mmproj to fit VRAM budget)
+- **22.1 GB** on disk (UD-Q4_K_M), vision support via early fusion
 - **256 experts**, 8 routed + 1 shared active per token
-- **262K native context** (auto-fit to VRAM)
-- Thinking mode by default
-- SWE-bench Verified: 69.2%, GPQA Diamond: 84.2%
-- Best for fast coding iteration where vision isn't needed
-- Use the 27B Dense for multimodal tasks
+- **262K native context** (auto-fit to VRAM), extensible to 1M with YaRN
+- Thinking mode by default, with optional `preserve_thinking` for agentic chains
+- SWE-bench Verified: 73.4%, GPQA Diamond: 86.0%, AIME 2026: 92.7%
+- Best for agentic coding, frontend workflows, and repo-level reasoning
 
 ### Gemma 4 31B Dense
 
@@ -1111,7 +1112,7 @@ llm-compose/
     qwen3.env                 # Qwen3 32B preset
     qwen3-coder.env           # Qwen3 Coder 30B A3B preset
     qwen35.env                # Qwen 3.5 27B Dense preset
-    qwen35-moe.env            # Qwen 3.5 35B-A3B MoE preset
+    qwen36-moe.env            # Qwen3.6 35B-A3B MoE preset
   webui/
     models.json               # Open WebUI workspace model configs
   scripts/

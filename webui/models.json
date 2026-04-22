@@ -18,18 +18,18 @@
     }
   },
   {
-    "id": "qwen35-moe",
-    "base_model_id": "Qwen3.5-35B-A3B-Q4_K_S",
-    "name": "Qwen 3.5 35B MoE",
+    "id": "qwen36-moe",
+    "base_model_id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+    "name": "Qwen3.6 35B MoE",
     "meta": {
-      "description": "Fast MoE coding model. 3B active params, thinking mode, text-only, 64k context.",
+      "description": "Agentic coding MoE. 3B active params, thinking mode, vision support, 64k context.",
       "capabilities": {
-        "vision": false
+        "vision": true
       },
       "suggestion_prompts": []
     },
     "params": {
-      "system": "You are a fast coding assistant running locally via llama.cpp.\n\nRespond quickly. Code first, explanations minimal.\nNo filler, no hedging. Fragments OK when meaning is clear.\nOutput working code directly. No preamble.\nIf asked to explain, be brief and precise.\n\nContext: Qwen 3.5 35B-A3B MoE, Q4_K_S, 3B active params, 64k context, text-only.",
+      "system": "You are a fast coding assistant running locally via llama.cpp.\n\nRespond quickly. Code first, explanations minimal.\nNo filler, no hedging. Fragments OK when meaning is clear.\nOutput working code directly. No preamble.\nIf asked to explain, be brief and precise.\n\nContext: Qwen3.6 35B-A3B MoE, UD-Q4_K_M, 3B active params, 64k context, vision support.",
       "temperature": 0.6,
       "top_p": 0.95,
       "function_calling": "native"
