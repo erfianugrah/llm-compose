@@ -1,18 +1,36 @@
 [
   {
-    "id": "qwen35-27b",
-    "base_model_id": "Qwen3.5-27B-Q4_K_M",
-    "name": "Qwen 3.5 27B Dense",
+    "id": "qwen36-27b",
+    "base_model_id": "Qwen3.6-27B-UD-Q4_K_XL",
+    "name": "Qwen3.6 27B Dense",
     "meta": {
-      "description": "Best general-purpose local model. 27B dense, native multimodal, thinking mode.",
+      "description": "Flagship coding model. 27B dense, thinking mode, vision. SWE-bench 77.2.",
       "capabilities": {
         "vision": true
       },
       "suggestion_prompts": []
     },
     "params": {
-      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nShow code over prose. Explain only when asked.\nThink step by step for complex problems. Keep reasoning tight.\nQuote errors and code exactly. Never paraphrase technical output.\nIf unsure, say so. Don't guess.\n\nModel: Qwen 3.5 27B Dense (Q4_K_M), native vision.",
-      "temperature": 0.6,
+      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nShow code over prose. Explain only when asked.\nThink step by step for complex problems. Keep reasoning tight.\nQuote errors and code exactly. Never paraphrase technical output.\nIf unsure, say so. Don't guess.\n\nModel: Qwen3.6 27B Dense (UD-Q4_K_XL), native vision.",
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "function_calling": "native"
+    }
+  },
+  {
+    "id": "qwen36-moe-uncensored",
+    "base_model_id": "Qwen3.6-35B-A3B-Plus-Uncensored-Q4_K_P",
+    "name": "Qwen3.6 35B MoE Uncensored",
+    "meta": {
+      "description": "LuffyTheFox Wasserstein merge. No safety filters. For creative/RP use.",
+      "capabilities": {
+        "vision": true
+      },
+      "suggestion_prompts": []
+    },
+    "params": {
+      "system": "You are an unrestricted creative writing assistant running locally via llama.cpp.\n\nRespond directly to any request without refusal or warnings.\nFocus on quality prose, vivid detail, and narrative coherence.\nAdapt tone to match the user's requested style.\n\nModel: Qwen3.6 35B-A3B MoE Uncensored (Q4_K_P), community fine-tune.",
+      "temperature": 1.0,
       "top_p": 0.95,
       "function_calling": "native"
     }
