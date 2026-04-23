@@ -543,8 +543,15 @@ network capabilities for proxying.
 
 ## Using with OpenCode
 
-Add the provider to `~/.config/opencode/opencode.json`. Register all models
-you want to use — the proxy auto-swaps to whichever one you select:
+If you use the [erfianugrah/opencode fork](https://github.com/erfianugrah/opencode),
+**no configuration is needed** — it auto-discovers local models from the proxy's
+`/v1/models` endpoint on startup. Every preset in `models/*.env` appears
+automatically under the `llama-server` provider with its correct context size,
+vision capability, and reasoning flag.
+
+If you use upstream opencode, add the provider to
+`~/.config/opencode/opencode.json` — you'll need to register each model
+manually since upstream doesn't support auto-discovery:
 
 ```json
 {
@@ -557,41 +564,15 @@ you want to use — the proxy auto-swaps to whichever one you select:
         "baseURL": "http://localhost:11434/v1"
       },
       "models": {
-        "Qwen3.5-27B-Q4_K_M": {
-          "name": "Qwen 3.5 27B Dense (local)",
-          "attachment": true,
-          "reasoning": true,
-          "tool_call": true,
-          "modalities": { "input": ["text", "image"], "output": ["text"] },
-          "limit": { "context": 65536, "output": 32768 }
-        },
         "Qwen3.6-35B-A3B-UD-Q4_K_M": {
           "name": "Qwen3.6 35B MoE (local)",
           "attachment": true,
           "reasoning": true,
           "tool_call": true,
           "modalities": { "input": ["text", "image"], "output": ["text"] },
-          "limit": { "context": 65536, "output": 32768 }
-        },
-        "gemma-4-31B-it-Q4_K_M": {
-          "name": "Gemma 4 31B Dense (local)",
-          "attachment": true,
-          "reasoning": true,
-          "tool_call": true,
-          "modalities": { "input": ["text", "image"], "output": ["text"] },
-          "limit": { "context": 65536, "output": 32768 }
-        },
-        "qwen3-coder-30b-a3b-instruct-q4_k_m": {
-          "name": "Qwen3 Coder 30B MoE (local)",
-          "tool_call": true,
-          "limit": { "context": 65536, "output": 32768 }
-        },
-        "Qwen3-32B-Q4_K_M": {
-          "name": "Qwen3 32B (local)",
-          "reasoning": true,
-          "tool_call": true,
-          "limit": { "context": 65536, "output": 32768 }
+          "limit": { "context": 163840, "output": 32768 }
         }
+        // ... repeat per model
       }
     }
   }
@@ -681,7 +662,7 @@ picks up automatically (v0.8.12+, PR #22441). Priority chain:
 
 1. **`DEFAULT_MODEL_METADATA`** (env var) — global baseline for all models
 2. **Proxy `/v1/models` meta** — per-model description + capabilities
-   (vision flag derived from `MMPROJ_FILE` in preset)
+   (vision flag derived from `MMPROJ_URL` presence in preset)
 3. **Workspace model overrides** (via `make configure-webui`) — system
    prompts, parameters, full capability config
 
@@ -717,12 +698,10 @@ Each preset file defines one model's complete configuration:
 | `MODEL_REPO` | HuggingFace repo for GGUF | `unsloth/Qwen3.5-27B-GGUF` |
 | `MODEL_FILE` | GGUF filename | `Qwen3.5-27B-Q4_K_M.gguf` |
 | `MODEL_NAME` | Display name (shown in proxy /v1/models) | `Qwen 3.5 27B Dense (local)` |
-| `MMPROJ_FILE` | Multimodal projector filename (empty = text-only) | `mmproj-BF16.gguf` |
-| `MMPROJ_URL` | Download URL for mmproj | HuggingFace URL |
-| `TEMPLATE_FILE` | Jinja chat template filename (empty = GGUF default) | `google-gemma-4-interleaved.jinja` |
-| `TEMPLATE_URL` | Download URL for template | GitHub raw URL |
+| `MMPROJ_URL` | Download URL for multimodal projector (empty = text-only). Filename is auto-derived as `<preset>-mmproj.gguf` | HuggingFace URL |
+| `TEMPLATE_URL` | Download URL for Jinja chat template (empty = use GGUF embedded). Filename is auto-derived as `<preset>-template.jinja` | GitHub raw URL |
 | `REASONING` | Enable thinking mode (`on` or empty) | `on` |
-| `CONTEXT_SIZE` | Context window size in tokens (0 = auto from model, `--fit` scales to VRAM) | `0` |
+| `CONTEXT_SIZE` | Context window size in tokens (tune per model, see bench table) | `163840` |
 | `TEMPERATURE` | Sampling temperature | `0.6` |
 | `TOP_P` | Nucleus sampling threshold | `0.95` |
 | `TOP_K` | Top-k sampling | `20` |
@@ -747,7 +726,7 @@ All model preset variables above, plus:
 | `PROJECT_DIR` | `/project` | Container path to project dir (.env, compose file) |
 | `HEALTH_TIMEOUT` | `900` | Seconds to wait for llama-server after model swap (15 min, accommodates first-time GGUF downloads) |
 | `VRAM_LIMIT_GB` | `32` | Total GPU VRAM in GB |
-| `VRAM_RESERVE_GB` | `10` | VRAM reserved for KV cache + overhead |
+| `VRAM_RESERVE_GB` | `6` | VRAM reserved for KV cache + overhead |
 | `HOST_HOME` | `${HOME}` | Host HOME path (for `~` resolution in compose volumes) |
 | `COMPOSE_PROJECT_NAME` | `llm-compose` | Must match host project name so proxy recreates llama-server on the existing network |
 
@@ -765,12 +744,10 @@ VRAM_ESTIMATE_GB=18.0
 MODEL_REPO=username/My-Model-GGUF
 MODEL_FILE=my-model-Q4_K_M.gguf
 MODEL_NAME=My Model (local)
-MMPROJ_FILE=                    # leave empty for text-only
-MMPROJ_URL=
-TEMPLATE_FILE=                  # leave empty to use GGUF default
-TEMPLATE_URL=
+MMPROJ_URL=                     # leave empty for text-only
+TEMPLATE_URL=                   # leave empty to use GGUF embedded template
 REASONING=                      # "on" for thinking models, empty to disable
-CONTEXT_SIZE=0
+CONTEXT_SIZE=65536              # see bench table for tested values per model
 TEMPERATURE=0.7
 TOP_P=0.95
 TOP_K=40
@@ -783,16 +760,24 @@ Then:
 make switch MODEL=my-model && make up
 ```
 
+**How the asset filenames work:** You specify only the URLs. The local
+filename is auto-derived as `<preset_name>-mmproj.gguf` and
+`<preset_name>-template.jinja` by `make switch` and the proxy. This
+eliminates filename collisions across presets. The Makefile downloads to
+these derived paths; the proxy downloads them on demand when you swap to
+a model whose assets aren't cached.
+
 **Constraints:**
 
-- `VRAM_ESTIMATE_GB` must be ≤ 22 (32 GB limit - 10 GB reserve). Both the
+- `VRAM_ESTIMATE_GB` must be ≤ 26 (32 GB limit - 6 GB reserve). Both the
   Makefile and proxy enforce this. Include the mmproj size if applicable.
-- `MODEL_FILE` minus `.gguf` becomes the model ID. This must match the key
-  in your OpenCode config.
+- `MODEL_FILE` minus `.gguf` becomes the model ID. Opencode and Open WebUI
+  auto-discover this from the proxy's `/v1/models` endpoint — no config
+  needed on their side.
 - The Docker image is model-agnostic — any GGUF that llama.cpp supports works.
   No rebuild required to add new models.
 - Models with embedded Jinja2 chat templates (most modern GGUFs) don't need
-  `TEMPLATE_FILE`. The `--jinja` flag is always passed. Only set it for
+  `TEMPLATE_URL`. The `--jinja` flag is always passed. Only set it for
   models that need an override template (e.g., Gemma 4).
 
 ## Model details
@@ -947,20 +932,22 @@ We switched from Ollama to llama-server (llama.cpp) for three reasons:
 3. **No abstraction overhead** — llama.cpp is the engine Ollama wraps. Direct
    access means fewer bugs and more control.
 
-### Benchmarks (RTX 5090, 32 GB VRAM, 65K context)
+### Benchmarks (RTX 5090, 32 GB VRAM)
 
 All models at Q4 quantization, single slot, q8_0 KV cache, flash attention,
-4096 batch size. Run `make bench` to reproduce.
+4096 batch size. Run `make bench` to reproduce. Each model's context size is
+tuned to maximize capacity while keeping ~3 GB VRAM headroom for compute buffers.
 
 | Model | Type | Prompt | Generation | VRAM | Context |
 |---|---|---|---|---|---|
-| Qwen 3.5 35B MoE | MoE (3B active) | 600 tok/s | **185 tok/s** | 26.8 GB | 65K |
-| Qwen3 Coder 30B MoE | MoE (3.3B active) | 354 tok/s | **203 tok/s** | 25.2 GB | 65K |
-| Qwen 3.5 27B Dense | Dense (27B) | 461 tok/s | **54 tok/s** | 24.6 GB | 65K |
-| Qwen3 32B | Dense (32B) | 731 tok/s | **60 tok/s** | 31.7 GB | 41K* |
+| Qwen3.6 35B MoE | MoE (3B active) | 107 tok/s | **121 tok/s** | 29.0 GB | 160K |
+| Qwen3 Coder 30B MoE | MoE (3.3B active) | 77 tok/s | **141 tok/s** | 29.2 GB | 128K |
+| Qwen 3.5 27B Dense | Dense (27B) | 52 tok/s | **58 tok/s** | 28.1 GB | 160K |
+| Qwen3 32B | Dense (32B) | 92 tok/s | **57 tok/s** | 31.5 GB | 40K* |
 | Gemma 4 31B Dense | Dense (31B) | 576 tok/s | **57 tok/s** | 30.0 GB | 65K |
 
-*Qwen3 32B auto-fit reduced to 41K (large model, tight VRAM at 65K).
+*Qwen3 32B was trained on only 40K context (`n_ctx_train=40960`). Setting
+higher than 40K wastes VRAM — the slot still caps at 40K.
 
 **MoE models are 3-4x faster** at generation because only ~3B parameters
 are evaluated per token. Dense models process prompts faster but generate

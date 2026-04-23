@@ -19,13 +19,14 @@ services:
       - PROXY_PORT=11434
       - PRESETS_DIR=/presets
       - PROJECT_DIR=/project
+      - ASSETS_DIR=/assets
       - HEALTH_TIMEOUT=900
       # VRAM budget — reject model swaps that would exceed GPU memory.
       # LIMIT = total VRAM (RTX 5090 = 32 GB).
       # RESERVE = headroom for KV cache + CUDA overhead.
       # A preset loads only if VRAM_ESTIMATE_GB <= LIMIT − RESERVE.
       - VRAM_LIMIT_GB=32
-      - VRAM_RESERVE_GB=10
+      - VRAM_RESERVE_GB=6
       # Pass host HOME so docker compose inside proxy resolves ~ correctly
       - HOST_HOME=${HOME}
       # Project name must match the host compose project so the proxy
@@ -38,6 +39,8 @@ services:
       - .:/project:rw
       # Model presets (read-only)
       - ./models:/presets:ro
+      # Models cache dir — proxy downloads mmproj/templates on demand
+      - ${HOME}/docker-volumes/llama-server/models:/assets:rw
     depends_on:
       llama-server:
         condition: service_healthy

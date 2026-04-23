@@ -26,9 +26,10 @@ LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8080"))
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "11434"))
 PRESETS_DIR = Path(os.environ.get("PRESETS_DIR", "/presets"))
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/project"))
+ASSETS_DIR = Path(os.environ.get("ASSETS_DIR", "/assets"))
 HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "180"))
 VRAM_LIMIT_GB = float(os.environ.get("VRAM_LIMIT_GB", "32"))
-VRAM_RESERVE_GB = float(os.environ.get("VRAM_RESERVE_GB", "10"))
+VRAM_RESERVE_GB = float(os.environ.get("VRAM_RESERVE_GB", "6"))
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "llm-compose")
 
 # ── State ────────────────────────────────────────────────────────────
@@ -106,13 +107,44 @@ def check_vram_budget(preset_info):
             f"Model '{preset_info['config'].get('MODEL_NAME', preset_info['model_id'])}' "
             f"needs ~{estimate}GB VRAM for weights alone, "
             f"but only {max_weight}GB available after reserving "
-            f"{VRAM_RESERVE_GB}GB for KV cache + overhead "
+            f"{VRAM_RESERVE_GB}GB for KV cache + compute buffer "
             f"(total VRAM: {VRAM_LIMIT_GB}GB). "
-            f"Use a smaller quant (Q4_K_M) or reduce context size."
+            f"Use a smaller quant (e.g. Q4_K_S, UD-IQ4_XS)."
         )
         log(f"REJECTED: {msg}")
         return False, msg
     return True, ""
+
+
+# ── Asset download ───────────────────────────────────────────────────
+def _ensure_asset(filename, url, kind):
+    """Download mmproj/template to ASSETS_DIR if missing. Called before
+    recreating llama-server so the new model's assets are ready.
+    Raises RuntimeError if download fails so the caller can abort the swap."""
+    if not filename or not url:
+        return
+    dest = ASSETS_DIR / filename
+    if dest.exists():
+        return
+    log(f"Downloading {kind}: {filename}")
+    import urllib.request
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "llm-compose/proxy"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            with tmp.open("wb") as f:
+                while True:
+                    chunk = response.read(1 << 20)  # 1 MiB
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        tmp.rename(dest)
+        log(f"Downloaded {kind}: {filename}")
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(f"download failed for {kind} at {url}: {exc}") from exc
 
 
 # ── Model switching ──────────────────────────────────────────────────
@@ -128,6 +160,20 @@ def switch_model(preset_info):
         preset_file = PRESETS_DIR / f"{preset_name}.env"
         env_file = PROJECT_DIR / ".env"
 
+        cfg = preset_info["config"]
+        mmproj_url = cfg.get("MMPROJ_URL", "").strip()
+        tmpl_url = cfg.get("TEMPLATE_URL", "").strip()
+        mmproj_file = f"{preset_name}-mmproj.gguf" if mmproj_url else ""
+        tmpl_file = f"{preset_name}-template.jinja" if tmpl_url else ""
+
+        # Download assets BEFORE touching .env so a failure leaves state intact
+        try:
+            _ensure_asset(mmproj_file, mmproj_url, "mmproj")
+            _ensure_asset(tmpl_file, tmpl_url, "template")
+        except RuntimeError as exc:
+            log(f"ABORT swap: {exc}")
+            return False
+
         # Preserve WEBUI_SECRET_KEY
         secret = None
         if env_file.exists():
@@ -137,6 +183,11 @@ def switch_model(preset_info):
                     break
 
         content = preset_file.read_text()
+        content += (
+            "\n# Auto-derived asset filenames (based on preset name)\n"
+            f"MMPROJ_FILE={mmproj_file}\n"
+            f"TEMPLATE_FILE={tmpl_file}\n"
+        )
         if secret:
             content += f"\n{secret}\n"
         env_file.write_text(content)
@@ -227,7 +278,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         models = []
         for model_id, info in self.presets.items():
             cfg = info["config"]
-            has_vision = bool(cfg.get("MMPROJ_FILE"))
+            has_vision = bool(cfg.get("MMPROJ_URL"))
+            reasoning = cfg.get("REASONING", "").strip().lower() in ("on", "true", "1")
+            try:
+                context = int(cfg.get("CONTEXT_SIZE", "65536"))
+            except ValueError:
+                context = 65536
+            try:
+                vram_gb = float(cfg.get("VRAM_ESTIMATE_GB", "0"))
+            except ValueError:
+                vram_gb = 0.0
             loaded = model_id == current_model_id
             models.append({
                 "id": model_id,
@@ -244,6 +304,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     "name": cfg.get("MODEL_NAME", model_id),
                     "loaded": loaded,
                     "preset": info["preset"],
+                    "context": context,
+                    "reasoning": reasoning,
+                    "vram_gb": vram_gb,
                 },
             })
         body = json.dumps({"object": "list", "data": models}).encode()

@@ -35,8 +35,11 @@ fi
 get_val() { grep "^${1}=" "$PRESET" | cut -d= -f2; }
 MODEL_REPO=$(get_val MODEL_REPO)
 MODEL_FILE=$(get_val MODEL_FILE)
-MMPROJ_FILE=$(get_val MMPROJ_FILE)
-TEMPLATE_FILE=$(get_val TEMPLATE_FILE)
+# Asset filenames are auto-derived from preset name (see Makefile / proxy)
+MMPROJ_URL=$(get_val MMPROJ_URL)
+TEMPLATE_URL=$(get_val TEMPLATE_URL)
+MMPROJ_FILE="${MMPROJ_URL:+${MODEL}-mmproj.gguf}"
+TEMPLATE_FILE="${TEMPLATE_URL:+${MODEL}-template.jinja}"
 REASONING=$(get_val REASONING)
 MODEL_NAME=$(get_val MODEL_NAME)
 

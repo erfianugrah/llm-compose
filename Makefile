@@ -11,7 +11,7 @@ PRESET      := models/$(MODEL).env
 
 # VRAM budget — must match docker-compose.yml proxy env
 VRAM_LIMIT   ?= 32
-VRAM_RESERVE ?= 10
+VRAM_RESERVE ?= 6
 
 # ── Primary targets ──────────────────────────────────────────────────
 .PHONY: setup build up down restart logs status clean deploy help
@@ -93,8 +93,8 @@ switch: dirs
 		if [ "$$OVER" = "1" ]; then \
 			echo "Error: $(MODEL) needs ~$${ESTIMATE}GB VRAM for weights,"; \
 			echo "       but only $${MAX}GB available after reserving $(VRAM_RESERVE)GB"; \
-			echo "       for KV cache + overhead (total VRAM: $(VRAM_LIMIT)GB)."; \
-			echo "       Use a smaller quant (Q4_K_M) or reduce context size."; \
+			echo "       for KV cache + compute buffer (total VRAM: $(VRAM_LIMIT)GB)."; \
+			echo "       Use a smaller quant (e.g. Q4_K_S, UD-IQ4_XS)."; \
 			exit 1; \
 		fi; \
 	else \
@@ -104,6 +104,20 @@ switch: dirs
 	@# Preserve WEBUI_SECRET_KEY, replace everything else
 	@SECRET=$$(grep '^WEBUI_SECRET_KEY=' .env 2>/dev/null | head -1); \
 	cp "$(PRESET)" .env.tmp; \
+	echo "" >> .env.tmp; \
+	echo "# Auto-derived asset filenames (based on preset name)" >> .env.tmp; \
+	MMPROJ_URL=$$(grep '^MMPROJ_URL=' "$(PRESET)" | cut -d= -f2); \
+	if [ -n "$$MMPROJ_URL" ]; then \
+		echo "MMPROJ_FILE=$(MODEL)-mmproj.gguf" >> .env.tmp; \
+	else \
+		echo "MMPROJ_FILE=" >> .env.tmp; \
+	fi; \
+	TMPL_URL=$$(grep '^TEMPLATE_URL=' "$(PRESET)" | cut -d= -f2); \
+	if [ -n "$$TMPL_URL" ]; then \
+		echo "TEMPLATE_FILE=$(MODEL)-template.jinja" >> .env.tmp; \
+	else \
+		echo "TEMPLATE_FILE=" >> .env.tmp; \
+	fi; \
 	if [ -n "$$SECRET" ]; then \
 		echo "" >> .env.tmp; \
 		echo "$$SECRET" >> .env.tmp; \
@@ -120,9 +134,9 @@ run:
 	@$(MAKE) --no-print-directory switch MODEL=$(MODEL)
 	@$(MAKE) --no-print-directory up
 
-## Download model-specific assets (mmproj, templates)
+## Download model-specific assets (mmproj, templates) — names auto-derived from preset
 assets: dirs
-	@# Download mmproj if specified
+	@# Download mmproj if URL specified — filename is <preset>-mmproj.gguf (set by switch)
 	@MMPROJ=$$(grep '^MMPROJ_FILE=' .env 2>/dev/null | cut -d= -f2); \
 	MMPROJ_URL=$$(grep '^MMPROJ_URL=' .env 2>/dev/null | cut -d= -f2); \
 	if [ -n "$$MMPROJ" ] && [ -n "$$MMPROJ_URL" ]; then \
@@ -133,7 +147,7 @@ assets: dirs
 			curl -L --progress-bar -o "$(MODELS_DIR)/$$MMPROJ" "$$MMPROJ_URL"; \
 		fi; \
 	fi
-	@# Download template if specified
+	@# Download template if URL specified — filename is <preset>-template.jinja (set by switch)
 	@TMPL=$$(grep '^TEMPLATE_FILE=' .env 2>/dev/null | cut -d= -f2); \
 	TMPL_URL=$$(grep '^TEMPLATE_URL=' .env 2>/dev/null | cut -d= -f2); \
 	if [ -n "$$TMPL" ] && [ -n "$$TMPL_URL" ]; then \
@@ -179,9 +193,9 @@ download-all: dirs
 				kill \$$PID 2>/dev/null; wait \$$PID 2>/dev/null; \
 				true \
 			"; \
-		mmproj=$$(grep '^MMPROJ_FILE=' "$$f" | cut -d= -f2); \
 		mmproj_url=$$(grep '^MMPROJ_URL=' "$$f" | cut -d= -f2); \
-		if [ -n "$$mmproj" ] && [ -n "$$mmproj_url" ]; then \
+		if [ -n "$$mmproj_url" ]; then \
+			mmproj="$$name-mmproj.gguf"; \
 			if [ -f "$(MODELS_DIR)/$$mmproj" ]; then \
 				echo "mmproj: $$mmproj (cached)"; \
 			else \
@@ -189,9 +203,9 @@ download-all: dirs
 				curl -L --progress-bar -o "$(MODELS_DIR)/$$mmproj" "$$mmproj_url"; \
 			fi; \
 		fi; \
-		tmpl=$$(grep '^TEMPLATE_FILE=' "$$f" | cut -d= -f2); \
 		tmpl_url=$$(grep '^TEMPLATE_URL=' "$$f" | cut -d= -f2); \
-		if [ -n "$$tmpl" ] && [ -n "$$tmpl_url" ]; then \
+		if [ -n "$$tmpl_url" ]; then \
+			tmpl="$$name-template.jinja"; \
 			if [ -f "$(MODELS_DIR)/$$tmpl" ]; then \
 				echo "template: $$tmpl (cached)"; \
 			else \
