@@ -95,6 +95,8 @@ services:
           --top-p $${TOP_P:-0.95} \
           --top-k $${TOP_K:-64} \
           $${MIN_P:+--min-p $${MIN_P}} \
+          $${PRESENCE_PENALTY:+--presence-penalty $${PRESENCE_PENALTY}} \
+          $${REPEAT_PENALTY:+--repeat-penalty $${REPEAT_PENALTY}} \
           -np 1 \
           -b 4096 \
           -ub 4096 \
@@ -113,6 +115,8 @@ services:
       - TOP_P=${TOP_P}
       - TOP_K=${TOP_K}
       - MIN_P=${MIN_P}
+      - PRESENCE_PENALTY=${PRESENCE_PENALTY}
+      - REPEAT_PENALTY=${REPEAT_PENALTY}
     deploy:
       resources:
         reservations:
