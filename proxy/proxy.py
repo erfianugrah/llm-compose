@@ -116,6 +116,49 @@ def check_vram_budget(preset_info):
     return True, ""
 
 
+# ── Message normalization ────────────────────────────────────────────
+def _needs_system_merge(messages):
+    """True if there are 2+ system messages, OR any system message appears
+    after a non-system message. Both cases trigger the Qwen template's
+    'System message must be at the beginning' exception."""
+    system_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "system")
+    if system_count < 2:
+        # Check for out-of-order single system
+        for i, m in enumerate(messages):
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "system" and i > 0 and messages[i - 1].get("role") != "system":
+                return True
+        return False
+    return True
+
+
+def _merge_system_messages(messages):
+    """Collapse all system messages into one at position 0. Content is joined
+    with blank lines so each original message remains readable."""
+    system_parts = []
+    others = []
+    for m in messages:
+        if not isinstance(m, dict):
+            others.append(m)
+            continue
+        if m.get("role") == "system":
+            content = m.get("content", "")
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content)
+            elif isinstance(content, list):
+                # Multimodal content array — join text parts only
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        system_parts.append(part.get("text", ""))
+        else:
+            others.append(m)
+    if not system_parts:
+        return others
+    merged = {"role": "system", "content": "\n\n".join(system_parts)}
+    return [merged, *others]
+
+
 # ── Asset download ───────────────────────────────────────────────────
 def _ensure_asset(filename, url, kind):
     """Download mmproj/template to ASSETS_DIR if missing. Called before
@@ -253,13 +296,23 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else b""
 
-        # Check if we need to switch models
+        # Check if we need to switch models; also normalize message shape
         if self.path.startswith("/v1/") and body:
             try:
                 data = json.loads(body)
                 requested_model = data.get("model", "")
                 if not self.ensure_model(requested_model):
                     return  # Error already sent
+
+                # Qwen chat templates reject multiple system messages
+                # ('System message must be at the beginning'). OpenCode and
+                # other clients sometimes stack multiple system messages
+                # (output style + instructions + title prompt). Merge them
+                # into a single system message at position 0 before forwarding.
+                messages = data.get("messages")
+                if isinstance(messages, list) and _needs_system_merge(messages):
+                    data["messages"] = _merge_system_messages(messages)
+                    body = json.dumps(data).encode()
             except json.JSONDecodeError:
                 pass
 
@@ -389,11 +442,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         try:
             conn = http.client.HTTPConnection(LLAMA_HOST, LLAMA_PORT, timeout=600)
 
-            # Forward headers (drop hop-by-hop)
+            # Forward headers (drop hop-by-hop). Recompute Content-Length when
+            # we forward a (possibly rewritten) body.
             headers = {}
             for key, value in self.headers.items():
-                if key.lower() not in ("host", "transfer-encoding", "connection"):
-                    headers[key] = value
+                lower = key.lower()
+                if lower in ("host", "transfer-encoding", "connection", "content-length"):
+                    continue
+                headers[key] = value
+            if body is not None:
+                headers["Content-Length"] = str(len(body))
 
             conn.request(self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
