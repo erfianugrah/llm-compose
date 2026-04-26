@@ -6,7 +6,8 @@ Local LLM + image/video inference stack: llama.cpp (GPU) + ComfyUI (GPU) + model
 
 ```bash
 make help             # all targets
-make setup            # first-time: .env, volumes, assets, image build
+make setup            # first-time: .env, volumes, assets, image build, ComfyUI models (~17 GB)
+make setup-comfyui    # (re)download ComfyUI checkpoints, IP-Adapter, CLIP, upscaler
 make up / make down   # start / stop stack
 make run MODEL=qwen35 # switch model + restart (one shot)
 make switch MODEL=x   # update .env + download assets (no restart)

@@ -3,7 +3,7 @@
 #
 # Single-stage build — PyTorch runtime image is already large (~8GB),
 # splitting stages saves negligible space and complicates pip package
-# sharing. ComfyUI-Manager needs git at runtime for node installation.
+# sharing. Custom nodes need git at runtime for Manager installs.
 
 FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime
 
@@ -29,18 +29,42 @@ WORKDIR /app/ComfyUI
 # --break-system-packages: container-only Python, no system packages to protect (PEP 668)
 RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
-# ComfyUI Manager — UI for installing custom nodes and models
+# ── Custom nodes (baked into image) ──────────────────────────────────
+# These are installed into /app/ComfyUI/custom_nodes_builtin/ so they
+# survive even if the custom_nodes/ volume mount is empty. ComfyUI
+# scans both directories for nodes.
+
+# ComfyUI Manager — UI for installing additional custom nodes and models
 RUN git clone --depth 1 --branch ${COMFYUI_MANAGER_VERSION} \
       https://github.com/Comfy-Org/ComfyUI-Manager.git \
-      custom_nodes/ComfyUI-Manager && \
-    if [ -f custom_nodes/ComfyUI-Manager/requirements.txt ]; then \
+      custom_nodes_builtin/ComfyUI-Manager && \
+    if [ -f custom_nodes_builtin/ComfyUI-Manager/requirements.txt ]; then \
       pip install --no-cache-dir --break-system-packages \
-        -r custom_nodes/ComfyUI-Manager/requirements.txt; \
+        -r custom_nodes_builtin/ComfyUI-Manager/requirements.txt; \
     fi
+
+# IP-Adapter Plus — character consistency via reference images
+RUN git clone --depth 1 \
+      https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
+      custom_nodes_builtin/ComfyUI_IPAdapter_plus
+
+# ── Entrypoint ───────────────────────────────────────────────────────
+# Copy built-in nodes to the volume-mounted custom_nodes/ on startup
+# if they don't already exist there. This handles the empty-volume case
+# while allowing user modifications to persist.
+RUN printf '#!/bin/sh\n\
+for src in /app/ComfyUI/custom_nodes_builtin/*/; do\n\
+  name=$(basename "$src")\n\
+  if [ ! -d "/app/ComfyUI/custom_nodes/$name" ]; then\n\
+    echo "[init] Installing built-in node: $name"\n\
+    cp -r "$src" "/app/ComfyUI/custom_nodes/$name"\n\
+  fi\n\
+done\n\
+exec python main.py "$@"\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 VOLUME ["/app/ComfyUI/models", "/app/ComfyUI/output", \
         "/app/ComfyUI/input", "/app/ComfyUI/custom_nodes"]
 
 EXPOSE 8188
 
-ENTRYPOINT ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
+ENTRYPOINT ["/app/entrypoint.sh", "--listen", "0.0.0.0", "--port", "8188"]

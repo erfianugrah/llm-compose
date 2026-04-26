@@ -18,8 +18,8 @@ VRAM_RESERVE ?= 6
 # ── Primary targets ──────────────────────────────────────────────────
 .PHONY: setup build up down restart logs status clean deploy help
 
-## First-time setup: generate secret, create volumes, load default model, pull or build image
-setup: .env dirs build
+## First-time setup: generate secret, create volumes, load default model, build images, download ComfyUI models
+setup: .env dirs build setup-comfyui
 	@if ! grep -q MODEL_REPO .env 2>/dev/null; then \
 		$(MAKE) --no-print-directory switch MODEL=$(MODEL); \
 	else \
@@ -81,9 +81,9 @@ status:
 		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Health: {d[\"status\"]}')" 2>/dev/null \
 		|| echo "Health: not reachable"
 
-## Full deploy: setup, download all models, push images, start, configure UI
+## Full deploy: setup, download all LLM + ComfyUI models, push images, start, configure UI
 deploy: setup download-all push up configure-webui
-	@echo "\n✓ Deployed. All models cached, images pushed, Open WebUI configured."
+	@echo "\n✓ Deployed. All LLM + ComfyUI models cached, images pushed, Open WebUI configured."
 
 ## Stop stack and remove volumes (keeps downloaded models)
 clean:
@@ -276,6 +276,13 @@ mode:
 logs-comfyui:
 	docker compose --profile comfyui logs -f comfyui
 
+# ── ComfyUI model setup ──────────────────────────────────────────────
+.PHONY: setup-comfyui
+
+## Download ComfyUI checkpoints, IP-Adapter, CLIP vision, upscaler (~17 GB)
+setup-comfyui: dirs
+	@./scripts/setup-comfyui.sh
+
 # ── Open WebUI configuration ─────────────────────────────────────────
 .PHONY: configure-webui reset-webui
 
@@ -351,7 +358,11 @@ health:
 dirs:
 	@for d in \
 		"$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui" \
-		"$(COMFYUI_DIR)/models" "$(COMFYUI_DIR)/output" "$(COMFYUI_DIR)/input" \
+		"$(COMFYUI_DIR)/models" "$(COMFYUI_DIR)/models/checkpoints" \
+		"$(COMFYUI_DIR)/models/clip_vision" "$(COMFYUI_DIR)/models/ipadapter" \
+		"$(COMFYUI_DIR)/models/loras" "$(COMFYUI_DIR)/models/vae" \
+		"$(COMFYUI_DIR)/models/upscale_models" "$(COMFYUI_DIR)/models/controlnet" \
+		"$(COMFYUI_DIR)/output" "$(COMFYUI_DIR)/input" \
 		"$(COMFYUI_DIR)/custom_nodes" "$(COMFYUI_DIR)/user"; do \
 		if [ ! -d "$$d" ]; then \
 			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
@@ -382,8 +393,8 @@ help:
 	@echo "Usage: make <target> [MODEL=<name>]"
 	@echo ""
 	@echo "Getting started:"
-	@echo "  make setup              First-time setup (default: gemma4)"
-	@echo "  make deploy             Full deploy: setup + push images + start"
+	@echo "  make setup              First-time setup: images + LLM preset + ComfyUI models"
+	@echo "  make deploy             Full deploy: setup + all LLM models + push + start"
 	@echo "  make up                 Start the stack (proxy + Open WebUI)"
 	@echo "  make down               Stop the stack"
 	@echo ""
@@ -395,7 +406,10 @@ help:
 	@echo "LLM model switching (or just select in OpenCode — proxy auto-swaps):"
 	@echo "  make models             List available model presets"
 	@echo "  make run MODEL=name     Switch + restart in one shot"
-	@echo "  make download-all       Pre-download all models for instant switching"
+	@echo "  make download-all       Pre-download all LLM GGUFs for instant switching"
+	@echo ""
+	@echo "ComfyUI model setup:"
+	@echo "  make setup-comfyui      Download checkpoints, IP-Adapter, CLIP, upscaler (~17 GB)"
 	@echo ""
 	@echo "Image management:"
 	@echo "  make pull               Pull all custom images from registry"

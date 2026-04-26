@@ -292,13 +292,10 @@ TOOLS = [
     {
         "name": "comfyui_generate",
         "description": (
-            "Generate an anime/illustration image using ComfyUI with NoobAI-XL. "
-            "Submits a workflow and waits for completion. Returns file paths of "
-            "generated images in ~/docker-volumes/comfyui/output/. "
+            "Generate an image using ComfyUI. Submits a Stable Diffusion workflow "
+            "and waits for completion. Returns file paths of generated images. "
             "Default: portrait ratio (832x1216), 30 steps, Euler sampler, CFG 5. "
-            "Use Danbooru tags in prompts for best results (e.g., '1girl, long hair, "
-            "blue eyes, school uniform, sitting'). Prefix with quality tags: "
-            "'masterpiece, best quality, amazing quality, very aesthetic, absurdres'. "
+            "Prefix prompts with quality tags like 'masterpiece, best quality'. "
             "WARNING: Triggers GPU mode swap — llama-server stops during generation "
             "(~20-60s), restarts automatically on next chat request."
         ),
