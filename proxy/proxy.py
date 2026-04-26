@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Model-switching reverse proxy for llama-server.
+Multi-backend GPU proxy for llm-compose.
 
-Sits in front of llama-server and auto-swaps models when the requested
-model differs from what's currently loaded. Select a different model in
-OpenCode's /models menu and the proxy handles the rest.
+Routes requests to either llama-server (LLM inference) or ComfyUI
+(image/video generation) based on URL path. Only one GPU workload
+runs at a time — the proxy manages container lifecycle via Docker
+socket, stopping one service before starting the other.
 
-The ~60-90s model load on swap is unavoidable (VRAM), but you never
-need to leave OpenCode or touch the terminal.
+Route table:
+  /v1/*        → llama-server  (auto-starts LLM mode)
+  /comfyui/*   → ComfyUI       (auto-starts ComfyUI mode, strips prefix)
+  /health      → proxy self
+  /v1/models   → proxy self (preset list)
+  /mode        → GET current mode / POST switch mode
 """
 
 import http.server
@@ -23,19 +28,83 @@ from pathlib import Path
 # ── Configuration ────────────────────────────────────────────────────
 LLAMA_HOST = os.environ.get("LLAMA_HOST", "llama-server")
 LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8080"))
+COMFYUI_HOST = os.environ.get("COMFYUI_HOST", "comfyui")
+COMFYUI_PORT = int(os.environ.get("COMFYUI_PORT", "8188"))
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "11434"))
 PRESETS_DIR = Path(os.environ.get("PRESETS_DIR", "/presets"))
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/project"))
 ASSETS_DIR = Path(os.environ.get("ASSETS_DIR", "/assets"))
-HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "180"))
+HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "900"))
 VRAM_LIMIT_GB = float(os.environ.get("VRAM_LIMIT_GB", "32"))
 VRAM_RESERVE_GB = float(os.environ.get("VRAM_RESERVE_GB", "6"))
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "llm-compose")
 
 # ── State ────────────────────────────────────────────────────────────
+# active_mode: "llm" | "comfyui" | None (nothing running)
+active_mode = None
 current_model_id = None
 switch_lock = threading.Lock()
 switching = False
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+def log(msg):
+    print(f"[model-proxy] {msg}", flush=True)
+
+
+def _compose_env():
+    """Build env dict for docker compose subprocess calls.
+    Sets HOME to host HOME so ~ in volume paths resolves correctly."""
+    env = os.environ.copy()
+    host_home = os.environ.get("HOST_HOME")
+    if host_home:
+        env["HOME"] = host_home
+    return env
+
+
+def _compose_run(args, timeout=30):
+    """Run a docker compose command. Returns (success, stderr)."""
+    cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, *args]
+    result = subprocess.run(
+        cmd,
+        cwd=str(PROJECT_DIR),
+        env=_compose_env(),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        log(f"docker compose {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.returncode == 0, result.stderr
+
+
+def _json_response(handler, status, data):
+    """Send a JSON response."""
+    body = json.dumps(data).encode()
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _wait_healthy(host, port, path, timeout):
+    """Poll a health endpoint until 200 or timeout. Returns True on success."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=3)
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            if resp.status == 200:
+                # llama-server returns {"status": "ok"}, ComfyUI returns stats JSON
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
 
 
 # ── Preset loading ───────────────────────────────────────────────────
@@ -190,9 +259,69 @@ def _ensure_asset(filename, url, kind):
         raise RuntimeError(f"download failed for {kind} at {url}: {exc}") from exc
 
 
-# ── Model switching ──────────────────────────────────────────────────
+# ── Mode switching (GPU exclusivity) ─────────────────────────────────
+def _stop_service(service, profile):
+    """Stop a profiled service. Tolerates already-stopped."""
+    log(f"Stopping {service}...")
+    _compose_run(["--profile", profile, "stop", service])
+
+
+def _start_service(service, profile):
+    """Start a profiled service."""
+    log(f"Starting {service}...")
+    ok, _ = _compose_run(["--profile", profile, "up", "-d", service])
+    return ok
+
+
+def ensure_mode(target):
+    """Ensure the target mode ("llm" or "comfyui") is active.
+    Stops the other GPU service first. Returns True on success.
+    Caller must hold switch_lock."""
+    global active_mode, switching
+
+    if active_mode == target:
+        return True
+
+    switching = True
+    try:
+        # Stop current GPU service
+        if active_mode == "llm":
+            _stop_service("llama-server", "llm")
+        elif active_mode == "comfyui":
+            _stop_service("comfyui", "comfyui")
+
+        # Start target GPU service
+        if target == "llm":
+            ok = _start_service("llama-server", "llm")
+            if not ok:
+                return False
+            log("Waiting for llama-server to become healthy...")
+            if not _wait_healthy(LLAMA_HOST, LLAMA_PORT, "/health", HEALTH_TIMEOUT):
+                log("Timeout waiting for llama-server")
+                return False
+        elif target == "comfyui":
+            ok = _start_service("comfyui", "comfyui")
+            if not ok:
+                return False
+            log("Waiting for ComfyUI to become healthy...")
+            if not _wait_healthy(COMFYUI_HOST, COMFYUI_PORT, "/system_stats", HEALTH_TIMEOUT):
+                log("Timeout waiting for ComfyUI")
+                return False
+        else:
+            log(f"Unknown mode: {target}")
+            return False
+
+        active_mode = target
+        log(f"Mode: {target}")
+        return True
+    finally:
+        switching = False
+
+
+# ── Model switching (within LLM mode) ────────────────────────────────
 def switch_model(preset_info):
-    """Update .env with new model preset and recreate llama-server."""
+    """Update .env with new model preset and recreate llama-server.
+    Assumes LLM mode is already active (or will be activated)."""
     global current_model_id, switching
     switching = True
     preset_name = preset_info["preset"]
@@ -236,46 +365,25 @@ def switch_model(preset_info):
         env_file.write_text(content)
 
         # Recreate llama-server with new env (docker compose reads .env).
-        # Set HOME to the host HOME so ~ in docker-compose.yml volume paths
-        # resolves correctly (the proxy container's HOME is /root).
-        compose_env = os.environ.copy()
-        host_home = os.environ.get("HOST_HOME")
-        if host_home:
-            compose_env["HOME"] = host_home
-        result = subprocess.run(
-            ["docker", "compose", "-p", COMPOSE_PROJECT, "up", "-d", "--force-recreate", "llama-server"],
-            cwd=str(PROJECT_DIR),
-            env=compose_env,
-            capture_output=True,
-            text=True,
-            timeout=30,
+        # If we're not in LLM mode yet, stop the other service first.
+        if active_mode == "comfyui":
+            _stop_service("comfyui", "comfyui")
+
+        ok, _ = _compose_run(
+            ["--profile", "llm", "up", "-d", "--force-recreate", "llama-server"]
         )
-        if result.returncode != 0:
-            log(f"docker compose failed: {result.stderr}")
+        if not ok:
             return False
 
         # Wait for healthy
         log(f"Waiting for {model_name} to load...")
-        deadline = time.monotonic() + HEALTH_TIMEOUT
-        while time.monotonic() < deadline:
-            try:
-                conn = http.client.HTTPConnection(LLAMA_HOST, LLAMA_PORT, timeout=3)
-                conn.request("GET", "/health")
-                resp = conn.getresponse()
-                body = resp.read()
-                conn.close()
-                if resp.status == 200:
-                    data = json.loads(body)
-                    if data.get("status") == "ok":
-                        current_model_id = preset_info["model_id"]
-                        log(f"Loaded: {model_name}")
-                        return True
-            except Exception:
-                pass
-            time.sleep(2)
+        if not _wait_healthy(LLAMA_HOST, LLAMA_PORT, "/health", HEALTH_TIMEOUT):
+            log(f"Timeout waiting for {model_name}")
+            return False
 
-        log(f"Timeout waiting for {model_name}")
-        return False
+        current_model_id = preset_info["model_id"]
+        log(f"Loaded: {model_name}")
+        return True
     finally:
         switching = False
 
@@ -284,43 +392,180 @@ def switch_model(preset_info):
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     presets = load_presets()
 
+    # ── Route classification ─────────────────────────────────────────
+    def _classify_route(self):
+        """Determine which backend a request targets.
+        Returns ("llm", path) or ("comfyui", stripped_path) or (None, path)."""
+        if self.path.startswith("/comfyui"):
+            # Strip /comfyui prefix; preserve rest (e.g. /comfyui/prompt → /prompt)
+            stripped = self.path[len("/comfyui"):]
+            if not stripped:
+                stripped = "/"
+            return "comfyui", stripped
+        if self.path.startswith("/v1/"):
+            return "llm", self.path
+        # Default routes (health, metrics, etc.) go to whatever's active
+        return None, self.path
+
+    # ── Request handlers ─────────────────────────────────────────────
     def do_GET(self):
         if self.path == "/v1/models":
             self.handle_models()
-        elif self.path == "/health":
+            return
+        if self.path == "/health":
             self.handle_health()
+            return
+        if self.path == "/mode":
+            self.handle_mode_get()
+            return
+
+        mode, target_path = self._classify_route()
+        if mode == "comfyui":
+            if not self._ensure_comfyui():
+                return
+            self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path)
+        elif mode == "llm":
+            if not self._ensure_llm():
+                return
+            self.proxy_to(LLAMA_HOST, LLAMA_PORT, target_path)
         else:
-            self.proxy_request()
+            # Unclassified route — forward to active backend
+            self._proxy_active(target_path)
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else b""
 
-        # Check if we need to switch models; also normalize message shape
-        if self.path.startswith("/v1/") and body:
-            try:
-                data = json.loads(body)
-                requested_model = data.get("model", "")
-                if not self.ensure_model(requested_model):
-                    return  # Error already sent
+        if self.path == "/mode":
+            self.handle_mode_post(body)
+            return
 
-                # Qwen chat templates reject multiple system messages
-                # ('System message must be at the beginning'). OpenCode and
-                # other clients sometimes stack multiple system messages
-                # (output style + instructions + title prompt). Merge them
-                # into a single system message at position 0 before forwarding.
-                messages = data.get("messages")
-                if isinstance(messages, list) and _needs_system_merge(messages):
-                    data["messages"] = _merge_system_messages(messages)
-                    body = json.dumps(data).encode()
-            except json.JSONDecodeError:
-                pass
+        mode, target_path = self._classify_route()
 
-        self.proxy_request(body=body)
+        if mode == "comfyui":
+            if not self._ensure_comfyui():
+                return
+            self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path, body=body)
+
+        elif mode == "llm":
+            # LLM path — model switching + message normalization
+            if body:
+                try:
+                    data = json.loads(body)
+                    requested_model = data.get("model", "")
+                    if not self.ensure_model(requested_model):
+                        return  # Error already sent
+
+                    # Qwen chat templates reject multiple system messages
+                    messages = data.get("messages")
+                    if isinstance(messages, list) and _needs_system_merge(messages):
+                        data["messages"] = _merge_system_messages(messages)
+                        body = json.dumps(data).encode()
+                except json.JSONDecodeError:
+                    pass
+
+            if not self._ensure_llm():
+                return
+            self.proxy_to(LLAMA_HOST, LLAMA_PORT, target_path, body=body)
+
+        else:
+            self._proxy_active(target_path, body=body)
 
     def do_OPTIONS(self):
-        self.proxy_request()
+        mode, target_path = self._classify_route()
+        if mode == "comfyui":
+            if not self._ensure_comfyui():
+                return
+            self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path)
+        elif mode == "llm":
+            if not self._ensure_llm():
+                return
+            self.proxy_to(LLAMA_HOST, LLAMA_PORT, target_path)
+        else:
+            self._proxy_active(target_path)
 
+    # ── Mode management endpoints ────────────────────────────────────
+    def handle_mode_get(self):
+        """GET /mode — return current active mode."""
+        _json_response(self, 200, {
+            "mode": active_mode,
+            "switching": switching,
+        })
+
+    def handle_mode_post(self, body):
+        """POST /mode — explicitly switch mode. Body: {"mode": "llm"|"comfyui"}"""
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            _json_response(self, 400, {"error": "invalid JSON"})
+            return
+
+        target = data.get("mode")
+        if target not in ("llm", "comfyui"):
+            _json_response(self, 400, {
+                "error": f"invalid mode: {target}. Must be 'llm' or 'comfyui'."
+            })
+            return
+
+        with switch_lock:
+            if active_mode == target:
+                _json_response(self, 200, {"mode": active_mode, "switched": False})
+                return
+            ok = ensure_mode(target)
+
+        if ok:
+            _json_response(self, 200, {"mode": active_mode, "switched": True})
+        else:
+            _json_response(self, 503, {
+                "error": f"Failed to switch to {target}",
+                "mode": active_mode,
+            })
+
+    # ── Ensure mode helpers ──────────────────────────────────────────
+    def _ensure_llm(self):
+        """Ensure LLM mode is active. Returns True or sends error."""
+        global active_mode
+        if active_mode == "llm":
+            return True
+        with switch_lock:
+            if active_mode == "llm":
+                return True
+            ok = ensure_mode("llm")
+        if not ok:
+            _json_response(self, 503, {
+                "error": {"message": "Failed to start llama-server", "type": "server_error", "code": 503}
+            })
+            return False
+        return True
+
+    def _ensure_comfyui(self):
+        """Ensure ComfyUI mode is active. Returns True or sends error."""
+        global active_mode
+        if active_mode == "comfyui":
+            return True
+        with switch_lock:
+            if active_mode == "comfyui":
+                return True
+            ok = ensure_mode("comfyui")
+        if not ok:
+            _json_response(self, 503, {
+                "error": {"message": "Failed to start ComfyUI", "type": "server_error", "code": 503}
+            })
+            return False
+        return True
+
+    def _proxy_active(self, path, body=None):
+        """Forward to whatever backend is currently active."""
+        if active_mode == "comfyui":
+            self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, path, body=body)
+        elif active_mode == "llm":
+            self.proxy_to(LLAMA_HOST, LLAMA_PORT, path, body=body)
+        else:
+            _json_response(self, 503, {
+                "error": {"message": "No GPU service is running. Send a request to /v1/ or /comfyui/ to start one.", "type": "server_error", "code": 503}
+            })
+
+    # ── Existing proxy endpoints ─────────────────────────────────────
     def handle_models(self):
         """Return all presets as available models.
 
@@ -360,6 +605,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     "context": context,
                     "reasoning": reasoning,
                     "vram_gb": vram_gb,
+                    "mode": active_mode,
                 },
             })
         body = json.dumps({"object": "list", "data": models}).encode()
@@ -373,18 +619,27 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         """Proxy health check. Returns 200 even during switching so Docker
         doesn't kill us mid-swap. Clients can check the 'status' field."""
         if switching:
-            body = json.dumps({"status": "switching"}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _json_response(self, 200, {"status": "switching", "mode": active_mode})
             return
-        self.proxy_request()
+        if active_mode == "llm":
+            self.proxy_to(LLAMA_HOST, LLAMA_PORT, "/health")
+        elif active_mode == "comfyui":
+            # Translate ComfyUI's /system_stats into a health-like response
+            try:
+                conn = http.client.HTTPConnection(COMFYUI_HOST, COMFYUI_PORT, timeout=3)
+                conn.request("GET", "/system_stats")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                _json_response(self, 200, {"status": "ok", "mode": "comfyui"})
+            except Exception:
+                _json_response(self, 200, {"status": "degraded", "mode": "comfyui"})
+        else:
+            _json_response(self, 200, {"status": "idle", "mode": None})
 
     def ensure_model(self, requested_model):
-        """Switch model if needed. Returns True if ready, False on error."""
-        global current_model_id
+        """Switch LLM model if needed. Returns True if ready, False on error."""
+        global current_model_id, active_mode
 
         if not current_model_id:
             current_model_id = detect_current_model()
@@ -400,18 +655,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # VRAM budget gate — reject before touching anything
         ok, vram_msg = check_vram_budget(self.presets[requested_model])
         if not ok:
-            body = json.dumps({
-                "error": {
-                    "message": vram_msg,
-                    "type": "vram_exceeded",
-                    "code": 422,
-                }
-            }).encode()
-            self.send_response(422)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _json_response(self, 422, {
+                "error": {"message": vram_msg, "type": "vram_exceeded", "code": 422}
+            })
             return False
 
         # Switch needed
@@ -421,26 +667,20 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 return True
 
             success = switch_model(self.presets[requested_model])
+            if success:
+                active_mode = "llm"
             if not success:
-                body = json.dumps({
-                    "error": {
-                        "message": f"Failed to load model: {requested_model}",
-                        "type": "server_error",
-                        "code": 503,
-                    }
-                }).encode()
-                self.send_response(503)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                _json_response(self, 503, {
+                    "error": {"message": f"Failed to load model: {requested_model}", "type": "server_error", "code": 503}
+                })
                 return False
             return True
 
-    def proxy_request(self, body=None):
-        """Forward request to llama-server, streaming the response."""
+    # ── Generic reverse proxy ────────────────────────────────────────
+    def proxy_to(self, host, port, path, body=None):
+        """Forward request to a backend, streaming the response."""
         try:
-            conn = http.client.HTTPConnection(LLAMA_HOST, LLAMA_PORT, timeout=600)
+            conn = http.client.HTTPConnection(host, port, timeout=600)
 
             # Forward headers (drop hop-by-hop). Recompute Content-Length when
             # we forward a (possibly rewritten) body.
@@ -453,7 +693,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if body is not None:
                 headers["Content-Length"] = str(len(body))
 
-            conn.request(self.command, self.path, body=body, headers=headers)
+            conn.request(self.command, path, body=body, headers=headers)
             resp = conn.getresponse()
 
             # Send status + headers
@@ -483,27 +723,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
             conn.close()
         except (ConnectionRefusedError, OSError) as e:
-            body = json.dumps({
-                "error": {
-                    "message": f"llama-server unavailable: {e}",
-                    "type": "server_error",
-                    "code": 502,
-                }
-            }).encode()
-            self.send_response(502)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            service = "ComfyUI" if host == COMFYUI_HOST else "llama-server"
+            _json_response(self, 502, {
+                "error": {"message": f"{service} unavailable: {e}", "type": "server_error", "code": 502}
+            })
 
     def log_message(self, format, *args):
-        # Quieter logging -- only log non-health requests
-        if "/health" not in (args[0] if args else ""):
-            log(f"{self.address_string()} {args[0]}")
-
-
-def log(msg):
-    print(f"[model-proxy] {msg}", flush=True)
+        # Quieter logging -- only log non-health/non-system_stats requests
+        msg = args[0] if args else ""
+        if "/health" not in msg and "/system_stats" not in msg:
+            log(f"{self.address_string()} {msg}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -512,11 +741,13 @@ if __name__ == "__main__":
     current_model_id = detect_current_model()
 
     log(f"Listening on :{PROXY_PORT}")
-    log(f"Backend: {LLAMA_HOST}:{LLAMA_PORT}")
+    log(f"LLM backend: {LLAMA_HOST}:{LLAMA_PORT}")
+    log(f"ComfyUI backend: {COMFYUI_HOST}:{COMFYUI_PORT}")
     log(f"VRAM budget: {VRAM_LIMIT_GB}GB total, {VRAM_RESERVE_GB}GB reserved → {VRAM_LIMIT_GB - VRAM_RESERVE_GB}GB max model weight")
-    log(f"Models: {', '.join(presets.keys())}")
+    log(f"LLM presets: {', '.join(presets.keys())}")
     if current_model_id:
-        log(f"Active: {current_model_id}")
+        log(f"Active LLM model: {current_model_id}")
+    log(f"Mode: idle (no GPU service running — will start on first request)")
 
     server = http.server.ThreadingHTTPServer(("", PROXY_PORT), ProxyHandler)
     try:

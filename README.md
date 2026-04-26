@@ -1,8 +1,9 @@
 # llm-compose
 
-Local LLM inference stack running llama.cpp + Open WebUI on WSL2 with an
-NVIDIA GPU. A model-switching reverse proxy auto-swaps GGUF models on
-demand — no image rebuild, no terminal needed.
+Local LLM + image/video inference stack running llama.cpp + ComfyUI + Open
+WebUI on WSL2 with an NVIDIA GPU. A multi-backend proxy routes LLM requests
+to llama-server and image generation requests to ComfyUI, auto-swapping GPU
+workloads on demand — only one runs at a time.
 
 Built for an **RTX 5090** (32 GB VRAM) with flash attention, quantized
 KV cache, and auto-fit context. All inside Docker.
@@ -12,10 +13,11 @@ KV cache, and auto-fit context. All inside Docker.
 ```bash
 make setup          # one-time: .env, volumes, model assets, image build
 make download-all   # pre-download all model GGUFs (~98 GB total)
-make up             # start the stack
+make up             # start the stack (proxy + Open WebUI; GPU service starts on first request)
 ```
 
-Open the UI at [http://localhost:3000](http://localhost:3000).
+Open the chat UI at [http://localhost:3000](http://localhost:3000).
+ComfyUI web UI at [http://localhost:8188](http://localhost:8188) (when ComfyUI mode is active).
 
 Or do everything in one shot (build, push to registry, start):
 
@@ -117,13 +119,18 @@ echo "WEBUI_SECRET_KEY=$(openssl rand -hex 32)" > .env
 
 ### 2. Create volume directories
 
-Three host directories store persistent data across container restarts:
+Host directories store persistent data across container restarts:
 
 ```bash
 # make setup calls `make dirs` which creates:
 ~/docker-volumes/llama-server/          # HuggingFace model cache (GGUFs)
 ~/docker-volumes/llama-server/models/   # mmproj files, jinja templates
 ~/docker-volumes/webui/                 # Open WebUI user data, chat history
+~/docker-volumes/comfyui/models/        # diffusion checkpoints, LoRAs, VAE
+~/docker-volumes/comfyui/output/        # generated images/videos
+~/docker-volumes/comfyui/input/         # uploaded inputs
+~/docker-volumes/comfyui/custom_nodes/  # ComfyUI extensions
+~/docker-volumes/comfyui/user/          # saved workflows
 ```
 
 If Docker previously created these as root, `make dirs` fixes ownership.
@@ -156,8 +163,9 @@ See [Docker images](#docker-images) below for the full build process.
 make up
 ```
 
-Docker Compose starts three services in dependency order:
-llama-server → model-proxy → Open WebUI.
+Docker Compose starts the proxy and Open WebUI. GPU services (llama-server,
+ComfyUI) are profile-gated and start on first matching request — or
+force-start with `make llm` / `make comfyui`.
 
 ### 6. (Recommended) Pre-download all models
 
@@ -175,22 +183,29 @@ This runs each model's GGUF through llama-server in a temporary container
 ```
 OpenCode / Open WebUI
         |
-        v
-  model-proxy :11434    <-- auto-swaps models based on request
+  model-proxy :11434
         |
-        v
-  llama-server :8080    <-- GPU inference (internal, not exposed)
+        ├── /v1/*         → llama-server :8080  (LLM, GPU exclusive)
+        └── /comfyui/*    → comfyui :8188       (image/video, GPU exclusive)
+
+  Only one of llama-server or comfyui runs at a time.
+  Proxy manages lifecycle via Docker socket + compose profiles.
 ```
 
 ### Services
 
 | Service | Address | Purpose |
 |---|---|---|
-| model-proxy | `127.0.0.1:11434` | Reverse proxy with auto model switching |
-| llama-server | internal only | LLM inference engine (GPU) |
-| Open WebUI | `127.0.0.1:3000` | Browser-based chat interface |
+| model-proxy | `127.0.0.1:11434` | Multi-backend proxy with route-based GPU switching |
+| llama-server | internal only | LLM inference engine (GPU, profile-gated) |
+| comfyui | `127.0.0.1:8188` | Image/video generation (GPU, profile-gated) |
+| Open WebUI | `127.0.0.1:3000` | Browser-based chat + image gen interface |
 
 All host ports are bound to `127.0.0.1` only — not exposed to the network.
+
+GPU services use compose profiles (`llm`, `comfyui`) — `docker compose up -d`
+only starts the proxy and Open WebUI. GPU services start on first matching
+request or via `make llm` / `make comfyui`.
 
 ### Network
 
@@ -202,6 +217,7 @@ static IPs:
 | llama-server | `172.28.0.2` | 8080 (internal only) |
 | Open WebUI | `172.28.0.3` | 8080 (mapped to host :3000) |
 | model-proxy | `172.28.0.4` | 11434 (mapped to host :11434) |
+| comfyui | `172.28.0.5` | 8188 (mapped to host :8188) |
 | Gateway | `172.28.0.1` | -- |
 
 Open WebUI connects to the proxy via its static IP (`http://172.28.0.4:11434/v1`)
@@ -214,6 +230,11 @@ so container name resolution isn't required.
 | `~/docker-volumes/llama-server/` | `/root/.cache` | HuggingFace model cache (GGUFs) |
 | `~/docker-volumes/llama-server/models/` | `/models` | mmproj files, jinja templates |
 | `~/docker-volumes/webui/` | `/app/backend/data` | Open WebUI user data, chat history |
+| `~/docker-volumes/comfyui/models/` | `/app/ComfyUI/models` | Diffusion checkpoints, LoRAs, VAE |
+| `~/docker-volumes/comfyui/output/` | `/app/ComfyUI/output` | Generated images/videos |
+| `~/docker-volumes/comfyui/input/` | `/app/ComfyUI/input` | Uploaded inputs |
+| `~/docker-volumes/comfyui/custom_nodes/` | `/app/ComfyUI/custom_nodes` | ComfyUI extensions |
+| `~/docker-volumes/comfyui/user/` | `/app/ComfyUI/user` | Saved workflows, user data |
 
 `make dirs` creates these directories and fixes ownership if Docker created
 them as root. All `make` targets that need volumes call `dirs` automatically.
@@ -248,10 +269,12 @@ Each service has a Docker health check that gates dependent services:
 | Service | Endpoint | start_period | Retries | Interval | Total window |
 |---|---|---|---|---|---|
 | llama-server | `localhost:8080/health` | 600s | 5 | 30s | **750s** (~12.5 min) |
+| comfyui | `localhost:8188/system_stats` | 120s | 5 | 30s | 270s (~4.5 min) |
 | model-proxy | `localhost:11434/health` | 10s | 3 | 30s | 100s |
 | Open WebUI | `localhost:8080/health` | 30s | 3 | 30s | 120s |
 
-**Startup dependency chain:** llama-server (healthy) -> model-proxy (healthy) -> Open WebUI.
+**Startup dependency chain:** model-proxy (healthy) -> Open WebUI.
+GPU services are independent — started on demand by the proxy.
 
 The llama-server `start_period` of 600s accommodates first-time model downloads
 (~20 GB GGUF from HuggingFace). Once models are cached, startup takes ~60-90s
@@ -262,12 +285,13 @@ on its health endpoint so Docker doesn't kill it mid-swap.
 
 ## Docker images
 
-The stack uses three Docker images. Two are built locally (or pulled from
+The stack uses four Docker images. Three are built locally (or pulled from
 Docker Hub), one is third-party:
 
 | Image | Registry | Description |
 |---|---|---|
 | `erfianugrah/llama-server:cuda12.8-sm120` | Docker Hub | llama.cpp with CUDA 12.8 / sm_120 |
+| `erfianugrah/comfyui:cuda12.8-sm120` | Docker Hub | ComfyUI with PyTorch 2.11 / CUDA 12.8 |
 | `erfianugrah/model-proxy:latest` | Docker Hub | Python reverse proxy with Docker CLI |
 | `ghcr.io/open-webui/open-webui:v0.8.12` | GHCR | Third-party chat UI (not built) |
 
@@ -361,6 +385,23 @@ build, takes <30s.
 
 The proxy needs the Docker CLI to run
 `docker compose up -d --force-recreate llama-server` when swapping models.
+
+### ComfyUI image (`comfyui.Dockerfile`)
+
+Single-stage build on the PyTorch runtime image. Pinned to ComfyUI
+`v0.19.5` with ComfyUI-Manager `4.2.1`. Takes ~5 min to build.
+
+1. Base: `pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime`
+2. Installs `curl`, `git`, `build-essential` (runtime deps for custom nodes)
+3. Clones ComfyUI at the pinned version
+4. Installs Python dependencies via `pip install --break-system-packages`
+5. Clones ComfyUI-Manager into `custom_nodes/`
+
+The image ships with no diffusion models — download checkpoints to
+`~/docker-volumes/comfyui/models/checkpoints/` before generating.
+
+**To update ComfyUI version:** edit `COMFYUI_VERSION` in
+`comfyui.Dockerfile`, then `make rebuild-comfyui`.
 
 ### Open WebUI
 
@@ -541,6 +582,129 @@ recreate llama-server during model swaps. This is the only container with
 Docker socket access. It does **not** have `cap_drop: ALL` because it needs
 network capabilities for proxying.
 
+## GPU mode switching
+
+The proxy manages GPU exclusivity — only llama-server **or** ComfyUI runs at
+a time. Switching happens automatically based on request routing, or manually:
+
+```bash
+make mode             # show current mode (llm/comfyui/idle)
+make llm              # force LLM mode
+make comfyui          # force ComfyUI mode
+```
+
+**Route-based auto-switching:**
+
+| Route pattern | Target | Mode |
+|---|---|---|
+| `/v1/*` | llama-server:8080 | `llm` |
+| `/comfyui/*` | comfyui:8188 (prefix stripped) | `comfyui` |
+| `/health` | proxy self | any |
+| `/v1/models` | proxy self | any |
+| `GET /mode` | current mode | any |
+| `POST /mode` | explicit switch | triggers swap |
+
+**Swap timing:**
+- LLM → ComfyUI: ~20-35s (ComfyUI startup)
+- ComfyUI → LLM: ~35-95s (dominated by GGUF load into VRAM)
+
+## ComfyUI (image/video generation)
+
+ComfyUI is a node-based workflow engine for Stable Diffusion, Flux, and other
+diffusion models. It runs as a profile-gated Docker service sharing the GPU
+with llama-server.
+
+### Setup
+
+1. Build the image (done by `make setup`):
+
+   ```bash
+   make rebuild-comfyui   # or make build (builds all)
+   ```
+
+2. Download a checkpoint model:
+
+   ```bash
+   # Example: SDXL base model (~6.9 GB)
+   curl -L -o ~/docker-volumes/comfyui/models/checkpoints/sd_xl_base_1.0.safetensors \
+     https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
+   ```
+
+3. Start ComfyUI:
+
+   ```bash
+   make comfyui           # or let the proxy auto-start on /comfyui/* requests
+   ```
+
+4. Open the ComfyUI web UI at [http://localhost:8188](http://localhost:8188)
+
+### Access methods
+
+| Method | How | Notes |
+|---|---|---|
+| **ComfyUI web UI** | `localhost:8188` | Full node editor, live previews. Only works when ComfyUI mode is active. |
+| **Open WebUI** | `localhost:3000` image gen icon | Upload a workflow + map node IDs in Admin → Settings → Images. |
+| **MCP tools** (OpenCode) | Ask the model to "generate an image using comfyui" | Requires `opencode.json` MCP config (included). See below. |
+| **API / scripts** | `POST localhost:11434/comfyui/prompt` | Full ComfyUI API through the proxy. |
+
+### Open WebUI integration
+
+Open WebUI has built-in ComfyUI support. The env vars are pre-configured in
+`docker-compose.yml`. To use it:
+
+1. Start ComfyUI (`make comfyui`) and open `localhost:8188`
+2. Build a workflow (e.g., txt2img with checkpoint loader + sampler + VAE + save)
+3. Settings gear → enable **Dev Mode** → **Save (API Format)**
+4. In Open WebUI (`localhost:3000`) → Admin Panel → Settings → Images:
+   - Upload the `workflow_api.json`
+   - Map node IDs (prompt text → CLIPTextEncode, model → CheckpointLoader, etc.)
+5. Click the image gen icon in chat to generate
+
+### MCP server (OpenCode integration)
+
+`mcp/comfyui-server.py` exposes ComfyUI as MCP tools so LLMs in OpenCode can
+generate images. Stdlib-only Python, JSON-RPC over stdio.
+
+**Tools:**
+- `comfyui_generate` — submit a txt2img workflow, wait for output, return file paths
+- `comfyui_status` — check GPU mode and ComfyUI queue
+- `comfyui_history` — list recent generations or get results by prompt ID
+
+**Usage in OpenCode:** ask the model to "generate an image of X using comfyui"
+and it will call the MCP tool. The proxy auto-swaps GPU mode — llama-server
+stops during generation (~20-60s) and restarts on next chat request.
+
+**Config** (in `opencode.json`, already included):
+```json
+{
+  "mcp": {
+    "comfyui": {
+      "type": "local",
+      "command": ["python3", "mcp/comfyui-server.py"],
+      "enabled": true
+    }
+  }
+}
+```
+
+**Requires:** a diffusion checkpoint in
+`~/docker-volumes/comfyui/models/checkpoints/`. The default workflow uses SDXL.
+
+### ComfyUI model management
+
+ComfyUI models are separate from LLM models. Manage them through:
+
+- **ComfyUI-Manager** — built into the image. Open `localhost:8188`, click
+  Manager → Install Models. Handles downloads and placement automatically.
+- **Manual placement** — drop files into the appropriate subdirectory under
+  `~/docker-volumes/comfyui/models/`:
+  - `checkpoints/` — base models (SD 1.5, SDXL, Flux, etc.)
+  - `loras/` — LoRA fine-tunes
+  - `vae/` — VAE models
+  - `controlnet/` — ControlNet models
+  - `clip/` — CLIP models
+  - `upscale_models/` — upscaler models
+
 ## Using with OpenCode
 
 If you use the [erfianugrah/opencode fork](https://github.com/erfianugrah/opencode),
@@ -672,12 +836,14 @@ Each layer overrides the previous. Workspace models have highest priority.
 
 | Command | Description |
 |---|---|
-| `make status` | Container status, active model, health |
+| `make status` | Container status, GPU mode, health |
+| `make mode` | Current GPU mode (llm/comfyui/idle) |
 | `make health` | Check proxy health endpoint |
 | `make metrics` | Prometheus metrics from llama-server |
 | `make gpu` | GPU utilization, power draw, VRAM usage |
 | `make logs` | Follow logs for all services |
 | `make logs-llama` | Follow llama-server logs only |
+| `make logs-comfyui` | Follow ComfyUI logs only |
 
 Health and metrics are also available via HTTP:
 
@@ -721,6 +887,8 @@ All model preset variables above, plus:
 |---|---|---|
 | `LLAMA_HOST` | `llama-server` | Hostname of llama-server container |
 | `LLAMA_PORT` | `8080` | Port of llama-server |
+| `COMFYUI_HOST` | `comfyui` | Hostname of ComfyUI container |
+| `COMFYUI_PORT` | `8188` | Port of ComfyUI |
 | `PROXY_PORT` | `11434` | Port the proxy listens on |
 | `PRESETS_DIR` | `/presets` | Container path to model preset files |
 | `PROJECT_DIR` | `/project` | Container path to project dir (.env, compose file) |
@@ -862,11 +1030,19 @@ Dense general-purpose model with strong reasoning and tool calling:
 |---|---|
 | `make setup` | First-time setup: .env, volumes, model assets, image build |
 | `make deploy` | Full deploy: setup + push images to registry + start stack |
-| `make up` | Start the stack in background |
-| `make down` | Stop the stack |
+| `make up` | Start the stack (proxy + Open WebUI) |
+| `make down` | Stop the stack (all profiles) |
 | `make help` | Show all available targets |
 
-### Model switching
+### GPU mode switching
+
+| Target | Description |
+|---|---|
+| `make mode` | Show current GPU mode (llm/comfyui/idle) |
+| `make llm` | Switch to LLM mode (stops ComfyUI) |
+| `make comfyui` | Switch to ComfyUI mode (stops llama-server) |
+
+### LLM model switching
 
 | Target | Description |
 |---|---|
@@ -880,20 +1056,22 @@ Dense general-purpose model with strong reasoning and tool calling:
 
 | Target | Description |
 |---|---|
-| `make build` | Build all images (skips llama-server if present) |
+| `make build` | Build all images (skips if already present) |
 | `make pull` | Pull all custom images from registry |
 | `make push` | Push all custom images to registry |
-| `make rebuild` | Force rebuild llama-server from source + restart |
-| `make release` | Rebuild + push + restart |
+| `make rebuild` | Rebuild llama-server from source |
+| `make rebuild-comfyui` | Rebuild ComfyUI from source |
+| `make release` | Rebuild all + push to registry |
 
 ### Operations
 
 | Target | Description |
 |---|---|
-| `make restart` | Restart all services |
+| `make restart` | Restart all running services |
 | `make logs` | Follow logs for all services |
 | `make logs-llama` | Follow logs for llama-server only |
-| `make status` | Show container status, active model, health |
+| `make logs-comfyui` | Follow logs for ComfyUI only |
+| `make status` | Show container status, GPU mode, health |
 | `make clean` | Stop stack + remove Docker volumes (keeps models) |
 | `make dirs` | Create persistent volume directories (called by other targets) |
 
@@ -1085,15 +1263,19 @@ on first switch.
 
 ```
 llm-compose/
-  docker-compose.yml          # service definitions (3 containers)
+  docker-compose.yml          # service definitions (4 containers, 2 profiled)
   llama-server.Dockerfile     # multi-stage CUDA build for llama.cpp
+  comfyui.Dockerfile          # PyTorch + CUDA build for ComfyUI
   Makefile                    # all commands (setup, build, switch, etc.)
+  opencode.json               # MCP server config for OpenCode
   .env                        # active model config (generated, gitignored)
   .env.example                # reference config
   .gitignore                  # excludes .env and legacy dirs
   proxy/
     Dockerfile                # Python + Docker CLI image
-    proxy.py                  # reverse proxy with auto model switching
+    proxy.py                  # multi-backend proxy (LLM + ComfyUI routing)
+  mcp/
+    comfyui-server.py         # MCP server: ComfyUI tools for OpenCode
   models/
     gemma4.env                # Gemma 4 31B Dense preset
     qwen3.env                 # Qwen3 32B preset

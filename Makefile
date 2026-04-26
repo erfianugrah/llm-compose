@@ -1,13 +1,15 @@
-# llm-compose — local LLM inference stack
+# llm-compose — local LLM + image/video inference stack
 # See README.md for full documentation.
 
 # ── Configuration ────────────────────────────────────────────────────
 MODEL       ?= gemma4
 VOLUME_DIR  := $(HOME)/docker-volumes/llama-server
 MODELS_DIR  := $(VOLUME_DIR)/models
-IMAGE       := erfianugrah/llama-server:cuda12.8-sm120
-PROXY_IMAGE := erfianugrah/model-proxy:latest
-PRESET      := models/$(MODEL).env
+IMAGE         := erfianugrah/llama-server:cuda12.8-sm120
+COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
+PROXY_IMAGE   := erfianugrah/model-proxy:latest
+PRESET        := models/$(MODEL).env
+COMFYUI_DIR   := $(HOME)/docker-volumes/comfyui
 
 # VRAM budget — must match docker-compose.yml proxy env
 VRAM_LIMIT   ?= 32
@@ -32,40 +34,52 @@ build:
 		echo "Image $(IMAGE) already exists (use 'make rebuild' to force)"; \
 	else \
 		echo "Building $(IMAGE) (~10 min)..."; \
-		docker compose build llama-server; \
+		docker compose --profile llm build llama-server; \
+	fi
+	@if docker image inspect $(COMFYUI_IMAGE) >/dev/null 2>&1; then \
+		echo "Image $(COMFYUI_IMAGE) already exists (use 'make rebuild-comfyui' to force)"; \
+	else \
+		echo "Building $(COMFYUI_IMAGE) (~5 min)..."; \
+		docker compose --profile comfyui build comfyui; \
 	fi
 	@docker compose build model-proxy
 
-## Start the stack in the background
+## Start the stack (proxy + Open WebUI + LLM). GPU service starts on first request.
 up:
 	docker compose up -d
+	@echo "Proxy + Open WebUI started. GPU service starts on first request."
+	@echo "  Force LLM mode:     make llm"
+	@echo "  Force ComfyUI mode: make comfyui"
 
-## Stop the stack
+## Stop the stack (all profiles)
 down:
-	docker compose down
+	docker compose --profile llm --profile comfyui down
 
-## Restart all services
+## Restart all running services
 restart:
-	docker compose restart
+	docker compose --profile llm --profile comfyui restart
 
 ## Follow logs for all services
 logs:
-	docker compose logs -f
+	docker compose --profile llm --profile comfyui logs -f
 
 ## Follow logs for llama-server only
 logs-llama:
 	docker compose logs -f llama-server
 
-## Show container status and health
+## Show container status, active mode, and health
 status:
-	@docker compose ps
+	@docker compose --profile llm --profile comfyui ps
 	@echo ""
 	@if grep -q MODEL_NAME .env 2>/dev/null; then \
-		echo "Active model: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
+		echo "Active LLM model: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
 	fi
+	@curl -sf http://localhost:11434/mode 2>/dev/null \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'GPU mode: {d[\"mode\"] or \"idle\"}')" 2>/dev/null \
+		|| echo "Proxy: not reachable"
 	@curl -sf http://localhost:11434/health 2>/dev/null \
-		&& echo "llama-server: healthy" \
-		|| echo "llama-server: not reachable"
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Health: {d[\"status\"]}')" 2>/dev/null \
+		|| echo "Health: not reachable"
 
 ## Full deploy: setup, download all models, push images, start, configure UI
 deploy: setup download-all push up configure-webui
@@ -73,7 +87,7 @@ deploy: setup download-all push up configure-webui
 
 ## Stop stack and remove volumes (keeps downloaded models)
 clean:
-	docker compose down -v
+	docker compose --profile llm --profile comfyui down -v
 
 # ── Model switching ──────────────────────────────────────────────────
 .PHONY: switch run models assets download-all
@@ -132,7 +146,8 @@ switch: dirs
 ## Switch model and restart in one shot: make run MODEL=qwen3-coder
 run:
 	@$(MAKE) --no-print-directory switch MODEL=$(MODEL)
-	@$(MAKE) --no-print-directory up
+	docker compose up -d
+	docker compose --profile llm up -d llama-server
 
 ## Download model-specific assets (mmproj, templates) — names auto-derived from preset
 assets: dirs
@@ -232,6 +247,35 @@ models:
 	@echo ""
 	@echo "Switch with: make switch MODEL=<name>"
 
+# ── GPU mode switching ────────────────────────────────────────────────
+.PHONY: llm comfyui mode logs-comfyui
+
+## Switch to LLM mode (stops ComfyUI, starts llama-server)
+llm:
+	@curl -sf -X POST http://localhost:11434/mode \
+		-H 'Content-Type: application/json' \
+		-d '{"mode":"llm"}' \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Proxy not reachable. Start with: make up"
+
+## Switch to ComfyUI mode (stops llama-server, starts ComfyUI)
+comfyui:
+	@curl -sf -X POST http://localhost:11434/mode \
+		-H 'Content-Type: application/json' \
+		-d '{"mode":"comfyui"}' \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Proxy not reachable. Start with: make up"
+
+## Show current GPU mode (llm, comfyui, or idle)
+mode:
+	@curl -sf http://localhost:11434/mode 2>/dev/null \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Proxy not reachable"
+
+## Follow logs for ComfyUI only
+logs-comfyui:
+	docker compose --profile comfyui logs -f comfyui
+
 # ── Open WebUI configuration ─────────────────────────────────────────
 .PHONY: configure-webui reset-webui
 
@@ -259,26 +303,31 @@ bench-all:
 	done
 
 # ── Image management ─────────────────────────────────────────────────
-.PHONY: pull push rebuild release
+.PHONY: pull push rebuild rebuild-comfyui release
 
 ## Pull all custom images from the registry (skips local build)
 pull:
 	docker pull $(IMAGE)
+	docker pull $(COMFYUI_IMAGE)
 	docker pull $(PROXY_IMAGE)
 
 ## Push all custom images to the registry
 push:
 	docker push $(IMAGE)
+	docker push $(COMFYUI_IMAGE)
 	docker push $(PROXY_IMAGE)
 
-## Rebuild llama-server from source and restart
+## Rebuild llama-server from source
 rebuild:
-	docker compose build llama-server
-	docker compose up -d llama-server
+	docker compose --profile llm build llama-server
 
-## Rebuild from source, push to registry, and restart
-release: rebuild push
-	@echo "✓ $(IMAGE) built, pushed, and restarted"
+## Rebuild ComfyUI from source
+rebuild-comfyui:
+	docker compose --profile comfyui build comfyui
+
+## Rebuild all, push to registry
+release: rebuild rebuild-comfyui push
+	@echo "✓ All images built and pushed"
 
 # ── Monitoring ───────────────────────────────────────────────────────
 .PHONY: gpu metrics health
@@ -300,7 +349,10 @@ health:
 
 ## Create persistent volume directories (handles root-owned Docker volumes)
 dirs:
-	@for d in "$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui"; do \
+	@for d in \
+		"$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui" \
+		"$(COMFYUI_DIR)/models" "$(COMFYUI_DIR)/output" "$(COMFYUI_DIR)/input" \
+		"$(COMFYUI_DIR)/custom_nodes" "$(COMFYUI_DIR)/user"; do \
 		if [ ! -d "$$d" ]; then \
 			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
 		fi; \
@@ -325,17 +377,22 @@ reset-webui:
 
 ## Show this help message
 help:
-	@echo "llm-compose — local LLM inference stack"
+	@echo "llm-compose — local LLM + image/video inference stack"
 	@echo ""
 	@echo "Usage: make <target> [MODEL=<name>]"
 	@echo ""
 	@echo "Getting started:"
 	@echo "  make setup              First-time setup (default: gemma4)"
 	@echo "  make deploy             Full deploy: setup + push images + start"
-	@echo "  make up                 Start the stack"
+	@echo "  make up                 Start the stack (proxy + Open WebUI)"
 	@echo "  make down               Stop the stack"
 	@echo ""
-	@echo "Model switching (or just select in OpenCode — proxy auto-swaps):"
+	@echo "GPU mode switching (proxy auto-swaps on route, or switch manually):"
+	@echo "  make mode               Show current GPU mode (llm/comfyui/idle)"
+	@echo "  make llm                Switch to LLM mode (stops ComfyUI)"
+	@echo "  make comfyui            Switch to ComfyUI mode (stops llama-server)"
+	@echo ""
+	@echo "LLM model switching (or just select in OpenCode — proxy auto-swaps):"
 	@echo "  make models             List available model presets"
 	@echo "  make run MODEL=name     Switch + restart in one shot"
 	@echo "  make download-all       Pre-download all models for instant switching"
@@ -343,14 +400,16 @@ help:
 	@echo "Image management:"
 	@echo "  make pull               Pull all custom images from registry"
 	@echo "  make push               Push all custom images to registry"
-	@echo "  make rebuild            Rebuild from source and restart"
-	@echo "  make release            Rebuild, push, and restart"
+	@echo "  make rebuild            Rebuild llama-server from source"
+	@echo "  make rebuild-comfyui    Rebuild ComfyUI from source"
+	@echo "  make release            Rebuild all + push to registry"
 	@echo ""
 	@echo "Operations:"
-	@echo "  make restart            Restart all services"
+	@echo "  make restart            Restart all running services"
 	@echo "  make logs               Follow all logs"
 	@echo "  make logs-llama         Follow llama-server logs only"
-	@echo "  make status             Show container status and health"
+	@echo "  make logs-comfyui       Follow ComfyUI logs only"
+	@echo "  make status             Show container status and GPU mode"
 	@echo "  make clean              Stop stack and remove volumes"
 	@echo ""
 	@echo "Open WebUI:"
@@ -360,4 +419,4 @@ help:
 	@echo "Monitoring:"
 	@echo "  make gpu                Show GPU stats"
 	@echo "  make metrics            Fetch Prometheus metrics"
-	@echo "  make health             Check llama-server health"
+	@echo "  make health             Check proxy health"

@@ -1,8 +1,8 @@
 services:
-  # ── Model-switching proxy ────────────────────────────────────────────
-  # Sits in front of llama-server. Auto-swaps models when the requested
-  # model differs from what's loaded — just select a different model in
-  # OpenCode's /models menu and the proxy handles the rest.
+  # ── GPU proxy ────────────────────────────────────────────────────────
+  # Routes /v1/* → llama-server (LLM) and /comfyui/* → ComfyUI (image/video).
+  # Only one GPU workload runs at a time — proxy manages lifecycle via
+  # Docker socket and compose profiles. Also handles LLM model hot-swap.
   model-proxy:
     build:
       context: proxy
@@ -16,6 +16,8 @@ services:
     environment:
       - LLAMA_HOST=llama-server
       - LLAMA_PORT=8080
+      - COMFYUI_HOST=comfyui
+      - COMFYUI_PORT=8188
       - PROXY_PORT=11434
       - PRESETS_DIR=/presets
       - PROJECT_DIR=/project
@@ -33,7 +35,7 @@ services:
       # recreates llama-server on the existing network, not a new one
       - COMPOSE_PROJECT_NAME=llm-compose
     volumes:
-      # Docker socket — needed to recreate llama-server on model swap
+      # Docker socket — needed to start/stop GPU services on mode/model swap
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Project dir — proxy reads .env and runs docker compose
       - .:/project:rw
@@ -41,9 +43,8 @@ services:
       - ./models:/presets:ro
       # Models cache dir — proxy downloads mmproj/templates on demand
       - ${HOME}/docker-volumes/llama-server/models:/assets:rw
-    depends_on:
-      llama-server:
-        condition: service_healthy
+    # No depends_on for llama-server — it's profile-gated and started on
+    # demand by the proxy. The proxy handles health polling internally.
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:11434/health || exit 1"]
       interval: 30s
@@ -64,6 +65,8 @@ services:
   # ── LLM inference engine ─────────────────────────────────────────────
   # Model-agnostic — all config comes from .env (set by proxy or Makefile).
   # Not exposed to host; only reachable via the proxy on the llm network.
+  # Profile-gated: only started by proxy or `make llm`. GPU is exclusive —
+  # either llama-server or comfyui runs at a time, never both.
   llama-server:
     build:
       context: .
@@ -71,6 +74,7 @@ services:
     image: erfianugrah/llama-server:cuda12.8-sm120
     hostname: llama-server
     container_name: llama_server
+    profiles: ["llm"]
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -147,6 +151,55 @@ services:
       llm:
         ipv4_address: 172.28.0.2
 
+  # ── Image / video generation engine ─────────────────────────────────
+  # ComfyUI node-based workflow engine for Stable Diffusion, Flux, etc.
+  # Profile-gated: only started by proxy or `make comfyui`. GPU is exclusive —
+  # either llama-server or comfyui runs at a time, never both.
+  comfyui:
+    build:
+      context: .
+      dockerfile: comfyui.Dockerfile
+    image: erfianugrah/comfyui:cuda12.8-sm120
+    hostname: comfyui
+    container_name: comfyui
+    profiles: ["comfyui"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    shm_size: "4g"
+    volumes:
+      - ~/docker-volumes/comfyui/models:/app/ComfyUI/models
+      - ~/docker-volumes/comfyui/output:/app/ComfyUI/output
+      - ~/docker-volumes/comfyui/input:/app/ComfyUI/input
+      - ~/docker-volumes/comfyui/custom_nodes:/app/ComfyUI/custom_nodes
+      - ~/docker-volumes/comfyui/user:/app/ComfyUI/user
+    ports:
+      - "127.0.0.1:8188:8188"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8188/system_stats || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    security_opt:
+      - no-new-privileges:true
+    # No cap_drop: ComfyUI needs DAC_OVERRIDE to write output/custom_nodes
+    # dirs that may be owned by host UID. Also, custom nodes may compile
+    # C extensions at runtime (SageAttention, insightface, etc.).
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      llm:
+        ipv4_address: 172.28.0.5
+
   # ── Chat UI ──────────────────────────────────────────────────────────
   # Open WebUI's image uses UID 1000. We set user: explicitly so files
   # created on the bind-mount are owned by the host user, not root.
@@ -174,6 +227,10 @@ services:
       - 'DEFAULT_MODEL_PARAMS={"function_calling":"native","temperature":0.6,"top_p":0.95,"top_k":20}'
       - DEFAULT_PROMPT_SUGGESTIONS=[]
       - ENABLE_SIGNUP=false
+      # Image generation via ComfyUI (routed through the proxy)
+      - COMFYUI_BASE_URL=http://172.28.0.4:11434/comfyui/
+      - ENABLE_IMAGE_GENERATION=true
+      - IMAGE_GENERATION_ENGINE=comfyui
       # Headless admin — set in .env or leave blank for browser signup
       - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL:-}
       - WEBUI_ADMIN_PASSWORD=${WEBUI_ADMIN_PASSWORD:-}
