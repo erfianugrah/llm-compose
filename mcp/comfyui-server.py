@@ -31,12 +31,51 @@ import urllib.parse
 import time
 import os
 import copy
+from pathlib import Path
 
 PROXY_URL = os.environ.get("COMFYUI_PROXY_URL", "http://localhost:11434")
 OUTPUT_DIR = os.environ.get("COMFYUI_OUTPUT_DIR",
                             os.path.expanduser("~/docker-volumes/comfyui/output"))
 POLL_INTERVAL = 2  # seconds between status polls
 POLL_TIMEOUT = 300  # max seconds to wait for generation
+
+
+# ── Local config overlay ─────────────────────────────────────────────
+# comfyui.local.env overrides defaults (checkpoint, prompts, sampler
+# settings). Gitignored — keeps model-specific config out of the repo.
+def _load_local_config():
+    """Load KEY=VALUE pairs from comfyui.local.env if it exists."""
+    config = {}
+    for search in [
+        Path(__file__).resolve().parent.parent / "comfyui.local.env",
+        Path.cwd() / "comfyui.local.env",
+    ]:
+        if search.exists():
+            for line in search.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    config[key.strip()] = value.strip()
+            break
+    return config
+
+_LOCAL = _load_local_config()
+
+# Defaults — overridden by comfyui.local.env if present
+DEFAULT_CHECKPOINT = _LOCAL.get("CHECKPOINT", "sd_xl_base_1.0.safetensors")
+DEFAULT_WIDTH = int(_LOCAL.get("WIDTH", "1024"))
+DEFAULT_HEIGHT = int(_LOCAL.get("HEIGHT", "1024"))
+DEFAULT_STEPS = int(_LOCAL.get("STEPS", "20"))
+DEFAULT_CFG = float(_LOCAL.get("CFG", "7.0"))
+DEFAULT_SAMPLER = _LOCAL.get("SAMPLER", "euler")
+DEFAULT_SCHEDULER = _LOCAL.get("SCHEDULER", "normal")
+DEFAULT_POSITIVE_PREFIX = _LOCAL.get("POSITIVE_PREFIX", "masterpiece, best quality")
+DEFAULT_NEGATIVE = _LOCAL.get("NEGATIVE",
+    "lowres, bad anatomy, bad hands, missing fingers, extra digits, fewer digits, "
+    "cropped, worst quality, low quality, jpeg artifacts, signature, watermark, blurry")
+
 
 # ── Default workflow ─────────────────────────────────────────────────
 # Minimal txt2img workflow in ComfyUI API format.
@@ -46,28 +85,28 @@ DEFAULT_WORKFLOW = {
     "4": {
         "class_type": "CheckpointLoaderSimple",
         "inputs": {
-            "ckpt_name": "NoobAI-XL-Vpred-v1.0.safetensors"
+            "ckpt_name": DEFAULT_CHECKPOINT
         }
     },
     "5": {
         "class_type": "EmptyLatentImage",
         "inputs": {
-            "width": 832,
-            "height": 1216,
+            "width": DEFAULT_WIDTH,
+            "height": DEFAULT_HEIGHT,
             "batch_size": 1
         }
     },
     "6": {
         "class_type": "CLIPTextEncode",
         "inputs": {
-            "text": "masterpiece, best quality, amazing quality, very aesthetic, absurdres",
+            "text": DEFAULT_POSITIVE_PREFIX,
             "clip": ["4", 1]
         }
     },
     "7": {
         "class_type": "CLIPTextEncode",
         "inputs": {
-            "text": "lowres, bad anatomy, bad hands, missing fingers, extra digits, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
+            "text": DEFAULT_NEGATIVE,
             "clip": ["4", 1]
         }
     },
@@ -75,10 +114,10 @@ DEFAULT_WORKFLOW = {
         "class_type": "KSampler",
         "inputs": {
             "seed": 42,
-            "steps": 30,
-            "cfg": 5.0,
-            "sampler_name": "euler",
-            "scheduler": "sgm_uniform",
+            "steps": DEFAULT_STEPS,
+            "cfg": DEFAULT_CFG,
+            "sampler_name": DEFAULT_SAMPLER,
+            "scheduler": DEFAULT_SCHEDULER,
             "denoise": 1.0,
             "model": ["4", 0],
             "positive": ["6", 0],
@@ -139,12 +178,12 @@ def _poll_completion(prompt_id):
 # ── Tool implementations ─────────────────────────────────────────────
 def tool_generate(params):
     """Submit a txt2img workflow to ComfyUI and wait for output."""
-    prompt_text = params.get("prompt", "masterpiece, best quality, 1girl")
-    negative = params.get("negative_prompt", "lowres, bad anatomy, bad hands, missing fingers, extra digits, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry")
-    width = params.get("width", 832)
-    height = params.get("height", 1216)
-    steps = params.get("steps", 30)
-    cfg = params.get("cfg", 5.0)
+    prompt_text = params.get("prompt", DEFAULT_POSITIVE_PREFIX)
+    negative = params.get("negative_prompt", DEFAULT_NEGATIVE)
+    width = params.get("width", DEFAULT_WIDTH)
+    height = params.get("height", DEFAULT_HEIGHT)
+    steps = params.get("steps", DEFAULT_STEPS)
+    cfg = params.get("cfg", DEFAULT_CFG)
     seed = params.get("seed")
     checkpoint = params.get("checkpoint")
     workflow_json = params.get("workflow")
@@ -308,23 +347,23 @@ TOOLS = [
                 },
                 "negative_prompt": {
                     "type": "string",
-                    "description": "Things to avoid in the image. Default includes standard quality/anatomy negatives for anime."
+                    "description": "Things to avoid in the image. Defaults from comfyui.local.env or standard quality negatives."
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Image width in pixels (default: 832). Good SDXL ratios: 832x1216, 1024x1024, 1216x832, 768x1344"
+                    "description": "Image width in pixels. Good SDXL ratios: 832x1216, 1024x1024, 1216x832, 768x1344"
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Image height in pixels (default: 1216 — portrait ratio for manhwa/character art)"
+                    "description": "Image height in pixels."
                 },
                 "steps": {
                     "type": "integer",
-                    "description": "Number of sampling steps (default: 30, range 28-35 for NoobAI-XL)"
+                    "description": "Number of sampling steps. More = higher quality but slower."
                 },
                 "cfg": {
                     "type": "number",
-                    "description": "Classifier-free guidance scale (default: 5.0, range 4-6 for NoobAI-XL v-pred)"
+                    "description": "Classifier-free guidance scale."
                 },
                 "seed": {
                     "type": "integer",
@@ -332,7 +371,7 @@ TOOLS = [
                 },
                 "checkpoint": {
                     "type": "string",
-                    "description": "Checkpoint model filename. Default: 'NoobAI-XL-Vpred-v1.0.safetensors' (anime). Also available: 'sd_xl_base_1.0.safetensors' (general). Must exist in ~/docker-volumes/comfyui/models/checkpoints/"
+                    "description": "Checkpoint model filename. Must exist in ~/docker-volumes/comfyui/models/checkpoints/. Default from comfyui.local.env or sd_xl_base_1.0.safetensors."
                 },
                 "workflow": {
                     "type": ["object", "string"],

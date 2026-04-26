@@ -2,18 +2,20 @@
 # Download ComfyUI models and assets for the llm-compose stack.
 # Idempotent — skips already-downloaded files.
 #
-# Models downloaded:
-#   - NoobAI-XL v-pred 1.0 (anime/illustration checkpoint, ~7.1 GB)
+# Base models downloaded (~9.8 GB):
 #   - SDXL Base 1.0 (general purpose checkpoint, ~6.5 GB)
 #   - CLIP-ViT-H-14 (IP-Adapter vision encoder, ~2.4 GB)
 #   - IP-Adapter Plus Face SDXL (character face consistency, ~809 MB)
 #   - 4x-UltraSharp (upscaler for hires fix, ~64 MB)
 #
-# Total: ~16.9 GB on first run.
+# For additional checkpoints, create scripts/setup-comfyui-local.sh
+# (gitignored) with extra download() calls. It runs automatically
+# after the base downloads.
 
 set -euo pipefail
 
 COMFYUI_DIR="${HOME}/docker-volumes/comfyui"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── Helper ───────────────────────────────────────────────────────────
 download() {
@@ -35,11 +37,6 @@ echo ""
 
 # ── Checkpoints ──────────────────────────────────────────────────────
 echo "Checkpoints:"
-download \
-    "${COMFYUI_DIR}/models/checkpoints/NoobAI-XL-Vpred-v1.0.safetensors" \
-    "https://huggingface.co/Laxhar/noobai-XL-Vpred-1.0/resolve/main/NoobAI-XL-Vpred-v1.0.safetensors" \
-    "NoobAI-XL v-pred 1.0 (~7.1 GB, anime/illustration)"
-
 download \
     "${COMFYUI_DIR}/models/checkpoints/sd_xl_base_1.0.safetensors" \
     "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors" \
@@ -68,6 +65,19 @@ download \
     "${COMFYUI_DIR}/models/upscale_models/4x-UltraSharp.pth" \
     "https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth" \
     "4x-UltraSharp (~64 MB, hires fix upscaler)"
+
+# ── Local overrides (gitignored) ─────────────────────────────────────
+# Add extra checkpoints, LoRAs, etc. in scripts/setup-comfyui-local.sh.
+# The download() function is available. Example:
+#   download "${COMFYUI_DIR}/models/checkpoints/my-model.safetensors" \
+#       "https://huggingface.co/.../resolve/main/my-model.safetensors" \
+#       "My Custom Model (~7 GB)"
+if [ -f "${SCRIPT_DIR}/setup-comfyui-local.sh" ]; then
+    echo ""
+    echo "── Local Models ──"
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/setup-comfyui-local.sh"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""

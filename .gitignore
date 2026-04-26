@@ -1,1 +1,5 @@
 .env
+# Local ComfyUI overrides (checkpoints, prompts, workflows)
+comfyui.local.env
+scripts/setup-comfyui-local.sh
+workflows/
