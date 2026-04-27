@@ -9,6 +9,16 @@
         "COMFYUI_OUTPUT_DIR": "~/docker-volumes/comfyui/output"
       },
       "enabled": true
+    },
+    "lora-train": {
+      "type": "local",
+      "command": ["python3", "mcp/train-server.py"],
+      "environment": {
+        "TRAIN_PROXY_URL": "http://localhost:11434",
+        "TRAIN_OUTPUT_DIR": "~/docker-volumes/training-data/output",
+        "LORAS_DIR": "~/docker-volumes/comfyui/models/loras"
+      },
+      "enabled": true
     }
   }
 }

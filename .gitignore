@@ -1,5 +1,16 @@
 .env
-# Local ComfyUI overrides (checkpoints, prompts, workflows)
+
+# Local overrides (gitignored, user-specific)
 comfyui.local.env
+train.local.env
 scripts/setup-comfyui-local.sh
 workflows/
+
+# Scraper artifacts (data lives in ~/docker-volumes/training-data/)
+scraper/dataset/
+scraper/node_modules/
+scraper/scout*.png
+scraper/scrape.log
+scraper/.browser-profile/
+scraper/.browser-profile-ff/
+scraper/extensions/

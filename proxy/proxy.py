@@ -30,6 +30,8 @@ LLAMA_HOST = os.environ.get("LLAMA_HOST", "llama-server")
 LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8080"))
 COMFYUI_HOST = os.environ.get("COMFYUI_HOST", "comfyui")
 COMFYUI_PORT = int(os.environ.get("COMFYUI_PORT", "8188"))
+TRAIN_HOST = os.environ.get("TRAIN_HOST", "lora-train")
+TRAIN_PORT = int(os.environ.get("TRAIN_PORT", "8787"))
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "11434"))
 PRESETS_DIR = Path(os.environ.get("PRESETS_DIR", "/presets"))
 PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/project"))
@@ -274,8 +276,8 @@ def _start_service(service, profile):
 
 
 def ensure_mode(target):
-    """Ensure the target mode ("llm" or "comfyui") is active.
-    Stops the other GPU service first. Returns True on success.
+    """Ensure the target mode ("llm", "comfyui", or "train") is active.
+    Stops the current GPU service first. Returns True on success.
     Caller must hold switch_lock."""
     global active_mode, switching
 
@@ -289,6 +291,8 @@ def ensure_mode(target):
             _stop_service("llama-server", "llm")
         elif active_mode == "comfyui":
             _stop_service("comfyui", "comfyui")
+        elif active_mode == "train":
+            _stop_service("lora-train", "train")
 
         # Start target GPU service
         if target == "llm":
@@ -306,6 +310,14 @@ def ensure_mode(target):
             log("Waiting for ComfyUI to become healthy...")
             if not _wait_healthy(COMFYUI_HOST, COMFYUI_PORT, "/system_stats", HEALTH_TIMEOUT):
                 log("Timeout waiting for ComfyUI")
+                return False
+        elif target == "train":
+            ok = _start_service("lora-train", "train")
+            if not ok:
+                return False
+            log("Waiting for lora-train to become healthy...")
+            if not _wait_healthy(TRAIN_HOST, TRAIN_PORT, "/health", 120):
+                log("Timeout waiting for lora-train")
                 return False
         else:
             log(f"Unknown mode: {target}")
@@ -368,6 +380,8 @@ def switch_model(preset_info):
         # If we're not in LLM mode yet, stop the other service first.
         if active_mode == "comfyui":
             _stop_service("comfyui", "comfyui")
+        elif active_mode == "train":
+            _stop_service("lora-train", "train")
 
         ok, _ = _compose_run(
             ["--profile", "llm", "up", "-d", "--force-recreate", "llama-server"]
@@ -395,16 +409,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     # ── Route classification ─────────────────────────────────────────
     def _classify_route(self):
         """Determine which backend a request targets.
-        Returns ("llm", path) or ("comfyui", stripped_path) or (None, path)."""
+        Returns ("llm"|"comfyui"|"train", path) or (None, path)."""
         if self.path.startswith("/comfyui"):
-            # Strip /comfyui prefix; preserve rest (e.g. /comfyui/prompt → /prompt)
             stripped = self.path[len("/comfyui"):]
             if not stripped:
                 stripped = "/"
             return "comfyui", stripped
+        if self.path.startswith("/train"):
+            stripped = self.path[len("/train"):]
+            if not stripped:
+                stripped = "/"
+            return "train", stripped
         if self.path.startswith("/v1/"):
             return "llm", self.path
-        # Default routes (health, metrics, etc.) go to whatever's active
         return None, self.path
 
     # ── Request handlers ─────────────────────────────────────────────
@@ -424,12 +441,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not self._ensure_comfyui():
                 return
             self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path)
+        elif mode == "train":
+            if not self._ensure_train():
+                return
+            self.proxy_to(TRAIN_HOST, TRAIN_PORT, target_path)
         elif mode == "llm":
             if not self._ensure_llm():
                 return
             self.proxy_to(LLAMA_HOST, LLAMA_PORT, target_path)
         else:
-            # Unclassified route — forward to active backend
             self._proxy_active(target_path)
 
     def do_POST(self):
@@ -446,6 +466,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not self._ensure_comfyui():
                 return
             self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path, body=body)
+
+        elif mode == "train":
+            if not self._ensure_train():
+                return
+            self.proxy_to(TRAIN_HOST, TRAIN_PORT, target_path, body=body)
 
         elif mode == "llm":
             # LLM path — model switching + message normalization
@@ -477,6 +502,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not self._ensure_comfyui():
                 return
             self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path)
+        elif mode == "train":
+            if not self._ensure_train():
+                return
+            self.proxy_to(TRAIN_HOST, TRAIN_PORT, target_path)
         elif mode == "llm":
             if not self._ensure_llm():
                 return
@@ -501,9 +530,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return
 
         target = data.get("mode")
-        if target not in ("llm", "comfyui"):
+        if target not in ("llm", "comfyui", "train"):
             _json_response(self, 400, {
-                "error": f"invalid mode: {target}. Must be 'llm' or 'comfyui'."
+                "error": f"invalid mode: {target}. Must be 'llm', 'comfyui', or 'train'."
             })
             return
 
@@ -554,15 +583,33 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return False
         return True
 
+    def _ensure_train(self):
+        """Ensure train mode is active. Returns True or sends error."""
+        global active_mode
+        if active_mode == "train":
+            return True
+        with switch_lock:
+            if active_mode == "train":
+                return True
+            ok = ensure_mode("train")
+        if not ok:
+            _json_response(self, 503, {
+                "error": {"message": "Failed to start lora-train", "type": "server_error", "code": 503}
+            })
+            return False
+        return True
+
     def _proxy_active(self, path, body=None):
         """Forward to whatever backend is currently active."""
         if active_mode == "comfyui":
             self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, path, body=body)
         elif active_mode == "llm":
             self.proxy_to(LLAMA_HOST, LLAMA_PORT, path, body=body)
+        elif active_mode == "train":
+            self.proxy_to(TRAIN_HOST, TRAIN_PORT, path, body=body)
         else:
             _json_response(self, 503, {
-                "error": {"message": "No GPU service is running. Send a request to /v1/ or /comfyui/ to start one.", "type": "server_error", "code": 503}
+                "error": {"message": "No GPU service is running. Send a request to /v1/, /comfyui/, or /train/ to start one.", "type": "server_error", "code": 503}
             })
 
     # ── Existing proxy endpoints ─────────────────────────────────────
@@ -624,7 +671,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if active_mode == "llm":
             self.proxy_to(LLAMA_HOST, LLAMA_PORT, "/health")
         elif active_mode == "comfyui":
-            # Translate ComfyUI's /system_stats into a health-like response
             try:
                 conn = http.client.HTTPConnection(COMFYUI_HOST, COMFYUI_PORT, timeout=3)
                 conn.request("GET", "/system_stats")
@@ -634,6 +680,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 _json_response(self, 200, {"status": "ok", "mode": "comfyui"})
             except Exception:
                 _json_response(self, 200, {"status": "degraded", "mode": "comfyui"})
+        elif active_mode == "train":
+            try:
+                conn = http.client.HTTPConnection(TRAIN_HOST, TRAIN_PORT, timeout=3)
+                conn.request("GET", "/health")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                _json_response(self, 200, {"status": "ok", "mode": "train"})
+            except Exception:
+                _json_response(self, 200, {"status": "degraded", "mode": "train"})
         else:
             _json_response(self, 200, {"status": "idle", "mode": None})
 
@@ -723,7 +779,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
             conn.close()
         except (ConnectionRefusedError, OSError) as e:
-            service = "ComfyUI" if host == COMFYUI_HOST else "llama-server"
+            names = {COMFYUI_HOST: "ComfyUI", TRAIN_HOST: "lora-train"}
+            service = names.get(host, "llama-server")
             _json_response(self, 502, {
                 "error": {"message": f"{service} unavailable: {e}", "type": "server_error", "code": 502}
             })
@@ -743,6 +800,7 @@ if __name__ == "__main__":
     log(f"Listening on :{PROXY_PORT}")
     log(f"LLM backend: {LLAMA_HOST}:{LLAMA_PORT}")
     log(f"ComfyUI backend: {COMFYUI_HOST}:{COMFYUI_PORT}")
+    log(f"Train backend: {TRAIN_HOST}:{TRAIN_PORT}")
     log(f"VRAM budget: {VRAM_LIMIT_GB}GB total, {VRAM_RESERVE_GB}GB reserved → {VRAM_LIMIT_GB - VRAM_RESERVE_GB}GB max model weight")
     log(f"LLM presets: {', '.join(presets.keys())}")
     if current_model_id:

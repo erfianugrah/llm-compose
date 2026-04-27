@@ -10,6 +10,8 @@ COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 PROXY_IMAGE   := erfianugrah/model-proxy:latest
 PRESET        := models/$(MODEL).env
 COMFYUI_DIR   := $(HOME)/docker-volumes/comfyui
+TRAIN_IMAGE   := erfianugrah/lora-train:latest
+TRAIN_DIR     := $(HOME)/docker-volumes/training-data
 
 # VRAM budget — must match docker-compose.yml proxy env
 VRAM_LIMIT   ?= 32
@@ -42,26 +44,33 @@ build:
 		echo "Building $(COMFYUI_IMAGE) (~5 min)..."; \
 		docker compose --profile comfyui build comfyui; \
 	fi
+	@if docker image inspect $(TRAIN_IMAGE) >/dev/null 2>&1; then \
+		echo "Image $(TRAIN_IMAGE) already exists (use 'make rebuild-train' to force)"; \
+	else \
+		echo "Building $(TRAIN_IMAGE) (~5 min)..."; \
+		docker compose --profile train build lora-train; \
+	fi
 	@docker compose build model-proxy
 
-## Start the stack (proxy + Open WebUI + LLM). GPU service starts on first request.
+## Start the stack (proxy + Open WebUI). GPU service starts on first request.
 up:
 	docker compose up -d
 	@echo "Proxy + Open WebUI started. GPU service starts on first request."
 	@echo "  Force LLM mode:     make llm"
 	@echo "  Force ComfyUI mode: make comfyui"
+	@echo "  Force train mode:   make train"
 
 ## Stop the stack (all profiles)
 down:
-	docker compose --profile llm --profile comfyui down
+	docker compose --profile llm --profile comfyui --profile train down
 
 ## Restart all running services
 restart:
-	docker compose --profile llm --profile comfyui restart
+	docker compose --profile llm --profile comfyui --profile train restart
 
 ## Follow logs for all services
 logs:
-	docker compose --profile llm --profile comfyui logs -f
+	docker compose --profile llm --profile comfyui --profile train logs -f
 
 ## Follow logs for llama-server only
 logs-llama:
@@ -69,7 +78,7 @@ logs-llama:
 
 ## Show container status, active mode, and health
 status:
-	@docker compose --profile llm --profile comfyui ps
+	@docker compose --profile llm --profile comfyui --profile train ps
 	@echo ""
 	@if grep -q MODEL_NAME .env 2>/dev/null; then \
 		echo "Active LLM model: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
@@ -87,7 +96,7 @@ deploy: setup download-all push up configure-webui
 
 ## Stop stack and remove volumes (keeps downloaded models)
 clean:
-	docker compose --profile llm --profile comfyui down -v
+	docker compose --profile llm --profile comfyui --profile train down -v
 
 # ── Model switching ──────────────────────────────────────────────────
 .PHONY: switch run models assets download-all
@@ -248,7 +257,7 @@ models:
 	@echo "Switch with: make switch MODEL=<name>"
 
 # ── GPU mode switching ────────────────────────────────────────────────
-.PHONY: llm comfyui mode logs-comfyui
+.PHONY: llm comfyui train mode logs-comfyui logs-train
 
 ## Switch to LLM mode (stops ComfyUI, starts llama-server)
 llm:
@@ -266,7 +275,15 @@ comfyui:
 		| python3 -m json.tool 2>/dev/null \
 		|| echo "Proxy not reachable. Start with: make up"
 
-## Show current GPU mode (llm, comfyui, or idle)
+## Switch to train mode (stops llama-server/ComfyUI, starts lora-train)
+train:
+	@curl -sf -X POST http://localhost:11434/mode \
+		-H 'Content-Type: application/json' \
+		-d '{"mode":"train"}' \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Proxy not reachable. Start with: make up"
+
+## Show current GPU mode (llm, comfyui, train, or idle)
 mode:
 	@curl -sf http://localhost:11434/mode 2>/dev/null \
 		| python3 -m json.tool 2>/dev/null \
@@ -275,6 +292,55 @@ mode:
 ## Follow logs for ComfyUI only
 logs-comfyui:
 	docker compose --profile comfyui logs -f comfyui
+
+## Follow logs for lora-train only
+logs-train:
+	docker compose --profile train logs -f lora-train
+
+# ── LoRA training ─────────────────────────────────────────────────────
+.PHONY: train-status train-logs deploy-lora rebuild-train
+
+## Show current training job status (step, loss, ETA)
+train-status:
+	@curl -sf http://localhost:11434/train/status 2>/dev/null \
+		| python3 -c "\
+import sys, json; d=json.load(sys.stdin); \
+s=d.get('state','idle'); \
+print(f'State: {s}'); \
+[print(f'Progress: {d[\"step\"]}/{d[\"total_steps\"]} ({round(d[\"step\"]/d[\"total_steps\"]*100,1)}%)') if d.get('total_steps',0)>0 else None]; \
+[print(f'Epoch: {d[\"epoch\"]}/{d[\"total_epochs\"]}') if d.get('total_epochs',0)>0 else None]; \
+[print(f'Loss: {d[\"loss\"]:.6f}') if d.get('loss',0)>0 else None]; \
+[print(f'Elapsed: {d[\"elapsed_seconds\"]}s') if 'elapsed_seconds' in d else None]; \
+[print(f'ETA: {d[\"eta_seconds\"]}s ({round(d[\"eta_seconds\"]/60,1)} min)') if d.get('eta_seconds') else None]; \
+" 2>/dev/null \
+		|| echo "Training service not reachable. Switch with: make train"
+
+## Show last 50 lines of training output
+train-logs:
+	@curl -sf 'http://localhost:11434/train/logs?lines=50' 2>/dev/null \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(d.get('lines',[])))" 2>/dev/null \
+		|| echo "Training service not reachable"
+
+## Copy a trained LoRA to ComfyUI: make deploy-lora NAME=my-dataset
+deploy-lora:
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make deploy-lora NAME=<filename>"; \
+		echo "Available LoRAs:"; \
+		docker run --rm -v "$(TRAIN_DIR)/output:/out" alpine sh -c \
+			'ls /out/*.safetensors 2>/dev/null | sed "s|/out/||"' || true; \
+		exit 1; \
+	fi
+	@SRC="$(TRAIN_DIR)/output/$(NAME)"; \
+	if [ ! "$${SRC%.safetensors}" != "$$SRC" ]; then SRC="$${SRC}.safetensors"; fi; \
+	docker run --rm \
+		-v "$(TRAIN_DIR)/output:/src:ro" \
+		-v "$(COMFYUI_DIR)/models/loras:/dst" \
+		alpine sh -c "cp /src/$(NAME) /dst/ 2>/dev/null || cp /src/$(NAME).safetensors /dst/ 2>/dev/null || echo 'Not found: $(NAME)'"
+	@echo "✓ Deployed $(NAME) to $(COMFYUI_DIR)/models/loras/"
+
+## Rebuild lora-train image from source
+rebuild-train:
+	docker compose --profile train build lora-train
 
 # ── ComfyUI model setup ──────────────────────────────────────────────
 .PHONY: setup-comfyui
@@ -316,12 +382,14 @@ bench-all:
 pull:
 	docker pull $(IMAGE)
 	docker pull $(COMFYUI_IMAGE)
+	docker pull $(TRAIN_IMAGE)
 	docker pull $(PROXY_IMAGE)
 
 ## Push all custom images to the registry
 push:
 	docker push $(IMAGE)
 	docker push $(COMFYUI_IMAGE)
+	docker push $(TRAIN_IMAGE)
 	docker push $(PROXY_IMAGE)
 
 ## Rebuild llama-server from source
@@ -333,7 +401,7 @@ rebuild-comfyui:
 	docker compose --profile comfyui build comfyui
 
 ## Rebuild all, push to registry
-release: rebuild rebuild-comfyui push
+release: rebuild rebuild-comfyui rebuild-train push
 	@echo "✓ All images built and pushed"
 
 # ── Monitoring ───────────────────────────────────────────────────────
@@ -358,6 +426,8 @@ health:
 dirs:
 	@for d in \
 		"$(VOLUME_DIR)" "$(MODELS_DIR)" "$(HOME)/docker-volumes/webui" \
+		"$(TRAIN_DIR)" "$(TRAIN_DIR)/datasets" "$(TRAIN_DIR)/configs" \
+		"$(TRAIN_DIR)/output" "$(TRAIN_DIR)/raw" \
 		"$(COMFYUI_DIR)/models" "$(COMFYUI_DIR)/models/checkpoints" \
 		"$(COMFYUI_DIR)/models/clip_vision" "$(COMFYUI_DIR)/models/ipadapter" \
 		"$(COMFYUI_DIR)/models/loras" "$(COMFYUI_DIR)/models/vae" \
@@ -399,14 +469,22 @@ help:
 	@echo "  make down               Stop the stack"
 	@echo ""
 	@echo "GPU mode switching (proxy auto-swaps on route, or switch manually):"
-	@echo "  make mode               Show current GPU mode (llm/comfyui/idle)"
-	@echo "  make llm                Switch to LLM mode (stops ComfyUI)"
-	@echo "  make comfyui            Switch to ComfyUI mode (stops llama-server)"
+	@echo "  make mode               Show current GPU mode (llm/comfyui/train/idle)"
+	@echo "  make llm                Switch to LLM mode"
+	@echo "  make comfyui            Switch to ComfyUI mode"
+	@echo "  make train              Switch to LoRA training mode"
 	@echo ""
 	@echo "LLM model switching (or just select in OpenCode — proxy auto-swaps):"
 	@echo "  make models             List available model presets"
 	@echo "  make run MODEL=name     Switch + restart in one shot"
 	@echo "  make download-all       Pre-download all LLM GGUFs for instant switching"
+	@echo ""
+	@echo "LoRA training (use MCP tools or API — proxy auto-swaps GPU):"
+	@echo "  make train-status       Show training progress (step, loss, ETA)"
+	@echo "  make train-logs         Show last 50 lines of training output"
+	@echo "  make logs-train         Follow lora-train container logs"
+	@echo "  make deploy-lora NAME=x Copy trained LoRA to ComfyUI"
+	@echo "  make rebuild-train      Rebuild lora-train image"
 	@echo ""
 	@echo "ComfyUI model setup:"
 	@echo "  make setup-comfyui      Download checkpoints, IP-Adapter, CLIP, upscaler (~17 GB)"

@@ -335,6 +335,11 @@ TOOLS = [
             "and waits for completion. Returns file paths of generated images. "
             "Default: portrait ratio (832x1216), 30 steps, Euler sampler, CFG 5. "
             "Prefix prompts with quality tags like 'masterpiece, best quality'. "
+            "IMPORTANT: Do NOT call the Read tool on the returned PNG paths. The user "
+            "sees the generated images directly in their viewer; reading them inlines "
+            "base64 image data into the conversation and quickly exceeds the model's "
+            "input limit ('Input is too long' errors). Only Read an output image if "
+            "the user explicitly asks you to visually inspect or analyze it. "
             "WARNING: Triggers GPU mode swap — llama-server stops during generation "
             "(~20-60s), restarts automatically on next chat request."
         ),

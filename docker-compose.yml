@@ -1,6 +1,6 @@
 services:
   # ── GPU proxy ────────────────────────────────────────────────────────
-  # Routes /v1/* → llama-server (LLM) and /comfyui/* → ComfyUI (image/video).
+  # Routes /v1/* → llama-server, /comfyui/* → ComfyUI, /train/* → lora-train.
   # Only one GPU workload runs at a time — proxy manages lifecycle via
   # Docker socket and compose profiles. Also handles LLM model hot-swap.
   model-proxy:
@@ -18,6 +18,8 @@ services:
       - LLAMA_PORT=8080
       - COMFYUI_HOST=comfyui
       - COMFYUI_PORT=8188
+      - TRAIN_HOST=lora-train
+      - TRAIN_PORT=8787
       - PROXY_PORT=11434
       - PRESETS_DIR=/presets
       - PROJECT_DIR=/project
@@ -199,6 +201,53 @@ services:
     networks:
       llm:
         ipv4_address: 172.28.0.5
+
+  # ── LoRA training engine ──────────────────────────────────────────────
+  # HTTP API server wrapping kohya sd-scripts for LoRA fine-tuning.
+  # Profile-gated: only started by proxy or `make train`. GPU is exclusive —
+  # only one of llama-server, comfyui, or lora-train runs at a time.
+  # Exposes REST API on :8787 for starting/monitoring/cancelling training jobs.
+  lora-train:
+    build:
+      context: .
+      dockerfile: lora-train.Dockerfile
+    image: erfianugrah/lora-train:latest
+    hostname: lora-train
+    container_name: lora_train
+    profiles: ["train"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    shm_size: "4g"
+    environment:
+      - TRAIN_PORT=8787
+      - DATA_DIR=/data
+      - CHECKPOINTS_DIR=/checkpoints
+    volumes:
+      - ~/docker-volumes/training-data:/data
+      - ~/docker-volumes/comfyui/models/checkpoints:/checkpoints:ro
+      - ~/docker-volumes/comfyui/models/loras:/loras
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8787/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      llm:
+        ipv4_address: 172.28.0.6
 
   # ── Chat UI ──────────────────────────────────────────────────────────
   # Open WebUI's image uses UID 1000. We set user: explicitly so files
