@@ -112,18 +112,15 @@ All under `~/docker-volumes/`:
 ```
 ~/docker-volumes/training-data/
 ├── datasets/                  # Curated image+caption sets for training
-│   ├── <name>/                # Images (.png/.jpg) + captions (.txt), WD14-tagged
-│   └── manhwa-in-the-summer/  # 150 panels + WD14 captions, trigger: "manhwa style"
+│   └── <name>/                # Images (.png/.jpg) + captions (.txt), WD14-tagged
 ├── configs/                   # TOML dataset configs for sd-scripts
-│   ├── <name>.toml            # Dataset paths, batch_size, resolution, repeats
-│   └── 
-├── output/                    # Trained LoRA checkpoints
-│   ├── 
-│   └── archive/               # Old/non-working LoRAs
+│   └── <name>.toml            # Dataset paths, batch_size, resolution, repeats
+├── output/                    # Trained LoRA checkpoints (.safetensors)
+│   └── archive/               # Old/experimental LoRAs
 └── raw/                       # Raw scraped data (not used by training directly)
-    ├── scraped-manhwa/        # 16 manhwa series, ~32K chapter images
+    ├── scraped-manhwa/        # Chapter images from scraper
     ├── scraped-images/        # Reference photos from image search
-    └── sliced-panels/         # 3744 auto-sliced manhwa panels
+    └── sliced-panels/         # Auto-sliced webtoon panels
 ```
 
 ## LoRA training service
@@ -142,10 +139,11 @@ All under `~/docker-volumes/`:
 - `POST /caption` — run WD14 auto-captioning on a dataset
 
 **Default training settings** (optimized for 32GB VRAM):
-- batch_size=4 (set in TOML config), no gradient checkpointing = max throughput
+- batch_size=16 (set in TOML config), gradient checkpointing enabled, ~1.2s/step
 - dim=32, alpha=16, lr=1e-4 unet / 5e-5 text encoder, AdamW, cosine schedule
 - SDPA attention (no xformers dependency), bf16 mixed precision
 - cache_latents_to_disk for large datasets
+- 0 data loader workers (avoids system RAM OOM from forked processes)
 
 ## MCP Servers (OpenCode integration)
 
@@ -171,7 +169,7 @@ All under `~/docker-volumes/`:
 - `train_datasets` — list available training datasets
 - `train_deploy` — copy a trained LoRA to ComfyUI's loras dir
 
-**Usage:** ask the model to "start training the my-lora LoRA" and it calls MCP tools. Proxy auto-swaps to train mode — **LLM backend stops for the entire training duration** (10-60+ min). LLM restarts on next chat request after training completes.
+**Usage:** ask the model to "start training a LoRA" and it calls MCP tools. Proxy auto-swaps to train mode — **LLM backend stops for the entire training duration** (10-60+ min). LLM restarts on next chat request after training completes.
 
 **Config:** `opencode.json` defines both MCP servers.
 
@@ -182,8 +180,10 @@ All under `~/docker-volumes/`:
 - `scrape.mjs` — generic image scraper with CSS selectors, pagination, lazy-load scrolling
 - `image-search.mjs` — Bing/Google image search downloader for reference photos
 - `curate.py` — image dedup/filter/resize for training datasets
-- `slice-panels.py` — splits tall webtoon strips into individual panels
+- `slice-panels.py` — splits tall vertical strips into individual panels
 - `filter-panels.py` — quality-filters sliced panels for LoRA training
+
+Custom site adapters can be loaded via `--adapter=./my-adapter.mjs` (exports `getChapters`, `getImages`). Adapters are gitignored — they're user-specific, not generic tooling.
 
 Data is scraped to `scraper/dataset/` (gitignored), then curated and moved to `~/docker-volumes/training-data/datasets/`.
 

@@ -14,3 +14,12 @@ scraper/scrape.log
 scraper/.browser-profile/
 scraper/.browser-profile-ff/
 scraper/extensions/
+scraper/urls*.txt
+scraper/adapters.mjs
+scraper/turnstile.mjs
+scraper/scout.mjs
+
+# Training artifacts
+train/__pycache__/
+train/test_progress.py
+train/train_wrapper.py

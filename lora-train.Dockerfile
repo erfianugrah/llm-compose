@@ -9,8 +9,14 @@ WORKDIR /sd-scripts
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir accelerate onnxruntime-gpu onnx
 
-# Copy training API server
+# Copy training API server and progress hook
 COPY train/server.py /train-server.py
+COPY train/progress_hook.py /train-hooks/progress_hook.py
+
+# Install .pth file that auto-loads our tqdm progress hook in ALL python processes
+# (including accelerate's subprocess). Only activates when TRAIN_PROGRESS_FILE is set.
+RUN echo "import importlib.util; exec(open('/train-hooks/progress_hook.py').read())" \
+    > /opt/conda/lib/python3.11/site-packages/train_progress_hook.pth
 
 WORKDIR /workspace
 EXPOSE 8787

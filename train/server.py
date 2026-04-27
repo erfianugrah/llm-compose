@@ -143,7 +143,9 @@ class TrainingJob:
 
 def _build_train_command(config):
     """Build the accelerate launch command from config dict."""
-    dataset_config = config.get("dataset_config", "/data/configs/my-dataset.toml")
+    dataset_config = config.get("dataset_config")
+    if not dataset_config:
+        raise ValueError("dataset_config is required")
     base_model = config.get("base_model", "JuggernautXL_v9.safetensors")
     output_name = config.get("output_name", "lora-output")
 
@@ -158,8 +160,8 @@ def _build_train_command(config):
     scheduler = config.get("lr_scheduler", "cosine")
     warmup = config.get("warmup_steps", 100)
     save_every = config.get("save_every_n_epochs", 1)
-    # No gradient checkpointing by default — use all VRAM for speed
-    grad_ckpt = config.get("gradient_checkpointing", False)
+    # Default True: batch_size>=4 on 32GB VRAM needs gradient checkpointing
+    grad_ckpt = config.get("gradient_checkpointing", True)
 
     cmd = [
         "accelerate", "launch", "--mixed_precision=bf16",
@@ -182,7 +184,7 @@ def _build_train_command(config):
         "--mixed_precision=bf16",
         "--cache_latents",
         "--cache_latents_to_disk",
-        "--max_data_loader_n_workers=4",
+        "--max_data_loader_n_workers=0",
         "--sdpa",
         "--save_precision=fp16",
         "--logging_dir=/data/output/logs",
@@ -196,12 +198,33 @@ def _build_train_command(config):
 
 
 def _run_training(job):
-    """Run training in a thread, updating job state."""
+    """Run training in a thread, updating job state.
+
+    Progress tracking uses two channels:
+    1. stdout pipe — captures log lines (epoch transitions, config, errors)
+    2. progress file — written by tqdm hook injected via .pth file at Python
+       startup. The hook patches tqdm.update/set_postfix to write step/loss
+       to a JSON file every 2s. This works because accelerate's subprocess
+       inherits the .pth and TRAIN_PROGRESS_FILE env var.
+    """
     global current_job
 
     try:
         cmd = _build_train_command(job.config)
         job.append_log(f"[CMD] {' '.join(cmd)}")
+
+        progress_file = "/tmp/train_progress.json"
+        try:
+            os.unlink(progress_file)
+        except OSError:
+            pass
+
+        # Add --console_log_simple to disable rich formatting in logs
+        cmd.append("--console_log_simple")
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["TRAIN_PROGRESS_FILE"] = progress_file
 
         job.process = subprocess.Popen(
             cmd,
@@ -209,12 +232,37 @@ def _run_training(job):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=env,
         )
 
-        for line in job.process.stdout:
-            line = line.rstrip('\n')
-            job.append_log(line)
-            job.parse_progress(line)
+        # Reader thread for stdout (log lines — NOT tqdm progress)
+        def read_output():
+            for line in job.process.stdout:
+                line = line.rstrip('\n')
+                if line:
+                    job.append_log(line)
+                    job.parse_progress(line)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+
+        # Poll progress file written by tqdm hook
+        while job.process.poll() is None:
+            time.sleep(2)
+            try:
+                with open(progress_file, "r") as f:
+                    data = json.loads(f.read())
+                    step = data.get("step", 0)
+                    if step > job.step or data.get("loss", 0) > 0:
+                        job.step = step
+                        job.total_steps = data.get("total", job.total_steps) or job.total_steps
+                        job.loss = data.get("loss", job.loss) or job.loss
+                        if job.state == "starting":
+                            job.state = "training"
+            except (OSError, ValueError, KeyError):
+                pass
+
+        reader.join(timeout=5)
 
         rc = job.process.wait()
         job.end_time = time.monotonic()

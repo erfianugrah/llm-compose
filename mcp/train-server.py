@@ -64,8 +64,10 @@ def _request(method, path, data=None, timeout=30):
 # ── Tool implementations ─────────────────────────────────────────────
 def tool_start(params):
     """Start a LoRA training job."""
+    if not params.get("dataset_config"):
+        return "Error: 'dataset_config' is required. Use train_datasets to list available datasets, then provide the TOML config path (e.g. /data/configs/my-dataset.toml)"
     config = {
-        "dataset_config": params.get("dataset_config", "/data/configs/my-dataset.toml"),
+        "dataset_config": params["dataset_config"],
         "base_model": params.get("base_model", "JuggernautXL_v9.safetensors"),
         "output_name": params.get("output_name", "lora-output"),
         "epochs": params.get("epochs", 4),
@@ -75,7 +77,7 @@ def tool_start(params):
         "unet_lr": params.get("unet_lr", params.get("learning_rate", "1e-4")),
         "text_encoder_lr": params.get("text_encoder_lr", "5e-5"),
         "save_every_n_epochs": params.get("save_every_n_epochs", 1),
-        "gradient_checkpointing": params.get("gradient_checkpointing", False),
+        "gradient_checkpointing": params.get("gradient_checkpointing", True),
     }
 
     result = _request("POST", "/train/train", config)
@@ -235,7 +237,7 @@ TOOLS = [
             "Start a LoRA fine-tuning job. Triggers GPU mode swap — stops LLM/ComfyUI, "
             "starts training service. Training runs 10-60+ minutes. The LLM backend will "
             "be unavailable during training and restarts automatically on next chat request. "
-            "Default: JuggernautXL base, my-dataset dataset, batch_size=4 (max VRAM), "
+            "Default: JuggernautXL base, batch_size=16 (max VRAM), "
             "dim=32, 4 epochs. Override any parameter via arguments."
         ),
         "inputSchema": {
@@ -247,7 +249,7 @@ TOOLS = [
                 },
                 "dataset_config": {
                     "type": "string",
-                    "description": "Path to dataset TOML config inside the container. Default: /data/configs/my-dataset.toml"
+                    "description": "Path to dataset TOML config inside the container. e.g. /data/configs/my-dataset.toml"
                 },
                 "base_model": {
                     "type": "string",
@@ -279,7 +281,7 @@ TOOLS = [
                 },
                 "gradient_checkpointing": {
                     "type": "boolean",
-                    "description": "Enable gradient checkpointing (slower but uses less VRAM). Default: false"
+                    "description": "Enable gradient checkpointing (slower but uses less VRAM). Default: true"
                 }
             }
         }
