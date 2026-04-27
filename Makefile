@@ -321,7 +321,7 @@ train-logs:
 		| python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(d.get('lines',[])))" 2>/dev/null \
 		|| echo "Training service not reachable"
 
-## Copy a trained LoRA to ComfyUI: make deploy-lora NAME=my-dataset
+## Copy a trained LoRA to ComfyUI: make deploy-lora NAME=my-lora
 deploy-lora:
 	@if [ -z "$(NAME)" ]; then \
 		echo "Usage: make deploy-lora NAME=<filename>"; \
