@@ -228,13 +228,13 @@ const ctx = await browser.newContext({
 });
 const page = await ctx.newPage();
 
-// Try Bing first (easier to scrape), fall back to Google
-console.log("Scraping Bing Images...");
-let urls = await scrapeBingImages(page, query, opts.max);
+// Try Google first (better results), fall back to Bing
+console.log("Scraping Google Images...");
+let urls = await scrapeGoogleImages(page, query, opts.max);
 
 if (urls.length < 20) {
-  console.log("Bing returned few results, trying Google Images...");
-  urls = await scrapeGoogleImages(page, query, opts.max);
+  console.log("Google returned few results, trying Bing Images...");
+  urls = await scrapeBingImages(page, query, opts.max);
 }
 
 await browser.close();
