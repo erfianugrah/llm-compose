@@ -142,57 +142,145 @@ class TrainingJob:
 
 
 def _build_train_command(config):
-    """Build the accelerate launch command from config dict."""
+    """Build the training command. Dispatches to SDXL or Flux based on model_type."""
+    model_type = config.get("model_type", "sdxl")
+    if model_type == "flux":
+        return _build_flux_command(config)
+    return _build_sdxl_command(config)
+
+
+def _common_config(config):
+    """Extract common config fields shared by SDXL and Flux."""
     dataset_config = config.get("dataset_config")
     if not dataset_config:
         raise ValueError("dataset_config is required")
-    base_model = config.get("base_model", "JuggernautXL_v9.safetensors")
-    output_name = config.get("output_name", "lora-output")
+    return {
+        "dataset_config": dataset_config,
+        "output_name": config.get("output_name", "lora-output"),
+        "epochs": config.get("epochs", 4),
+        "dim": config.get("network_dim", 32),
+        "alpha": config.get("network_alpha", config.get("network_dim", 32)),
+        "lr": config.get("learning_rate", "1e-4"),
+        "optimizer": config.get("optimizer", "AdamW"),
+        "scheduler": config.get("lr_scheduler", "cosine"),
+        "warmup": config.get("warmup_steps", 100),
+        "save_every": config.get("save_every_n_epochs", 1),
+        "grad_ckpt": config.get("gradient_checkpointing", True),
+    }
 
-    # Hyperparameters with sensible defaults for max VRAM usage
-    epochs = config.get("epochs", 4)
-    dim = config.get("network_dim", 32)
-    alpha = config.get("network_alpha", 16)
-    lr = config.get("learning_rate", "1e-4")
-    unet_lr = config.get("unet_lr", lr)
-    te_lr = config.get("text_encoder_lr", "5e-5")
-    optimizer = config.get("optimizer", "AdamW")
-    scheduler = config.get("lr_scheduler", "cosine")
-    warmup = config.get("warmup_steps", 100)
-    save_every = config.get("save_every_n_epochs", 1)
-    # Default True: batch_size>=4 on 32GB VRAM needs gradient checkpointing
-    grad_ckpt = config.get("gradient_checkpointing", True)
+
+def _build_sdxl_command(config):
+    """Build command for SDXL LoRA training (Illustrious / NoobAI / JuggernautXL).
+
+    Key settings for face-likeness LoRAs:
+    - UNet-only training — critical for SDXL face fidelity
+    - Cached text encoder outputs — faster, less RAM
+    - No noise offset — preserves face detail, cross-base compatible
+    - alpha = dim — disables alpha scaling for maximum detail
+    """
+    c = _common_config(config)
+    base_model = config.get("base_model", "Illustrious-XL-v0.1.safetensors")
+    unet_lr = config.get("unet_lr", c["lr"])
+    noise_offset = config.get("noise_offset", "0")
+    min_snr_gamma = config.get("min_snr_gamma", 0)
 
     cmd = [
         "accelerate", "launch", "--mixed_precision=bf16",
         "/sd-scripts/sdxl_train_network.py",
-        f"--pretrained_model_name_or_path=/checkpoints/{base_model}",
-        f"--dataset_config={dataset_config}",
-        f"--output_dir=/data/output",
-        f"--output_name={output_name}",
+        f"--pretrained_model_name_or_path=/models/checkpoints/{base_model}",
+        f"--dataset_config={c['dataset_config']}",
+        "--output_dir=/data/output",
+        f"--output_name={c['output_name']}",
         "--network_module=networks.lora",
-        f"--network_dim={dim}",
-        f"--network_alpha={alpha}",
-        f"--learning_rate={lr}",
+        f"--network_dim={c['dim']}",
+        f"--network_alpha={c['alpha']}",
+        f"--learning_rate={c['lr']}",
         f"--unet_lr={unet_lr}",
-        f"--text_encoder_lr={te_lr}",
-        f"--optimizer_type={optimizer}",
-        f"--lr_scheduler={scheduler}",
-        f"--lr_warmup_steps={warmup}",
-        f"--max_train_epochs={epochs}",
-        f"--save_every_n_epochs={save_every}",
+        f"--optimizer_type={c['optimizer']}",
+        f"--lr_scheduler={c['scheduler']}",
+        f"--lr_warmup_steps={c['warmup']}",
+        f"--max_train_epochs={c['epochs']}",
+        f"--save_every_n_epochs={c['save_every']}",
         "--mixed_precision=bf16",
-        "--cache_latents",
-        "--cache_latents_to_disk",
+        "--network_train_unet_only",
+        "--cache_latents", "--cache_latents_to_disk",
+        "--cache_text_encoder_outputs", "--cache_text_encoder_outputs_to_disk",
         "--max_data_loader_n_workers=0",
         "--sdpa",
-        "--save_precision=fp16",
+        "--save_precision=bf16",
         "--logging_dir=/data/output/logs",
-        f"--log_prefix={output_name}",
+        f"--log_prefix={c['output_name']}",
     ]
 
-    if grad_ckpt:
+    if c["grad_ckpt"]:
         cmd.append("--gradient_checkpointing")
+    if float(noise_offset) > 0:
+        cmd.append(f"--noise_offset={noise_offset}")
+    if min_snr_gamma > 0:
+        cmd.append(f"--min_snr_gamma={min_snr_gamma}")
+
+    v_pred = config.get("v_parameterization", False)
+    if v_pred:
+        cmd.extend(["--v_parameterization", "--zero_terminal_snr",
+                     "--scale_v_pred_loss_like_noise_pred"])
+
+    return cmd
+
+
+def _build_flux_command(config):
+    """Build command for Flux LoRA training.
+
+    Key settings:
+    - Uses flux_train_network.py + networks.lora_flux
+    - guidance_scale=1.0 (mandatory — Flux dev distilled at guidance=1)
+    - timestep_sampling=sigmoid + discrete_flow_shift=3.1582
+    - model_prediction_type=raw
+    - Separate --ae, --clip_l, --t5xxl paths for Flux components
+    - fp8_base optional for VRAM savings
+    """
+    c = _common_config(config)
+    base_model = config.get("base_model", "flux1-dev.safetensors")
+    fp8_base = config.get("fp8_base", True)  # default True: 32GB VRAM needs fp8 for Flux 12B
+    guidance_scale = config.get("guidance_scale", "1.0")
+
+    cmd = [
+        "accelerate", "launch", "--mixed_precision=bf16",
+        "/sd-scripts/flux_train_network.py",
+        f"--pretrained_model_name_or_path=/models/diffusion_models/{base_model}",
+        "--clip_l=/models/text_encoders/clip_l.safetensors",
+        "--t5xxl=/models/text_encoders/t5xxl_fp8_e4m3fn.safetensors",
+        "--ae=/models/vae/ae.safetensors",
+        f"--dataset_config={c['dataset_config']}",
+        "--output_dir=/data/output",
+        f"--output_name={c['output_name']}",
+        "--network_module=networks.lora_flux",
+        f"--network_dim={c['dim']}",
+        f"--network_alpha={c['alpha']}",
+        f"--learning_rate={c['lr']}",
+        f"--optimizer_type={c['optimizer']}",
+        f"--lr_scheduler={c['scheduler']}",
+        f"--lr_warmup_steps={c['warmup']}",
+        f"--max_train_epochs={c['epochs']}",
+        f"--save_every_n_epochs={c['save_every']}",
+        "--mixed_precision=bf16",
+        "--network_train_unet_only",
+        "--cache_latents", "--cache_latents_to_disk",
+        "--cache_text_encoder_outputs", "--cache_text_encoder_outputs_to_disk",
+        "--max_data_loader_n_workers=0",
+        "--sdpa",
+        "--save_precision=bf16",
+        "--logging_dir=/data/output/logs",
+        f"--log_prefix={c['output_name']}",
+        f"--timestep_sampling=sigmoid",
+        f"--discrete_flow_shift=3.1582",
+        f"--model_prediction_type=raw",
+        f"--guidance_scale={guidance_scale}",
+    ]
+
+    if c["grad_ckpt"]:
+        cmd.append("--gradient_checkpointing")
+    if fp8_base:
+        cmd.append("--fp8_base")
 
     return cmd
 

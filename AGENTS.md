@@ -138,11 +138,25 @@ All under `~/docker-volumes/`:
 - `GET /health` — health check
 - `POST /caption` — run WD14 auto-captioning on a dataset
 
-**Default training settings** (optimized for 32GB VRAM):
-- batch_size=16 (set in TOML config), gradient checkpointing enabled, ~1.2s/step
-- dim=32, alpha=16, lr=1e-4 unet / 5e-5 text encoder, AdamW, cosine schedule
-- SDPA attention (no xformers dependency), bf16 mixed precision
-- cache_latents_to_disk for large datasets
+**Supports two model types:**
+
+**SDXL** (Illustrious-XL, NoobAI, JuggernautXL): `model_type=sdxl`
+- UNet-only training, cached text encoder outputs
+- batch_size=10-16, gradient checkpointing, ~1-5s/step
+- dim=32, alpha=32, lr=1e-4, AdamW, cosine schedule
+- `--v_parameterization` flag for v-pred models (NoobAI v-pred)
+
+**Flux** (Flux.1-dev): `model_type=flux`
+- 12B param DiT, fp8_base required for 32GB VRAM
+- batch_size=2-4, gradient checkpointing, ~10-30s/step
+- dim=16, alpha=16, lr=1e-4, AdamW8bit, cosine schedule
+- `--timestep_sampling=sigmoid`, `--guidance_scale=1.0`, `--model_prediction_type=raw`
+- Separate `--ae`, `--clip_l`, `--t5xxl` paths for Flux components
+- Much better face likeness than SDXL for real-person LoRAs
+
+**Common settings** (both model types):
+- SDPA attention (no xformers), bf16 mixed precision
+- cache_latents_to_disk + cache_text_encoder_outputs_to_disk
 - 0 data loader workers (avoids system RAM OOM from forked processes)
 
 ## MCP Servers (OpenCode integration)

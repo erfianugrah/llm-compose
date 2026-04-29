@@ -357,7 +357,7 @@ configure-webui:
 	@./scripts/init-webui.sh
 
 # ── Benchmarking ─────────────────────────────────────────────────────
-.PHONY: bench bench-quick bench-all
+.PHONY: bench bench-quick bench-all bench-quants bench-quants-quick bench-perf bench-accuracy bench-eval-image bench-report
 
 ## Benchmark current model with different flag combinations
 bench:
@@ -374,6 +374,30 @@ bench-all:
 		BENCH_MODEL=$$name ./scripts/bench.sh --quick; \
 		echo ""; \
 	done
+
+## Full quant sweep: perf + HumanEval + HellaSwag + BFCL (~6-10h)
+bench-quants:
+	@./bench/bench-quants.sh $(ARGS)
+
+## Quick quant sweep: perf + small eval subsets (~1-2h)
+bench-quants-quick:
+	@./bench/bench-quants.sh --quick $(ARGS)
+
+## Perf-only quant sweep (TTFT, throughput, VRAM/RAM) — no accuracy evals
+bench-perf:
+	@./bench/bench-quants.sh --perf-only $(ARGS)
+
+## Accuracy-only sweep (skip perf metrics)
+bench-accuracy:
+	@./bench/bench-quants.sh --skip-perf $(ARGS)
+
+## Build the accuracy harness image (one-time, ~5 min)
+bench-eval-image:
+	docker build -t erfianugrah/bench-eval:latest -f bench/Dockerfile.eval bench/
+
+## Render the most recent sweep CSV as markdown + PNG chart
+bench-report:
+	@python3 bench/bench-report.py latest
 
 # ── Image management ─────────────────────────────────────────────────
 .PHONY: pull push rebuild rebuild-comfyui release
@@ -433,7 +457,8 @@ dirs:
 		"$(COMFYUI_DIR)/models/loras" "$(COMFYUI_DIR)/models/vae" \
 		"$(COMFYUI_DIR)/models/upscale_models" "$(COMFYUI_DIR)/models/controlnet" \
 		"$(COMFYUI_DIR)/output" "$(COMFYUI_DIR)/input" \
-		"$(COMFYUI_DIR)/custom_nodes" "$(COMFYUI_DIR)/user"; do \
+		"$(COMFYUI_DIR)/custom_nodes" "$(COMFYUI_DIR)/user" \
+		"$(HOME)/docker-volumes/bench-cache" "bench/results"; do \
 		if [ ! -d "$$d" ]; then \
 			mkdir -p "$$d" 2>/dev/null || sudo mkdir -p "$$d"; \
 		fi; \

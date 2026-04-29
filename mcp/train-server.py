@@ -68,16 +68,20 @@ def tool_start(params):
         return "Error: 'dataset_config' is required. Use train_datasets to list available datasets, then provide the TOML config path (e.g. /data/configs/my-dataset.toml)"
     config = {
         "dataset_config": params["dataset_config"],
-        "base_model": params.get("base_model", "JuggernautXL_v9.safetensors"),
+        "base_model": params.get("base_model", "Illustrious-XL-v0.1.safetensors"),
         "output_name": params.get("output_name", "lora-output"),
         "epochs": params.get("epochs", 4),
         "network_dim": params.get("network_dim", 32),
-        "network_alpha": params.get("network_alpha", 16),
+        "network_alpha": params.get("network_alpha", params.get("network_dim", 32)),
         "learning_rate": params.get("learning_rate", "1e-4"),
         "unet_lr": params.get("unet_lr", params.get("learning_rate", "1e-4")),
-        "text_encoder_lr": params.get("text_encoder_lr", "5e-5"),
         "save_every_n_epochs": params.get("save_every_n_epochs", 1),
         "gradient_checkpointing": params.get("gradient_checkpointing", True),
+        "model_type": params.get("model_type", "sdxl"),
+        "v_parameterization": params.get("v_parameterization", False),
+        "noise_offset": params.get("noise_offset", "0"),
+        "min_snr_gamma": params.get("min_snr_gamma", 0),
+        "fp8_base": params.get("fp8_base", False),
     }
 
     result = _request("POST", "/train/train", config)
@@ -237,7 +241,7 @@ TOOLS = [
             "Start a LoRA fine-tuning job. Triggers GPU mode swap — stops LLM/ComfyUI, "
             "starts training service. Training runs 10-60+ minutes. The LLM backend will "
             "be unavailable during training and restarts automatically on next chat request. "
-            "Default: JuggernautXL base, batch_size=16 (max VRAM), "
+            "Default: Illustrious-XL base (SDXL). Set model_type='flux' for Flux training. "
             "dim=32, 4 epochs. Override any parameter via arguments."
         ),
         "inputSchema": {
@@ -253,7 +257,7 @@ TOOLS = [
                 },
                 "base_model": {
                     "type": "string",
-                    "description": "Base checkpoint filename. Must exist in checkpoints dir. Default: JuggernautXL_v9.safetensors"
+                    "description": "Base checkpoint filename. Must exist in checkpoints dir. Default: Illustrious-XL-v0.1.safetensors"
                 },
                 "epochs": {
                     "type": "integer",

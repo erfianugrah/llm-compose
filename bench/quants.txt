@@ -1,0 +1,15 @@
+# Quant matrix for Qwen3.6-27B benchmark sweep.
+# Format: label:filename:vram_gb:notes
+# Comment out lines to skip variants. Default ctx=32K to fit Q8_0.
+# BF16 is skipped — 54 GB doesn't fit in 32 GB VRAM.
+#
+# To benchmark a different model, override BENCH_REPO + use this same format
+# (sizes will differ). Defaults below are unsloth/Qwen3.6-27B-GGUF.
+Q3_K_M:Qwen3.6-27B-Q3_K_M.gguf:13.6:smallest viable, accuracy floor
+IQ4_XS:Qwen3.6-27B-IQ4_XS.gguf:15.4:imatrix 4-bit
+Q4_K_M:Qwen3.6-27B-Q4_K_M.gguf:16.8:standard 4-bit (chart equivalent)
+UD-Q4_K_XL:Qwen3.6-27B-UD-Q4_K_XL.gguf:17.6:unsloth dynamic 4-bit (current default)
+Q5_K_M:Qwen3.6-27B-Q5_K_M.gguf:19.5:5-bit
+Q6_K:Qwen3.6-27B-Q6_K.gguf:22.5:6-bit, near-lossless
+UD-Q6_K_XL:Qwen3.6-27B-UD-Q6_K_XL.gguf:25.6:unsloth dynamic 6-bit
+Q8_0:Qwen3.6-27B-Q8_0.gguf:28.6:8-bit ceiling, needs reduced ctx

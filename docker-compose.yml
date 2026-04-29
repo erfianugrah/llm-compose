@@ -230,7 +230,7 @@ services:
       - CHECKPOINTS_DIR=/checkpoints
     volumes:
       - ~/docker-volumes/training-data:/data
-      - ~/docker-volumes/comfyui/models/checkpoints:/checkpoints:ro
+      - ~/docker-volumes/comfyui/models:/models:ro
       - ~/docker-volumes/comfyui/models/loras:/loras
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8787/health || exit 1"]
@@ -248,6 +248,30 @@ services:
     networks:
       llm:
         ipv4_address: 172.28.0.6
+
+  # ── Accuracy benchmark harness ───────────────────────────────────────
+  # EvalPlus (HumanEval) + lm-eval (HellaSwag) + BFCL bundled in one image.
+  # Profile-gated: only started by `make bench-accuracy` or bench-quants.sh.
+  # Talks to llama-server via the proxy on the llm network. CPU-only — no
+  # GPU contention with the LLM under test.
+  bench-eval:
+    build:
+      context: bench
+      dockerfile: Dockerfile.eval
+    image: erfianugrah/bench-eval:latest
+    container_name: bench_eval
+    profiles: ["eval"]
+    environment:
+      - OPENAI_API_KEY=sk-noop
+      - OPENAI_BASE_URL=http://172.28.0.4:11434/v1
+      - HF_HOME=/cache/huggingface
+    volumes:
+      - ./bench:/work:ro
+      - ./bench/results:/results:rw
+      - ${HOME}/docker-volumes/bench-cache:/cache:rw
+    networks:
+      llm:
+        ipv4_address: 172.28.0.7
 
   # ── Chat UI ──────────────────────────────────────────────────────────
   # Open WebUI's image uses UID 1000. We set user: explicitly so files

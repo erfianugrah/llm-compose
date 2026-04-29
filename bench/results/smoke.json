@@ -1,0 +1,9 @@
+{
+  "label": "smoke",
+  "base_url": "http://host.docker.internal:9999/v1",
+  "model": "bench",
+  "hellaswag": {
+    "acc": null,
+    "error": " 'https://huggingface.co/models'\nIf this is a private repository, make sure to pass a token having permission to this repo either by logging in with `hf auth login` or by passing `token=<your_token>`\n"
+  }
+}

@@ -1,0 +1,2 @@
+label,file,size_gb,ttft_ms_p50,ttft_ms_p95,gen_tok_s,prompt_tok_s,vram_peak_mib,ram_peak_mib,humaneval_pass1,humaneval_pass1_plus,hellaswag_acc,hellaswag_acc_norm,bfcl_overall
+UD-Q4_K_XL,Qwen3.6-27B-UD-Q4_K_XL.gguf,17.6,0,0,62.5,481.5,25065,18.01,||||

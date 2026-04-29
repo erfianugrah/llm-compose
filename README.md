@@ -1084,11 +1084,33 @@ Dense general-purpose model with strong reasoning and tool calling:
 
 ### Benchmarking
 
+**Flag tuning** (which KV cache, batch, slot config is fastest):
+
 | Target | Description |
 |---|---|
 | `make bench` | Benchmark current model with different flag combos |
 | `make bench-quick` | Quick benchmark: q8 vs q4 V cache only |
 | `make bench-all` | Benchmark all model presets |
+
+**Quant sweep** (which quantization variant gives best perf/accuracy tradeoff):
+
+| Target | Description |
+|---|---|
+| `make bench-quants` | Full sweep: perf + HumanEval + HellaSwag + BFCL across all quants in `bench/quants.txt` (~6-10h) |
+| `make bench-quants-quick` | Same with smaller eval subsets (~1-2h) |
+| `make bench-perf` | Perf only (TTFT, throughput, peak VRAM/RAM) per quant — ~30 min |
+| `make bench-accuracy` | Accuracy only — skip perf measurements |
+| `make bench-eval-image` | Build the `bench-eval` Docker image (one-time, ~5 min) |
+| `make bench-report` | Render most recent sweep CSV as markdown table + PNG chart |
+
+Edit `bench/quants.txt` to add/remove variants. Sweep results land in `bench/results/sweep-*.csv`. Use `--only Q4_K_M,Q6_K` to test a subset:
+
+```bash
+make bench-quants ARGS="--only Q4_K_M,Q6_K,Q8_0"
+make bench-quants-quick ARGS="--humaneval-n 40 --hellaswag-n 200"
+```
+
+The accuracy harness (`bench/Dockerfile.eval`) bundles EvalPlus, lm-eval-harness, and BFCL in one image and talks to llama-server through the proxy — no GPU contention with the model under test.
 
 ### Monitoring
 
