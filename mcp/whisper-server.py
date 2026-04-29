@@ -62,11 +62,24 @@ def _request(method, path, data=None, timeout=600):
 
 # ── Tool implementations ─────────────────────────────────────────────
 
+def _check_service():
+    """Quick connectivity check. Returns error string or None."""
+    result = _request("GET", "/api/status", timeout=5)
+    if "error" in result:
+        return (
+            f"Whisper service is not reachable at {WHISPER_URL}.\n"
+            f"Error: {result['error']}\n\n"
+            f"Make sure the whisper-transcribe container is running:\n"
+            f"  cd ~/whisper-transcribe && docker compose up -d"
+        )
+    return None
+
+
 def tool_status(args):
     """Check whisper service status."""
-    result = _request("GET", "/api/status")
+    result = _request("GET", "/api/status", timeout=5)
     if "error" in result:
-        return f"Whisper service unavailable: {result['error']}"
+        return f"Whisper service unavailable: {result['error']}\n\nStart it with: cd ~/whisper-transcribe && docker compose up -d"
     return (
         f"Status: {result.get('status', 'unknown')}\n"
         f"GPU: {result.get('gpu', 'unknown')}\n"
@@ -81,6 +94,10 @@ def tool_yt_download(args):
     url = args.get("url", "").strip()
     if not url:
         return "Error: 'url' parameter is required"
+
+    err = _check_service()
+    if err:
+        return err
 
     log(f"Downloading: {url}")
     result = _request("POST", "/api/yt-download", {"url": url}, timeout=600)
@@ -107,6 +124,10 @@ def tool_transcribe(args):
     file_path = args.get("file_path", "").strip()
     if not file_path:
         return "Error: 'file_path' parameter is required"
+
+    err = _check_service()
+    if err:
+        return err
 
     params = {
         "file_path": file_path,
@@ -150,6 +171,10 @@ def tool_yt_transcribe(args):
     url = args.get("url", "").strip()
     if not url:
         return "Error: 'url' parameter is required"
+
+    err = _check_service()
+    if err:
+        return err
 
     # Step 1: Download
     log(f"yt_transcribe: downloading {url}")
@@ -200,6 +225,68 @@ def tool_yt_transcribe(args):
     )
 
     return header + transcript
+
+
+def tool_yt_transcribe_playlist(args):
+    """Download and transcribe all videos in a YouTube playlist."""
+    url = args.get("url", "").strip()
+    if not url:
+        return "Error: 'url' parameter is required"
+
+    err = _check_service()
+    if err:
+        return err
+
+    # Step 1: Download all items
+    log(f"yt_transcribe_playlist: downloading {url}")
+    dl_result = _request("POST", "/api/yt-download", {"url": url, "playlist": True}, timeout=3600)
+
+    if "error" in dl_result:
+        return f"Download failed: {dl_result['error']}"
+
+    # Handle single video (not actually a playlist)
+    if "items" not in dl_result:
+        items = [dl_result]
+    else:
+        items = dl_result.get("items", [])
+
+    if not items:
+        return "No videos found in playlist"
+
+    log(f"yt_transcribe_playlist: {len(items)} items to transcribe")
+
+    # Step 2: Transcribe each item
+    all_transcripts = []
+    for i, item in enumerate(items):
+        filename = item.get("filename", "")
+        title = item.get("title", "unknown")
+        duration = item.get("duration", 0)
+
+        if not filename:
+            all_transcripts.append(f"\n--- [{i+1}/{len(items)}] {title} ---\nError: no file\n")
+            continue
+
+        log(f"  [{i+1}/{len(items)}] Transcribing: {title}")
+        params = {
+            "file_path": filename,
+            "model": args.get("model", "turbo"),
+            "language": args.get("language", "Auto-detect"),
+            "format": "txt",
+            "diarize": args.get("diarize", False),
+            "cleanup": True,
+        }
+
+        result = _request("POST", "/api/transcribe", params, timeout=POLL_TIMEOUT)
+        duration_str = f"{duration // 60:.0f}m {duration % 60:.0f}s" if duration >= 60 else f"{duration}s"
+
+        if "error" in result:
+            all_transcripts.append(f"\n--- [{i+1}/{len(items)}] {title} ({duration_str}) ---\nTranscription failed: {result['error']}\n")
+        else:
+            transcript = result.get("transcript", "")
+            all_transcripts.append(f"\n--- [{i+1}/{len(items)}] {title} ({duration_str}) ---\n{transcript}\n")
+
+    header = f"Playlist: {len(items)} videos transcribed\n"
+    return header + "\n".join(all_transcripts)
 
 
 # ── MCP protocol ─────────────────────────────────────────────────────
@@ -296,6 +383,33 @@ TOOLS = [
             },
             "required": ["url"]
         }
+    },
+    {
+        "name": "yt_transcribe_playlist",
+        "description": "Download and transcribe all videos in a YouTube playlist. Returns combined transcripts with headers for each video. Use for multi-video summarization.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "YouTube playlist URL"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Whisper model. Default: turbo",
+                    "enum": ["tiny", "base", "small", "medium", "large", "turbo"]
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Language code or 'Auto-detect'. Default: Auto-detect"
+                },
+                "diarize": {
+                    "type": "boolean",
+                    "description": "Enable speaker diarization. Default: false"
+                }
+            },
+            "required": ["url"]
+        }
     }
 ]
 
@@ -304,6 +418,7 @@ TOOL_HANDLERS = {
     "yt_download": tool_yt_download,
     "whisper_transcribe": tool_transcribe,
     "yt_transcribe": tool_yt_transcribe,
+    "yt_transcribe_playlist": tool_yt_transcribe_playlist,
 }
 
 SERVER_INFO = {

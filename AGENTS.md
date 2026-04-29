@@ -45,8 +45,12 @@ OpenCode / Open WebUI
        ├── /comfyui/*    → comfyui :8188       (image/video, GPU exclusive)
        └── /train/*      → lora-train :8787    (LoRA training, GPU exclusive)
 
+  whisper-transcribe :7860 (separate stack, GPU coexists with llama-server)
+       └── /api/*        → whisperX transcription + yt-dlp downloads
+
   Only one of llama-server, comfyui, or lora-train runs at a time.
   Proxy manages lifecycle via Docker socket + compose profiles.
+  whisper-transcribe is independent — turbo model (~6GB) fits alongside LLM.
   ComfyUI web UI also exposed directly on :8188.
 ```
 
@@ -160,6 +164,23 @@ All under `~/docker-volumes/`:
 - 0 data loader workers (avoids system RAM OOM from forked processes)
 
 ## MCP Servers (OpenCode integration)
+
+### Whisper MCP (`mcp/whisper-server.py`)
+
+**Tools:**
+- `whisper_status` — check whisper service status, GPU info, availability
+- `yt_download` — download audio from a YouTube URL to temp dir
+- `whisper_transcribe` — transcribe a local audio/video file, return full transcript
+- `yt_transcribe` — download + transcribe in one step (for summaries)
+- `yt_transcribe_playlist` — download and transcribe all videos in a playlist
+
+**Usage:** ask "transcribe and summarize this YouTube video: <url>" and the LLM calls `yt_transcribe`. For playlists, "transcribe this playlist: <url>". Transcript returned to LLM for summarization.
+
+**Architecture:** separate service, NOT GPU-exclusive with llama-server. whisperX turbo uses ~6GB VRAM, coexists with LLM models in 32GB. Models auto-unload after 5min idle.
+
+**Config:** registered in `~/.config/opencode/opencode.json` (global) and `opencode.json` (project). Talks to whisper-transcribe at `localhost:7860`.
+
+**Requires:** whisper-transcribe container running (`cd ~/whisper-transcribe && docker compose up -d`).
 
 ### ComfyUI MCP (`mcp/comfyui-server.py`)
 
