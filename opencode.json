@@ -19,6 +19,14 @@
         "LORAS_DIR": "~/docker-volumes/comfyui/models/loras"
       },
       "enabled": true
+    },
+    "whisper": {
+      "type": "local",
+      "command": ["python3", "mcp/whisper-server.py"],
+      "environment": {
+        "WHISPER_URL": "http://localhost:7860"
+      },
+      "enabled": true
     }
   }
 }
