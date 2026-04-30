@@ -1,29 +1,41 @@
 FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
-RUN apt-get update && apt-get install -y git libgl1-mesa-glx libglib2.0-0 gcc curl && rm -rf /var/lib/apt/lists/*
+# Pin sd-scripts to a known commit/tag for reproducible builds. The default
+# tracks the `sd3` branch (kohya's primary Flux line as of 2025); override
+# with `--build-arg SD_SCRIPTS_REF=<commit-sha>` for true pinning.
+ARG SD_SCRIPTS_REF=sd3
 
-RUN git clone --depth 1 https://github.com/kohya-ss/sd-scripts.git /sd-scripts
+RUN apt-get update && apt-get install -y \
+      git libgl1-mesa-glx libglib2.0-0 gcc curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Shallow clone at the pinned ref. `git clone --branch` accepts both tags
+# and branches but not arbitrary commits — fall back to a fetch-then-reset
+# pattern so commit SHAs work too.
+RUN git clone https://github.com/kohya-ss/sd-scripts.git /sd-scripts \
+    && cd /sd-scripts \
+    && git fetch --depth 1 origin "${SD_SCRIPTS_REF}" \
+    && git checkout FETCH_HEAD \
+    && git log -1 --format='%H %s' > /sd-scripts.commit
 WORKDIR /sd-scripts
 
-# Install from requirements + onnxruntime for WD14 tagger
-# timm + einops required for Florence-2 natural-language captioning
+# Install from sd-scripts requirements + extras we explicitly depend on.
+# bitsandbytes is REQUIRED for AdamW8bit (default optimizer for Flux).
+# Pin it ourselves rather than trusting upstream requirements.txt to keep it.
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir accelerate onnxruntime-gpu onnx timm einops
+    pip install --no-cache-dir \
+      "accelerate" "bitsandbytes>=0.43" \
+      "onnxruntime-gpu" "onnx" "timm" "einops"
 
-# Copy training API server, progress hook, natural-language captioners,
-# and dataset audit/filter utilities
+# Copy training API server, captioners, and dataset utilities.
+# Progress is parsed from sd-scripts stdout in server.py — no tqdm
+# patching, no .pth files, no site-packages injection.
 COPY train/server.py /train-server.py
-COPY train/progress_hook.py /train-hooks/progress_hook.py
 COPY train/caption_florence.py /train-hooks/caption_florence.py
 COPY train/caption_blip2.py /train-hooks/caption_blip2.py
 COPY scripts/audit-dataset.py /audit-dataset.py
 COPY scripts/filter-dataset.py /filter-dataset.py
 COPY scripts/pick-focus-subset.py /pick-focus-subset.py
-
-# Install .pth file that auto-loads our tqdm progress hook in ALL python processes
-# (including accelerate's subprocess). Only activates when TRAIN_PROGRESS_FILE is set.
-RUN echo "import importlib.util; exec(open('/train-hooks/progress_hook.py').read())" \
-    > /opt/conda/lib/python3.11/site-packages/train_progress_hook.pth
 
 WORKDIR /workspace
 EXPOSE 8787

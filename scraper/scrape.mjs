@@ -249,16 +249,16 @@ for (const url of opts.urls) {
     const pageUrl = subPages[i];
     const pageSlug = String(i + 1).padStart(4, "0");
     const pageDir = subPages.length > 1 ? join(baseDir, pageSlug) : baseDir;
-    mkdirSync(pageDir, { recursive: true });
 
-    // Skip if already scraped
-    if (existsSync(pageDir)) {
+    // Skip if already scraped — check BEFORE creating the directory.
+    if (subPages.length > 1 && existsSync(pageDir)) {
       const files = readdirSync(pageDir).filter((f) => /\.(jpg|png|webp|gif)$/i.test(f));
-      if (files.length > 0 && subPages.length > 1) {
+      if (files.length > 0) {
         console.log(`  page ${i + 1}/${subPages.length} — ${files.length} files, skipped`);
         continue;
       }
     }
+    mkdirSync(pageDir, { recursive: true });
 
     process.stdout.write(`  page ${i + 1}/${subPages.length}...`);
 

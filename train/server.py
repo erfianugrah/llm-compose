@@ -150,8 +150,6 @@ def _killpg(proc, grace: int = 10):
 
 def _run_caption(job):
     """Run the captioning subprocess in a background thread."""
-    global current_caption
-
     try:
         job.append_log(f"[CMD] {' '.join(job.cmd)}")
         job.process = subprocess.Popen(
@@ -240,35 +238,40 @@ class TrainingJob:
         with self.log_lock:
             return self.log_lines[-n:]
 
+    # Pre-compiled patterns for the stdout parser. tqdm writes the
+    # progress bar with \r so a single line may contain many "frames" —
+    # `re.search` naturally picks up the last match in the string.
+    _PROGRESS_RE = re.compile(r'steps:\s*\d+%\|[^|]*\|\s*(\d+)/(\d+)')
+    _LOSS_RE = re.compile(r'(?:avr_)?loss[=:]\s*([\d.]+)')
+    _EPOCH_RE = re.compile(r'epoch\s+(\d+)/(\d+)')
+    _TOTAL_RE = re.compile(r'total optimization steps.*?:\s*(\d+)')
+
     def parse_progress(self, line):
-        """Parse sd-scripts output for step/loss/epoch progress."""
-        # Progress bar: "steps:  42%|████      | 2000/4760 [05:30<07:35, 6.05it/s]"
-        m = re.search(r'steps:\s+\d+%\|[^|]*\|\s*(\d+)/(\d+)', line)
-        if m:
-            self.step = int(m.group(1))
-            self.total_steps = int(m.group(2))
-            if self.state == "starting":
-                self.state = "training"
+        """Parse one merged stdout/stderr line from sd-scripts.
 
-        # Loss: "avr_loss=0.123456" or "loss=0.123456"
-        m = re.search(r'(?:avr_)?loss[=:]\s*([\d.]+)', line)
-        if m:
-            self.loss = float(m.group(1))
-
-        # Epoch: "epoch 2/4"
-        m = re.search(r'epoch\s+(\d+)/(\d+)', line)
-        if m:
-            self.epoch = int(m.group(1))
-            self.total_epochs = int(m.group(2))
-
-        # Total steps from config: "total optimization steps / ...: 4760"
-        m = re.search(r'total optimization steps.*?:\s*(\d+)', line)
-        if m:
-            self.total_steps = int(m.group(1))
-
-        # Saving: "saving checkpoint"
-        if "saving" in line.lower() and "checkpoint" in line.lower():
-            self.append_log(f"[SAVE] {line.strip()}")
+        Single-writer (the reader thread in _run_training) so no lock
+        is needed for these field updates — but we still hold log_lock
+        to keep readers from observing partially-updated tuples.
+        """
+        prog = self._PROGRESS_RE.search(line)
+        loss = self._LOSS_RE.search(line)
+        epoch = self._EPOCH_RE.search(line)
+        total = self._TOTAL_RE.search(line)
+        if not (prog or loss or epoch or total):
+            return
+        with self.log_lock:
+            if prog:
+                self.step = int(prog.group(1))
+                self.total_steps = int(prog.group(2))
+                if self.state == "starting":
+                    self.state = "training"
+            if loss:
+                self.loss = float(loss.group(1))
+            if epoch:
+                self.epoch = int(epoch.group(1))
+                self.total_epochs = int(epoch.group(2))
+            if total and not self.total_steps:
+                self.total_steps = int(total.group(1))
 
     def cancel(self):
         if self.process and self.process.poll() is None:
@@ -301,23 +304,34 @@ def _build_train_command(config):
     return _build_sdxl_command(config)
 
 
-def _common_config(config):
-    """Extract common config fields shared by SDXL and Flux."""
+def _common_config(config, model_type="sdxl"):
+    """Extract common config fields shared by SDXL and Flux.
+
+    Defaults differ by model type:
+    - SDXL: dim=32, alpha=dim (scale=1.0), 4 epochs
+    - Flux: dim=16, alpha=16 (smaller files; identity LoRAs converge faster)
+    """
     dataset_config = config.get("dataset_config")
     if not dataset_config:
         raise ValueError("dataset_config is required")
+    if model_type == "flux":
+        default_dim, default_alpha = 16, 16
+    else:
+        default_dim = 32
+        default_alpha = config.get("network_dim", 32)  # alpha=dim for SDXL
     return {
         "dataset_config": dataset_config,
         "output_name": config.get("output_name", "lora-output"),
         "epochs": config.get("epochs", 4),
-        "dim": config.get("network_dim", 32),
-        "alpha": config.get("network_alpha", config.get("network_dim", 32)),
+        "dim": config.get("network_dim", default_dim),
+        "alpha": config.get("network_alpha", default_alpha),
         "lr": config.get("learning_rate", "1e-4"),
         "optimizer": config.get("optimizer", "AdamW"),
         "scheduler": config.get("lr_scheduler", "cosine"),
         "warmup": config.get("warmup_steps", 100),
         "save_every": config.get("save_every_n_epochs", 1),
         "grad_ckpt": config.get("gradient_checkpointing", True),
+        "keep_tokens": config.get("keep_tokens", 0),
     }
 
 
@@ -328,13 +342,19 @@ def _build_sdxl_command(config):
     - UNet-only training — critical for SDXL face fidelity
     - Cached text encoder outputs — faster, less RAM
     - No noise offset — preserves face detail, cross-base compatible
-    - alpha = dim — disables alpha scaling for maximum detail
+    - alpha = dim → LoRA scale = 1.0 (full strength, no down-weighting)
+
+    clip_skip default is 2 because every anime/illustration SDXL base
+    in this stack (Illustrious, NoobAI, Animagine, Pony) was trained at
+    clip_skip=2. JuggernautXL is the exception — set `clip_skip=1`
+    explicitly when training on Juggernaut.
     """
-    c = _common_config(config)
+    c = _common_config(config, model_type="sdxl")
     base_model = config.get("base_model", "Illustrious-XL-v0.1.safetensors")
     unet_lr = config.get("unet_lr", c["lr"])
     noise_offset = config.get("noise_offset", "0")
     min_snr_gamma = config.get("min_snr_gamma", 0)
+    clip_skip = config.get("clip_skip", 2)
 
     cmd = [
         "accelerate", "launch", "--mixed_precision=bf16",
@@ -370,6 +390,10 @@ def _build_sdxl_command(config):
         cmd.append(f"--noise_offset={noise_offset}")
     if min_snr_gamma > 0:
         cmd.append(f"--min_snr_gamma={min_snr_gamma}")
+    if clip_skip and int(clip_skip) > 1:
+        cmd.append(f"--clip_skip={int(clip_skip)}")
+    if c["keep_tokens"]:
+        cmd.append(f"--keep_tokens={int(c['keep_tokens'])}")
 
     v_pred = config.get("v_parameterization", False)
     if v_pred:
@@ -388,11 +412,17 @@ def _build_flux_command(config):
     - timestep_sampling=sigmoid + discrete_flow_shift=3.1582
     - model_prediction_type=raw
     - Separate --ae, --clip_l, --t5xxl paths for Flux components
-    - fp8_base optional for VRAM savings
+    - fp8_base on by default — required for Flux 12B on 32 GB VRAM
+    - apply_t5_attn_mask on by default — kohya-recommended for proper
+      T5 padding masking; small quality win, no VRAM cost
     - AdamW8bit default — kohya's recommended optimizer for Flux
-      (saves VRAM, similar quality to AdamW).
+      (saves VRAM, similar quality to AdamW). Requires bitsandbytes,
+      installed in lora-train.Dockerfile.
+    - dim=16, alpha=16 default — community sweet spot for face LoRAs.
+      Bumps file size from ~150 MB (dim=16) to ~600 MB (dim=32) without
+      meaningful identity gains for single-subject training.
     """
-    c = _common_config(config)
+    c = _common_config(config, model_type="flux")
     # Flux prefers AdamW8bit over AdamW — override only if caller
     # didn't pick an optimizer explicitly.
     if "optimizer" not in config:
@@ -400,6 +430,7 @@ def _build_flux_command(config):
     base_model = config.get("base_model", "flux1-dev.safetensors")
     fp8_base = config.get("fp8_base", True)  # default True: 32GB VRAM needs fp8 for Flux 12B
     guidance_scale = config.get("guidance_scale", "1.0")
+    apply_t5_attn_mask = config.get("apply_t5_attn_mask", True)
 
     cmd = [
         "accelerate", "launch", "--mixed_precision=bf16",
@@ -439,82 +470,86 @@ def _build_flux_command(config):
         cmd.append("--gradient_checkpointing")
     if fp8_base:
         cmd.append("--fp8_base")
+    if apply_t5_attn_mask:
+        # kohya-recommended: prevents T5 padding tokens from leaking into
+        # attention. Slightly improves caption following without VRAM cost.
+        cmd.append("--apply_t5_attn_mask")
+    if c["keep_tokens"]:
+        cmd.append(f"--keep_tokens={int(c['keep_tokens'])}")
 
     return cmd
 
 
 def _run_training(job):
-    """Run training in a thread, updating job state.
+    """Run training in a thread, capturing progress from sd-scripts stdout.
 
-    Progress tracking uses two channels:
-    1. stdout pipe — captures log lines (epoch transitions, config, errors)
-    2. progress file — written by tqdm hook injected via .pth file at Python
-       startup. The hook patches tqdm.update/set_postfix to write step/loss
-       to a JSON file every 2s. This works because accelerate's subprocess
-       inherits the .pth and TRAIN_PROGRESS_FILE env var.
+    Single reader thread parses tqdm output. tqdm writes a single
+    physical line per epoch using \r to overwrite frames; iterating
+    over `subprocess.stdout` yields that line once per \n, and the
+    regex picks up the last \r-separated frame in it. No injection,
+    no race, no shared state with a polling thread.
     """
-    global current_job
-
     try:
         cmd = _build_train_command(job.config)
         job.append_log(f"[CMD] {' '.join(cmd)}")
 
-        progress_file = "/tmp/train_progress.json"
-        try:
-            os.unlink(progress_file)
-        except OSError:
-            pass
-
-        # Add --console_log_simple to disable rich formatting in logs
+        # --console_log_simple disables rich's animated formatting so
+        # frames are plain text our regex can match reliably.
         cmd.append("--console_log_simple")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["TRAIN_PROGRESS_FILE"] = progress_file
-        # Limit torch._inductor's compile worker pool so it doesn't fork
-        # 16 helper processes that turn the dev machine into a slideshow.
+        # Cap torch._inductor's compile worker pool so it doesn't fork
+        # 16 helper processes and turn the dev machine into a slideshow.
         env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "4")
 
         job.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,            # raw byte stream — we split ourselves
             env=env,
             # New session so cancel can killpg the whole accelerate tree
             # (accelerate launcher -> python script -> inductor workers)
             start_new_session=True,
         )
 
-        # Reader thread for stdout (log lines — NOT tqdm progress)
-        def read_output():
-            for line in job.process.stdout:
-                line = line.rstrip('\n')
+        # tqdm writes \r-terminated frames mid-epoch and \n at boundaries.
+        # `for line in stdout` only yields on \n, so progress would
+        # freeze for entire epochs. Read raw and split on either.
+        buf = b""
+        while True:
+            chunk = job.process.stdout.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                # Find earliest \r or \n
+                n = buf.find(b"\n")
+                r = buf.find(b"\r")
+                if n < 0 and r < 0:
+                    break
+                if n < 0:
+                    pos = r
+                elif r < 0:
+                    pos = n
+                else:
+                    pos = min(n, r)
+                line = buf[:pos].decode("utf-8", errors="replace").strip()
+                # Eat \r\n as one terminator
+                if pos == r and pos + 1 < len(buf) and buf[pos + 1:pos + 2] == b"\n":
+                    buf = buf[pos + 2:]
+                else:
+                    buf = buf[pos + 1:]
                 if line:
                     job.append_log(line)
                     job.parse_progress(line)
-
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
-
-        # Poll progress file written by tqdm hook
-        while job.process.poll() is None:
-            time.sleep(2)
-            try:
-                with open(progress_file, "r") as f:
-                    data = json.loads(f.read())
-                    step = data.get("step", 0)
-                    if step > job.step or data.get("loss", 0) > 0:
-                        job.step = step
-                        job.total_steps = data.get("total", job.total_steps) or job.total_steps
-                        job.loss = data.get("loss", job.loss) or job.loss
-                        if job.state == "starting":
-                            job.state = "training"
-            except (OSError, ValueError, KeyError):
-                pass
-
-        reader.join(timeout=5)
+        # Flush any trailing bytes that didn't end in a terminator
+        if buf:
+            line = buf.decode("utf-8", errors="replace").strip()
+            if line:
+                job.append_log(line)
+                job.parse_progress(line)
 
         rc = job.process.wait()
         job.end_time = time.monotonic()
@@ -654,6 +689,37 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
         if path == "/train":
             body = _read_body(self)
 
+            # Validate inputs upfront so the user gets an immediate 400
+            # instead of an opaque kohya error 30s later.
+            dataset_config = body.get("dataset_config")
+            if not dataset_config:
+                _json_response(self, 400, {"error": "dataset_config is required"})
+                return
+            if not Path(dataset_config).is_file():
+                _json_response(self, 400, {
+                    "error": f"dataset_config not found: {dataset_config} "
+                             f"(must be an absolute path inside the container, "
+                             f"e.g. /data/configs/my-dataset.toml)"
+                })
+                return
+
+            # Resolve base_model path the same way _build_*_command will,
+            # then verify it exists. This catches the common typo before
+            # we burn 30s on accelerate startup.
+            mtype = _detect_model_type(body)
+            base = body.get("base_model") or (
+                "flux1-dev.safetensors" if mtype == "flux"
+                else "Illustrious-XL-v0.1.safetensors"
+            )
+            sub = "diffusion_models" if mtype == "flux" else "checkpoints"
+            base_path = Path("/models") / sub / base
+            if not base_path.is_file():
+                _json_response(self, 400, {
+                    "error": f"base_model not found: {base_path}. "
+                             f"Place it in ~/docker-volumes/comfyui/models/{sub}/"
+                })
+                return
+
             with job_lock:
                 if current_job and current_job.state in ("starting", "training"):
                     _json_response(self, 409, {
@@ -754,24 +820,42 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/cleanup":
             # Safety-net: kill any orphaned training/captioning subprocesses
             # that escaped normal cancel (e.g. after container restart mid-run,
-            # or a previous server instance that crashed). Only touches known
-            # process names — never touches /train-server.py itself.
+            # or a previous server instance that crashed). Match cmdlines as
+            # whole-word tokens to avoid false positives like a venv path
+            # containing the literal "accelerate".
             import glob
+            # Whole-process-name markers (executable basename or python script)
+            MARKERS = (
+                "flux_train_network.py", "sdxl_train_network.py",
+                "caption_blip2.py", "caption_florence.py",
+                "tag_images_by_wd14_tagger.py",
+                "accelerate_cli.py",  # the launcher script
+            )
+            # Also match the standalone `accelerate` argv[0] entry-point
             killed = []
+            my_pid = os.getpid()
             for proc_dir in glob.glob("/proc/[0-9]*"):
                 try:
                     pid = int(os.path.basename(proc_dir))
-                    if pid == os.getpid():
+                    if pid == my_pid:
                         continue
                     with open(f"{proc_dir}/cmdline", "rb") as f:
-                        cmdline = f.read().replace(b"\x00", b" ").decode(errors="replace")
-                    # Target known stragglers
-                    if any(marker in cmdline for marker in (
-                        "flux_train_network", "sdxl_train_network",
-                        "caption_blip2", "caption_florence",
-                        "compile_worker", "tag_images_by_wd14",
-                        "accelerate",
-                    )):
+                        raw = f.read()
+                    argv = raw.split(b"\x00")
+                    cmdline = b" ".join(argv).decode(errors="replace")
+                    argv_strs = [a.decode(errors="replace") for a in argv if a]
+                    matched = any(m in cmdline for m in MARKERS)
+                    if not matched and argv_strs:
+                        # accelerate launcher — only when it's argv[0]'s basename
+                        argv0 = os.path.basename(argv_strs[0])
+                        if argv0 in ("accelerate",):
+                            matched = True
+                    # torch._inductor compile workers (forked from training
+                    # process — by the time we get here, parent is already
+                    # dead so they're true orphans)
+                    if not matched and "torch/_inductor/compile_worker" in cmdline:
+                        matched = True
+                    if matched:
                         try:
                             os.kill(pid, signal.SIGTERM)
                             killed.append({"pid": pid, "cmdline": cmdline[:120]})
@@ -779,14 +863,21 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
                             pass
                 except (OSError, ValueError):
                     continue
-            # Give them a moment to exit cleanly, then SIGKILL any survivors
-            time.sleep(1)
+            # Wait for graceful exit, then SIGKILL only what's still alive
+            time.sleep(2)
+            survivors = []
             for k in killed:
                 try:
+                    os.kill(k["pid"], 0)  # probe — raises if dead
                     os.kill(k["pid"], signal.SIGKILL)
-                except ProcessLookupError:
+                    survivors.append(k["pid"])
+                except (ProcessLookupError, PermissionError):
                     pass
-            _json_response(self, 200, {"killed": len(killed), "details": killed})
+            _json_response(self, 200, {
+                "killed": len(killed),
+                "force_killed": survivors,
+                "details": killed,
+            })
 
         elif path == "/caption/cancel":
             with caption_job_lock:

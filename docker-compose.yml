@@ -37,10 +37,14 @@ services:
       # recreates llama-server on the existing network, not a new one
       - COMPOSE_PROJECT_NAME=llm-compose
     volumes:
-      # Docker socket — needed to start/stop GPU services on mode/model swap
+      # Docker socket — needed to start/stop GPU services on mode/model swap.
+      # NOTE: `:ro` is theatre — Docker daemon doesn't enforce read-only on
+      # the socket; clients can still POST/DELETE. Kept as defense-in-depth.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Project dir — proxy reads .env and runs docker compose
-      - .:/project:rw
+      # Project files — narrow scope: only what the proxy actually touches.
+      # docker-compose.yml is needed because compose subcommands re-parse it.
+      - ./.env:/project/.env:rw
+      - ./docker-compose.yml:/project/docker-compose.yml:ro
       # Model presets (read-only)
       - ./models:/presets:ro
       # Models cache dir — proxy downloads mmproj/templates on demand
@@ -298,9 +302,11 @@ services:
       - ANONYMIZED_TELEMETRY=false
       - DO_NOT_TRACK=true
       - SCARF_NO_ANALYTICS=true
-      # Branding and defaults
+      # Branding and defaults. DEFAULT_MODELS is a hint for the WebUI's
+      # initial dropdown — the proxy's /v1/models is the source of truth,
+      # so users can switch to any preset at runtime.
       - WEBUI_NAME=llama.cpp
-      - DEFAULT_MODELS=Qwen3.5-27B-Q4_K_M
+      - DEFAULT_MODELS=${DEFAULT_MODELS:-Qwen3.5-27B-Q4_K_M}
       - ENABLE_PERSISTENT_CONFIG=false
       - 'DEFAULT_MODEL_PARAMS={"function_calling":"native","temperature":0.6,"top_p":0.95,"top_k":20}'
       - DEFAULT_PROMPT_SUGGESTIONS=[]

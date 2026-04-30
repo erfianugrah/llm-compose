@@ -27,7 +27,6 @@ import json
 import sys
 import urllib.request
 import urllib.error
-import urllib.parse
 import time
 import os
 import copy
@@ -63,12 +62,14 @@ def _load_local_config():
 
 _LOCAL = _load_local_config()
 
-# Defaults — overridden by comfyui.local.env if present
+# Defaults — overridden by comfyui.local.env if present.
+# These match the values advertised in the tool description so that
+# users without a local env get the same behavior as documented.
 DEFAULT_CHECKPOINT = _LOCAL.get("CHECKPOINT", "sd_xl_base_1.0.safetensors")
-DEFAULT_WIDTH = int(_LOCAL.get("WIDTH", "1024"))
-DEFAULT_HEIGHT = int(_LOCAL.get("HEIGHT", "1024"))
-DEFAULT_STEPS = int(_LOCAL.get("STEPS", "20"))
-DEFAULT_CFG = float(_LOCAL.get("CFG", "7.0"))
+DEFAULT_WIDTH = int(_LOCAL.get("WIDTH", "832"))
+DEFAULT_HEIGHT = int(_LOCAL.get("HEIGHT", "1216"))
+DEFAULT_STEPS = int(_LOCAL.get("STEPS", "30"))
+DEFAULT_CFG = float(_LOCAL.get("CFG", "5.0"))
 DEFAULT_SAMPLER = _LOCAL.get("SAMPLER", "euler")
 DEFAULT_SCHEDULER = _LOCAL.get("SCHEDULER", "normal")
 DEFAULT_POSITIVE_PREFIX = _LOCAL.get("POSITIVE_PREFIX", "masterpiece, best quality")
@@ -222,39 +223,20 @@ def tool_generate(params):
     except RuntimeError as e:
         return f"Generation failed: {e}"
 
-    # Extract output files and download them to CWD
+    # Extract output files. The ComfyUI volume is bind-mounted at OUTPUT_DIR
+    # on the host, so the files already exist on the user's filesystem —
+    # no need to re-download them and clutter the caller's CWD.
     outputs = history.get("outputs", {})
     files = []
-    for node_id, node_output in outputs.items():
+    for node_output in outputs.values():
         for img in node_output.get("images", []):
             filename = img.get("filename", "")
             subfolder = img.get("subfolder", "")
-            img_type = img.get("type", "output")
             if not filename:
                 continue
-
-            # Download via ComfyUI's /view endpoint to the caller's working dir
-            local_path = os.path.join(os.getcwd(), filename)
-            try:
-                view_params = urllib.parse.urlencode({
-                    "filename": filename,
-                    "subfolder": subfolder,
-                    "type": img_type,
-                })
-                view_url = f"{PROXY_URL}/comfyui/view?{view_params}"
-                req = urllib.request.Request(view_url, headers={"User-Agent": "comfyui-mcp/1.0"})
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    with open(local_path, "wb") as f:
-                        while True:
-                            chunk = resp.read(1 << 20)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                files.append(local_path)
-            except Exception as exc:
-                # Fallback: report the volume path
-                vol_path = os.path.join(OUTPUT_DIR, subfolder, filename) if subfolder else os.path.join(OUTPUT_DIR, filename)
-                files.append(f"{vol_path} (download failed: {exc})")
+            vol_path = (os.path.join(OUTPUT_DIR, subfolder, filename)
+                        if subfolder else os.path.join(OUTPUT_DIR, filename))
+            files.append(vol_path)
 
     if files:
         file_list = "\n".join(f"  - {f}" for f in files)

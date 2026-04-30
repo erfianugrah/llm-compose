@@ -109,6 +109,9 @@ def main() -> int:
     reject_prefixes = tuple(p.strip() for p in args.reject_on.split(",") if p.strip())
 
     captions = sorted(dataset.glob("*.txt"))
+    if not captions:
+        print(f"error: no .txt caption files found in {dataset}", file=sys.stderr)
+        return 1
     print(f"Auditing {len(captions)} caption files in {dataset}")
     if expected:
         print(f"Expected tags: {sorted(expected)}")

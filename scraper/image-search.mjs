@@ -11,7 +11,9 @@
 //   --max=<n>          Max images to download (default: 200)
 //   --min-width=<px>   Minimum image width (default: 400)
 //   --min-height=<px>  Minimum image height (default: 400)
-//   --headless         Run headless
+//   --headless         Run headless (default)
+//   --no-headless      Run headed (for debugging — also useful when Google
+//                      shows a CAPTCHA that needs manual solving)
 //   --concurrency=<n>  Parallel downloads (default: 5)
 
 import { chromium } from "playwright";
@@ -34,7 +36,7 @@ const opts = {
   max: 200,
   minWidth: 400,
   minHeight: 400,
-  headless: args.includes("--headless"),
+  headless: true,
   concurrency: 5,
 };
 
@@ -44,6 +46,8 @@ for (const arg of args) {
   else if (arg.startsWith("--min-width=")) opts.minWidth = parseInt(arg.split("=")[1]);
   else if (arg.startsWith("--min-height=")) opts.minHeight = parseInt(arg.split("=")[1]);
   else if (arg.startsWith("--concurrency=")) opts.concurrency = parseInt(arg.split("=")[1]);
+  else if (arg === "--headless") opts.headless = true;
+  else if (arg === "--no-headless") opts.headless = false;
 }
 
 const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");

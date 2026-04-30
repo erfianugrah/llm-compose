@@ -202,7 +202,8 @@ make caption-status   # poll until done (~1 img/s on 32GB GPU)
 **SDXL** (Illustrious-XL, NoobAI, JuggernautXL): `model_type=sdxl`
 - UNet-only training, cached text encoder outputs
 - batch_size=10-16, gradient checkpointing, ~1-5s/step
-- dim=32, alpha=32, lr=1e-4, AdamW, cosine schedule
+- dim=32, alpha=dim (LoRA scale=1.0), lr=1e-4, AdamW, cosine schedule
+- clip_skip=2 default (Illustrious/NoobAI/Pony/anime). Set `clip_skip=1` for JuggernautXL.
 - `--v_parameterization` flag for v-pred models (NoobAI v-pred)
 
 **Flux** (Flux.1-dev): `model_type=flux`
@@ -210,7 +211,9 @@ make caption-status   # poll until done (~1 img/s on 32GB GPU)
 - batch_size=2-4, gradient checkpointing, ~10-30s/step
 - dim=16, alpha=16, lr=1e-4, AdamW8bit, cosine schedule
 - `--timestep_sampling=sigmoid`, `--guidance_scale=1.0`, `--model_prediction_type=raw`
+- `--apply_t5_attn_mask` on by default
 - Separate `--ae`, `--clip_l`, `--t5xxl` paths for Flux components
+- Bumps to dim=32 cost ~4x file size with no identity gain for single-subject LoRAs
 - Much better face likeness than SDXL for real-person LoRAs
 
 **Common settings** (both model types):

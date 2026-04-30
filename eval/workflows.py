@@ -10,15 +10,21 @@ Workflow = dict[str, Node]
 def _flux_base(
     prompt: str,
     negative: str,
-    seed: int,
-    width: int,
-    height: int,
-    steps: int,
     filename_prefix: str,
+    width: int = 0,
+    height: int = 0,
+    include_latent: bool = True,
     t5xxl_name: str = "t5xxl_fp16.safetensors",
 ) -> tuple[Workflow, str]:
-    """Common Flux plumbing. Returns workflow + name of the 'model' node to
-    chain LoRAs onto (caller swaps node refs)."""
+    """Common Flux plumbing.
+
+    Returns (workflow, head_node_id) where head_node_id is the model node
+    that LoRAs (or the sampler) should chain onto. The latent/sampler/decode
+    nodes are added by the caller — _flux_base is sampler-agnostic.
+
+    `include_latent=False` skips the EmptyLatentImage node (img2img wires
+    its own VAEEncode-fed latent instead).
+    """
     wf: Workflow = {
         "unet": {"class_type": "UNETLoader", "inputs": {
             "unet_name": "flux1-dev.safetensors",
@@ -36,13 +42,14 @@ def _flux_base(
         "neg": {"class_type": "CLIPTextEncode", "inputs": {
             "clip": ["clip", 0], "text": negative,
         }},
-        "latent": {"class_type": "EmptyLatentImage", "inputs": {
-            "width": width, "height": height, "batch_size": 1,
-        }},
         "save": {"class_type": "SaveImage", "inputs": {
             "images": ["decode", 0], "filename_prefix": filename_prefix,
         }},
     }
+    if include_latent:
+        wf["latent"] = {"class_type": "EmptyLatentImage", "inputs": {
+            "width": width, "height": height, "batch_size": 1,
+        }}
     return wf, "unet"
 
 
@@ -61,7 +68,8 @@ def txt2img(
     loras: list of (lora_name_without_ext, strength). Applied in order.
            Empty list = no LoRA (pure Flux dev).
     """
-    wf, tail = _flux_base(prompt, negative, seed, width, height, steps, filename_prefix)
+    wf, tail = _flux_base(prompt, negative, filename_prefix,
+                          width=width, height=height)
 
     # Chain LoRAs onto the UNet output
     for i, (name, strength) in enumerate(loras):
@@ -101,10 +109,9 @@ def img2img(
     input_image: filename relative to ComfyUI input dir (~/docker-volumes/comfyui/input/).
     denoise 0.6-0.7 preserves subject, shifts style. 0.8+ loses identity.
     """
-    wf, tail = _flux_base(prompt, negative, seed, 0, 0, steps, filename_prefix)
+    wf, tail = _flux_base(prompt, negative, filename_prefix, include_latent=False)
 
-    # Replace EmptyLatentImage with LoadImage + VAEEncode
-    del wf["latent"]
+    # Wire LoadImage → VAEEncode as the latent source
     wf["load_img"] = {"class_type": "LoadImage", "inputs": {"image": input_image}}
     wf["encode"] = {"class_type": "VAEEncode", "inputs": {
         "pixels": ["load_img", 0], "vae": ["vae", 0],

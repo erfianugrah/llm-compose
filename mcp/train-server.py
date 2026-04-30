@@ -76,7 +76,8 @@ def tool_start(params):
                   "network_alpha", "learning_rate", "unet_lr",
                   "save_every_n_epochs", "gradient_checkpointing", "model_type",
                   "v_parameterization", "noise_offset", "min_snr_gamma",
-                  "fp8_base"):
+                  "fp8_base", "clip_skip", "keep_tokens",
+                  "apply_t5_attn_mask"):
         if field in params:
             config[field] = params[field]
 
@@ -309,8 +310,11 @@ TOOLS = [
             "Start a LoRA fine-tuning job. Triggers GPU mode swap — stops LLM/ComfyUI, "
             "starts training service. Training runs 10-60+ minutes. The LLM backend will "
             "be unavailable during training and restarts automatically on next chat request. "
-            "Default: Illustrious-XL base (SDXL). Set model_type='flux' for Flux training. "
-            "dim=32, 4 epochs. Override any parameter via arguments."
+            "Defaults differ by model type: SDXL uses dim=32 alpha=dim (Illustrious base, "
+            "clip_skip=2); Flux uses dim=16 alpha=16 (flux1-dev base, fp8_base+t5_attn_mask "
+            "on). 4 epochs default — bump to 8-12 for Flux face LoRAs. Override any "
+            "parameter via arguments. model_type is auto-detected from base_model name "
+            "(flux*.safetensors → flux)."
         ),
         "inputSchema": {
             "type": "object",
@@ -333,11 +337,23 @@ TOOLS = [
                 },
                 "network_dim": {
                     "type": "integer",
-                    "description": "LoRA rank/dimension. Higher = more capacity but larger file. Default: 32"
+                    "description": "LoRA rank/dimension. Higher = more capacity but larger file. Default: 32 (SDXL), 16 (Flux)"
                 },
                 "network_alpha": {
                     "type": "integer",
-                    "description": "LoRA alpha scaling factor. Default: 16"
+                    "description": "LoRA alpha scaling factor. LoRA scale = alpha/dim. Default: equal to network_dim (scale=1.0) for SDXL, 16 for Flux."
+                },
+                "clip_skip": {
+                    "type": "integer",
+                    "description": "SDXL only. CLIP layer to skip from. 2 for Illustrious/NoobAI/Pony/anime bases (default), 1 for JuggernautXL and other photo-realistic SDXL bases. Ignored for Flux."
+                },
+                "keep_tokens": {
+                    "type": "integer",
+                    "description": "Pin first N caption tokens (typically the trigger word) at the start during shuffle_caption. Default 0 (off). Set to 1 if your dataset_config has shuffle_caption=true."
+                },
+                "apply_t5_attn_mask": {
+                    "type": "boolean",
+                    "description": "Flux only. Apply T5 attention mask so padding tokens don't influence training. Default: true. No reason to disable except matching legacy training runs."
                 },
                 "learning_rate": {
                     "type": "string",
@@ -412,17 +428,18 @@ TOOLS = [
         "description": (
             "Start an async captioning job on a dataset in /data/datasets/. "
             "Engines: 'blip2' (natural language, recommended for Flux — aligns with T5-XXL), "
-            "'florence' (Florence-2, broken on transformers>=4.54, use blip2 instead), "
             "'wd14' (Danbooru tags, recommended for SDXL/anime models). "
             "Returns immediately; poll caption_status for progress. Overwrites existing "
-            ".txt captions if overwrite=true. Produces 1 image/sec for BLIP-2 on 32GB VRAM."
+            ".txt captions if overwrite=true. Produces 1 image/sec for BLIP-2 on 32GB VRAM. "
+            "Florence-2 was previously supported but is broken on transformers>=4.54; "
+            "use blip2 instead."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "dataset": {"type": "string",
                             "description": "dataset name under /data/datasets/"},
-                "engine": {"type": "string", "enum": ["blip2", "florence", "wd14"],
+                "engine": {"type": "string", "enum": ["blip2", "wd14"],
                            "description": "Captioning engine. Default: blip2"},
                 "trigger_word": {"type": "string",
                                  "description": "Prepended to every caption (e.g. subject name)"},

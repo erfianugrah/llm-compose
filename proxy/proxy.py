@@ -198,7 +198,10 @@ def _needs_system_merge(messages):
         for i, m in enumerate(messages):
             if not isinstance(m, dict):
                 continue
-            if m.get("role") == "system" and i > 0 and messages[i - 1].get("role") != "system":
+            if m.get("role") != "system" or i == 0:
+                continue
+            prev = messages[i - 1]
+            if not isinstance(prev, dict) or prev.get("role") != "system":
                 return True
         return False
     return True
@@ -333,8 +336,9 @@ def ensure_mode(target):
 # ── Model switching (within LLM mode) ────────────────────────────────
 def switch_model(preset_info):
     """Update .env with new model preset and recreate llama-server.
-    Assumes LLM mode is already active (or will be activated)."""
-    global current_model_id, switching
+    On success, sets active_mode='llm' and current_model_id.
+    Caller must hold switch_lock."""
+    global current_model_id, active_mode, switching
     switching = True
     preset_name = preset_info["preset"]
     model_name = preset_info["config"].get("MODEL_NAME", preset_name)
@@ -396,6 +400,7 @@ def switch_model(preset_info):
             return False
 
         current_model_id = preset_info["model_id"]
+        active_mode = "llm"
         log(f"Loaded: {model_name}")
         return True
     finally:
@@ -497,21 +502,20 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self._proxy_active(target_path, body=body)
 
     def do_OPTIONS(self):
-        mode, target_path = self._classify_route()
-        if mode == "comfyui":
-            if not self._ensure_comfyui():
-                return
-            self.proxy_to(COMFYUI_HOST, COMFYUI_PORT, target_path)
-        elif mode == "train":
-            if not self._ensure_train():
-                return
-            self.proxy_to(TRAIN_HOST, TRAIN_PORT, target_path)
-        elif mode == "llm":
-            if not self._ensure_llm():
-                return
-            self.proxy_to(LLAMA_HOST, LLAMA_PORT, target_path)
-        else:
-            self._proxy_active(target_path)
+        # CORS preflight — answer locally with permissive headers. Forwarding
+        # to the backend would trigger a GPU mode swap on every browser
+        # preflight (e.g. Open WebUI hitting /comfyui while LLM is active),
+        # silently stopping llama-server.
+        origin = self.headers.get("Origin", "*")
+        req_method = self.headers.get("Access-Control-Request-Method", "GET, POST, OPTIONS")
+        req_headers = self.headers.get("Access-Control-Request-Headers", "Content-Type, Authorization")
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", req_method)
+        self.send_header("Access-Control-Allow-Headers", req_headers)
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ── Mode management endpoints ────────────────────────────────────
     def handle_mode_get(self):
@@ -619,7 +623,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         The meta object follows the Open WebUI upstream metadata schema
         (PR #22441) so capabilities and descriptions are picked up
         automatically without manual UI configuration.
+
+        Reloads presets on each call so newly added models/*.env files
+        appear without restarting the proxy.
         """
+        ProxyHandler.presets = load_presets()
         models = []
         for model_id, info in self.presets.items():
             cfg = info["config"]
@@ -723,13 +731,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 return True
 
             success = switch_model(self.presets[requested_model])
-            if success:
-                active_mode = "llm"
             if not success:
                 _json_response(self, 503, {
                     "error": {"message": f"Failed to load model: {requested_model}", "type": "server_error", "code": 503}
                 })
                 return False
+            # switch_model already set active_mode="llm" on success
             return True
 
     # ── Generic reverse proxy ────────────────────────────────────────
@@ -787,7 +794,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # Quieter logging -- only log non-health/non-system_stats requests
-        msg = args[0] if args else ""
+        msg = " ".join(str(a) for a in args) if args else ""
         if "/health" not in msg and "/system_stats" not in msg:
             log(f"{self.address_string()} {msg}")
 

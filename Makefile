@@ -330,12 +330,17 @@ deploy-lora:
 			'ls /out/*.safetensors 2>/dev/null | sed "s|/out/||"' || true; \
 		exit 1; \
 	fi
-	@SRC="$(TRAIN_DIR)/output/$(NAME)"; \
-	if [ ! "$${SRC%.safetensors}" != "$$SRC" ]; then SRC="$${SRC}.safetensors"; fi; \
-	docker run --rm \
+	@docker run --rm \
 		-v "$(TRAIN_DIR)/output:/src:ro" \
 		-v "$(COMFYUI_DIR)/models/loras:/dst" \
-		alpine sh -c "cp /src/$(NAME) /dst/ 2>/dev/null || cp /src/$(NAME).safetensors /dst/ 2>/dev/null || echo 'Not found: $(NAME)'"
+		alpine sh -c '\
+			NAME="$(NAME)"; \
+			case "$$NAME" in *.safetensors) ;; *) NAME="$${NAME}.safetensors" ;; esac; \
+			if [ -f "/src/$$NAME" ]; then \
+				cp "/src/$$NAME" /dst/ && echo "Copied $$NAME"; \
+			else \
+				echo "Not found: /src/$$NAME"; exit 1; \
+			fi'
 	@echo "✓ Deployed $(NAME) to $(COMFYUI_DIR)/models/loras/"
 
 ## Rebuild lora-train image from source
