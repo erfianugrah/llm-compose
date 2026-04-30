@@ -66,37 +66,34 @@ def tool_start(params):
     """Start a LoRA training job."""
     if not params.get("dataset_config"):
         return "Error: 'dataset_config' is required. Use train_datasets to list available datasets, then provide the TOML config path (e.g. /data/configs/my-dataset.toml)"
-    config = {
-        "dataset_config": params["dataset_config"],
-        "base_model": params.get("base_model", "Illustrious-XL-v0.1.safetensors"),
-        "output_name": params.get("output_name", "lora-output"),
-        "epochs": params.get("epochs", 4),
-        "network_dim": params.get("network_dim", 32),
-        "network_alpha": params.get("network_alpha", params.get("network_dim", 32)),
-        "learning_rate": params.get("learning_rate", "1e-4"),
-        "unet_lr": params.get("unet_lr", params.get("learning_rate", "1e-4")),
-        "save_every_n_epochs": params.get("save_every_n_epochs", 1),
-        "gradient_checkpointing": params.get("gradient_checkpointing", True),
-        "model_type": params.get("model_type", "sdxl"),
-        "v_parameterization": params.get("v_parameterization", False),
-        "noise_offset": params.get("noise_offset", "0"),
-        "min_snr_gamma": params.get("min_snr_gamma", 0),
-        "fp8_base": params.get("fp8_base", False),
-    }
+    # Only set values that the user passed. The server auto-detects
+    # model_type from base_model filename (flux* → flux, else sdxl) and
+    # applies sensible defaults for everything else. Forcing defaults here
+    # would silently override auto-detection — a foot-gun that cost us
+    # two aborted Flux training runs.
+    config = {"dataset_config": params["dataset_config"]}
+    for field in ("base_model", "output_name", "epochs", "network_dim",
+                  "network_alpha", "learning_rate", "unet_lr",
+                  "save_every_n_epochs", "gradient_checkpointing", "model_type",
+                  "v_parameterization", "noise_offset", "min_snr_gamma",
+                  "fp8_base"):
+        if field in params:
+            config[field] = params[field]
 
     result = _request("POST", "/train/train", config)
     status = result.get("status", "unknown")
 
     if status == "started":
-        return (
-            f"Training started: {config['output_name']}\n"
-            f"Base model: {config['base_model']}\n"
-            f"Dataset config: {config['dataset_config']}\n"
-            f"Epochs: {config['epochs']}, dim={config['network_dim']}, alpha={config['network_alpha']}\n"
-            f"WARNING: GPU is now in training mode. LLM backend is stopped.\n"
-            f"Use train_status to monitor progress. Training will take 10-60+ minutes.\n"
-            f"The LLM will restart automatically when you send your next chat message after training."
-        )
+        effective = result.get("config", config)
+        lines = [f"Training started: {effective.get('output_name', '<default>')}"]
+        for field in ("base_model", "model_type", "dataset_config", "epochs",
+                      "network_dim", "network_alpha", "learning_rate"):
+            if field in effective:
+                lines.append(f"  {field}: {effective[field]}")
+        lines.append("WARNING: GPU is now in training mode. LLM backend is stopped.")
+        lines.append("Use train_status to monitor progress. Training will take 10-60+ minutes.")
+        lines.append("The LLM will restart automatically when you send your next chat message after training.")
+        return "\n".join(lines)
     return f"Failed to start training: {json.dumps(result)}"
 
 
