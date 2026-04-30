@@ -1,25 +1,38 @@
 #!/usr/bin/env python3
-"""End-to-end eval runner.
+"""End-to-end eval runner — all subcommands route through the proxy on
+:11434 so GPU mode swap is automatic.
 
-Usage (all routed through proxy — triggers GPU swap automatically):
+Subcommands (see `--help` on each for full options):
 
-  # Single shot: one prompt + one stack
+  shot         One prompt + one stack
+  stages       3-way comparison: photo / stylized / prompt-only
+  sweep        All STACKS side-by-side for one prompt
+  matrix       Stacks × seeds grid
+  checkpoints  Multiple training epochs of one face LoRA
+  quicktest    Preset 4-scenario sanity (plans from presets_local.py)
+  weights      Face × aux LoRA weight grid on one prompt
+  loras        Sweep a list of aux LoRAs at fixed weights
+  seeds        Identity robustness — N seeds on one config
+  i2i          Img2img denoise sweep from an input image
+
+Examples:
+
   python3 eval/run.py shot --prompt manhwa_stylized --stack face_manhwa_v5 --seed 111
 
-  # Stage comparison: same seed through A=photo, B=manhwa_stylized, C=manhwa_prompt
-  python3 eval/run.py stages --seed 111 --stack-b face_manhwa_v5
+  python3 eval/run.py weights --prompt photo --face-weights 0.7,0.85,1.0 \\
+         --aux flux-realism-xlabs --aux-weights 0,0.3,0.5
 
-  # Stack sweep: all style stacks side-by-side (1 seed, fixed prompt)
-  python3 eval/run.py sweep --prompt manhwa_stylized --seed 111
+  python3 eval/run.py loras --prompt manhwa_stylized \\
+         --loras flux-manhwa-v5,flux-manwha-webtoon,flux-illustration-alvdansen
 
-  # Seed matrix: N seeds × M stacks (build the identity robustness grid)
-  python3 eval/run.py matrix --prompt manhwa_stylized \\
-         --stacks face_manhwa_v5,face_manwha_web,face_illust \\
-         --seeds 111,222,333,444
+  python3 eval/run.py seeds --prompt photo --seeds 111,222,333,444,555,666 \\
+         --face-weight 0.7
 
-  # Checkpoint eval: swap the face LoRA across epochs, fixed seed
-  python3 eval/run.py checkpoints --face-prefix <face-lora-prefix> \\
-         --epochs 2,4,6,8,10,12 --weight 0.85
+  python3 eval/run.py i2i --input my_real.png --prompt manhwa_stylized \\
+         --stack face_manhwa_v5 --denoises 0.5,0.65,0.8
+
+  python3 eval/run.py checkpoints --face-prefix my-face-lora \\
+         --epochs 2,4,6,8,10,12 --weight 0.85 --zero-pad
 
 The face LoRA default is `face-lora` (a placeholder). Override via
 `--face-lora <name>` or set `FACE_LORA` in `eval/presets_local.py`.
@@ -166,6 +179,173 @@ def cmd_checkpoints(args: argparse.Namespace) -> None:
             print(f"  ✗ {e}")
 
 
+def _style_prefix_for(lora_name: str) -> str:
+    """Trigger-word prefix for common style LoRAs."""
+    # Look up via STACKS + STACK_PROMPT_PREFIX first (presets-driven)
+    for stack_key, stack in presets.STACKS.items():
+        if lora_name in [l[0] for l in stack]:
+            prefix = presets.STACK_PROMPT_PREFIX.get(stack_key, "")
+            if prefix:
+                return prefix
+    # Fallback: well-known defaults
+    fallback = {
+        "flux-manhwa-v5": "stylized-manhwa, ",
+        "flux-manwha-webtoon": "manwha_style, manwha, cartoon, ",
+    }
+    return fallback.get(lora_name, "")
+
+
+def cmd_weights(args: argparse.Namespace) -> None:
+    """Face × aux LoRA weight grid on a single prompt.
+
+    Example:
+      run.py weights --prompt photo --face-weights 0.7,0.85,1.0 \\
+                     --aux flux-realism-xlabs --aux-weights 0,0.3,0.5
+
+    aux-weight 0 omits the aux LoRA entirely.
+    """
+    face = args.face_lora
+    face_weights = [float(x) for x in args.face_weights.split(",")]
+    aux_weights = [float(x) for x in args.aux_weights.split(",")]
+    prefix = _style_prefix_for(args.aux) if args.aux else ""
+
+    base_prompt = presets.PROMPTS[args.prompt] if args.prompt in presets.PROMPTS else args.prompt
+    prompt = f"{prefix}{base_prompt}" if prefix else base_prompt
+
+    total = len(face_weights) * len(aux_weights)
+    done = 0
+    for fw in face_weights:
+        for aw in aux_weights:
+            done += 1
+            stack = [(face, fw)]
+            if aw > 0 and args.aux:
+                stack.append((args.aux, aw))
+            label = f"f{fw:.2f}_a{aw:.2f}" if args.aux else f"f{fw:.2f}"
+            wf = workflows.txt2img(
+                prompt=prompt,
+                loras=stack,
+                seed=args.seed,
+                negative=_negative_for(args.prompt),
+                filename_prefix=f"eval/weights_{args.prompt}/{label}",
+            )
+            print(f"[weights {done}/{total}]  {label}  loras={stack}")
+            try:
+                files = comfyui.generate(wf, timeout=args.timeout)
+                for f in files:
+                    print(f"  → {f}")
+            except Exception as e:
+                print(f"  ✗ {e}")
+
+
+def cmd_loras(args: argparse.Namespace) -> None:
+    """Sweep a list of aux LoRAs stacked on the face LoRA.
+
+    Useful to compare style LoRAs head-to-head at identical settings:
+      run.py loras --prompt manhwa_stylized \\
+                   --loras flux-manhwa-v5,flux-manwha-webtoon,flux-illustration-alvdansen
+    """
+    face = args.face_lora
+    auxes = args.loras.split(",")
+    base_prompt = presets.PROMPTS[args.prompt] if args.prompt in presets.PROMPTS else args.prompt
+
+    for aux in auxes:
+        prefix = _style_prefix_for(aux)
+        prompt = f"{prefix}{base_prompt}" if prefix else base_prompt
+        stack = [(face, args.face_weight), (aux, args.aux_weight)]
+        wf = workflows.txt2img(
+            prompt=prompt,
+            loras=stack,
+            seed=args.seed,
+            negative=_negative_for(args.prompt),
+            filename_prefix=f"eval/loras_{args.prompt}/{aux}",
+        )
+        print(f"[loras] aux={aux}")
+        try:
+            files = comfyui.generate(wf, timeout=args.timeout)
+            for f in files:
+                print(f"  → {f}")
+        except Exception as e:
+            print(f"  ✗ {e}")
+
+
+def cmd_seeds(args: argparse.Namespace) -> None:
+    """Identity robustness: N seeds on a single config.
+
+    If --stack is set, uses that STACKS entry. Otherwise uses --face-lora
+    at --face-weight, no aux LoRA.
+    """
+    seeds = [int(s) for s in args.seeds.split(",")]
+    if args.stack:
+        stack = _stack(args.stack)
+        prompt = _prompt(args.prompt, args.stack)
+        tag = args.stack
+    else:
+        stack = [(args.face_lora, args.face_weight)]
+        base_prompt = presets.PROMPTS[args.prompt] if args.prompt in presets.PROMPTS else args.prompt
+        prompt = base_prompt
+        tag = f"{args.face_lora}_f{args.face_weight:.2f}"
+
+    for seed in seeds:
+        wf = workflows.txt2img(
+            prompt=prompt,
+            loras=stack,
+            seed=seed,
+            negative=_negative_for(args.prompt),
+            filename_prefix=f"eval/seeds_{args.prompt}_{tag}/s{seed}",
+        )
+        print(f"[seeds] s={seed}  tag={tag}")
+        try:
+            files = comfyui.generate(wf, timeout=args.timeout)
+            for f in files:
+                print(f"  → {f}")
+        except Exception as e:
+            print(f"  ✗ {e}")
+
+
+def cmd_i2i(args: argparse.Namespace) -> None:
+    """Img2img denoise sweep — preserves source geometry, shifts style.
+
+    Needs an input image already present in ComfyUI's input dir:
+      ~/docker-volumes/comfyui/input/<file>
+
+    Example:
+      run.py i2i --input sophia_real.png \\
+                 --prompt manhwa_stylized --stack face_manhwa_v5 \\
+                 --denoises 0.5,0.65,0.8
+    """
+    denoises = [float(x) for x in args.denoises.split(",")]
+    if args.stack:
+        stack = _stack(args.stack)
+        prompt = _prompt(args.prompt, args.stack)
+        tag = args.stack
+    else:
+        stack = [(args.face_lora, args.face_weight)]
+        if args.aux:
+            stack.append((args.aux, args.aux_weight))
+        base_prompt = presets.PROMPTS[args.prompt] if args.prompt in presets.PROMPTS else args.prompt
+        prefix = _style_prefix_for(args.aux) if args.aux else ""
+        prompt = f"{prefix}{base_prompt}" if prefix else base_prompt
+        tag = f"{args.face_lora}_{args.aux or 'noaux'}"
+
+    for dn in denoises:
+        wf = workflows.img2img(
+            prompt=prompt,
+            input_image=args.input,
+            loras=stack,
+            seed=args.seed,
+            denoise=dn,
+            negative=_negative_for(args.prompt),
+            filename_prefix=f"eval/i2i_{args.prompt}_{tag}/denoise_{dn:.2f}",
+        )
+        print(f"[i2i] denoise={dn}  input={args.input}")
+        try:
+            files = comfyui.generate(wf, timeout=args.timeout)
+            for f in files:
+                print(f"  → {f}")
+        except Exception as e:
+            print(f"  ✗ {e}")
+
+
 def cmd_quicktest(args: argparse.Namespace) -> None:
     """Sanity-check grid — runs before a full training session.
 
@@ -263,6 +443,56 @@ def main() -> int:
                    help="e.g. flux-manhwa-v5 / flux-manwha-webtoon / flux-illustration-alvdansen")
     s.add_argument("--style-weight", type=float, default=0.9)
     s.set_defaults(fn=cmd_quicktest)
+
+    s = sub.add_parser("weights",
+                       help="face x aux LoRA weight grid on one prompt")
+    s.add_argument("--prompt", default="photo")
+    s.add_argument("--seed", type=int, default=111)
+    s.add_argument("--face-lora", default=presets.FACE_LORA)
+    s.add_argument("--face-weights", default="0.7,0.85,1.0",
+                   help="comma-separated face weights")
+    s.add_argument("--aux", default="",
+                   help="aux LoRA name (e.g. flux-realism-xlabs); empty = face only")
+    s.add_argument("--aux-weights", default="0,0.5",
+                   help="comma-separated aux weights; 0 omits the aux LoRA")
+    s.set_defaults(fn=cmd_weights)
+
+    s = sub.add_parser("loras",
+                       help="sweep a list of aux LoRAs at fixed weights")
+    s.add_argument("--prompt", default="manhwa_stylized")
+    s.add_argument("--seed", type=int, default=111)
+    s.add_argument("--face-lora", default=presets.FACE_LORA)
+    s.add_argument("--face-weight", type=float, default=presets.FACE_WEIGHT)
+    s.add_argument("--loras", required=True,
+                   help="comma-separated aux LoRA filenames (no .safetensors)")
+    s.add_argument("--aux-weight", type=float, default=0.9)
+    s.set_defaults(fn=cmd_loras)
+
+    s = sub.add_parser("seeds",
+                       help="identity robustness — N seeds on a single config")
+    s.add_argument("--prompt", default="photo")
+    s.add_argument("--seeds", default="111,222,333,444,555,666")
+    s.add_argument("--stack", default="",
+                   help="named stack from presets.STACKS; overrides --face-lora/--face-weight")
+    s.add_argument("--face-lora", default=presets.FACE_LORA)
+    s.add_argument("--face-weight", type=float, default=presets.FACE_WEIGHT)
+    s.set_defaults(fn=cmd_seeds)
+
+    s = sub.add_parser("i2i",
+                       help="img2img denoise sweep from an input image")
+    s.add_argument("--input", required=True,
+                   help="filename in ~/docker-volumes/comfyui/input/")
+    s.add_argument("--prompt", default="manhwa_stylized")
+    s.add_argument("--seed", type=int, default=111)
+    s.add_argument("--denoises", default="0.5,0.65,0.8")
+    s.add_argument("--stack", default="",
+                   help="named stack; overrides --face-lora/--aux")
+    s.add_argument("--face-lora", default=presets.FACE_LORA)
+    s.add_argument("--face-weight", type=float, default=presets.FACE_WEIGHT)
+    s.add_argument("--aux", default="",
+                   help="optional style LoRA stacked on face")
+    s.add_argument("--aux-weight", type=float, default=0.9)
+    s.set_defaults(fn=cmd_i2i)
 
     s = sub.add_parser("checkpoints")
     s.add_argument("--face-prefix", required=True,

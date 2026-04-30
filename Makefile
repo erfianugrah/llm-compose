@@ -395,6 +395,53 @@ eval-ckpts:
 		--seed $${SEED:-111} \
 		--prompt $${PROMPT:-id_lock}
 
+## Face × aux LoRA weight grid on one prompt
+## Usage: make eval-weights PROMPT=photo FACE_WEIGHTS=0.7,0.85,1.0 AUX=flux-realism-xlabs AUX_WEIGHTS=0,0.5
+eval-weights:
+	@python3 eval/run.py weights \
+		--prompt $${PROMPT:-photo} \
+		--seed $${SEED:-111} \
+		--face-weights $${FACE_WEIGHTS:-0.7,0.85,1.0} \
+		$${AUX:+--aux $$AUX} \
+		--aux-weights $${AUX_WEIGHTS:-0,0.5}
+
+## Sweep a list of aux LoRAs at fixed weights
+## Usage: make eval-loras LORAS=flux-manhwa-v5,flux-manwha-webtoon PROMPT=manhwa_stylized
+eval-loras:
+	@if [ -z "$${LORAS}" ]; then \
+		echo "Usage: make eval-loras LORAS=<lora1>,<lora2>,..."; \
+		exit 1; \
+	fi
+	@python3 eval/run.py loras \
+		--prompt $${PROMPT:-manhwa_stylized} \
+		--seed $${SEED:-111} \
+		--loras $$LORAS \
+		--aux-weight $${AUX_WEIGHT:-0.9}
+
+## Identity robustness: N seeds on one config
+## Usage: make eval-seeds SEEDS=111,222,333,444 [STACK=face_only | FACE_WEIGHT=0.7]
+eval-seeds:
+	@python3 eval/run.py seeds \
+		--prompt $${PROMPT:-photo} \
+		--seeds $${SEEDS:-111,222,333,444,555,666} \
+		$${STACK:+--stack $$STACK} \
+		--face-weight $${FACE_WEIGHT:-0.7}
+
+## Img2img denoise sweep from an input image in ~/docker-volumes/comfyui/input/
+## Usage: make eval-i2i INPUT=my_real.png PROMPT=manhwa_stylized STACK=face_manhwa_v5
+eval-i2i:
+	@if [ -z "$${INPUT}" ]; then \
+		echo "Usage: make eval-i2i INPUT=<filename>"; \
+		echo "  File must exist in ~/docker-volumes/comfyui/input/"; \
+		exit 1; \
+	fi
+	@python3 eval/run.py i2i \
+		--input $$INPUT \
+		--prompt $${PROMPT:-manhwa_stylized} \
+		--seed $${SEED:-111} \
+		--denoises $${DENOISES:-0.5,0.65,0.8} \
+		$${STACK:+--stack $$STACK}
+
 # ── ComfyUI model setup ──────────────────────────────────────────────
 .PHONY: setup-comfyui
 
@@ -565,11 +612,15 @@ help:
 	@echo "  make rebuild-train      Rebuild lora-train image"
 	@echo ""
 	@echo "LoRA evaluation (routes via proxy — auto GPU swap):"
-	@echo "  make eval-quick         4-scenario sanity (SFW/NSFW × real/manhwa)"
+	@echo "  make eval-quick         4-scenario sanity (see presets_local.py)"
 	@echo "  make eval-stages        3-stage comparison at fixed seed"
-	@echo "  make eval-sweep         All style stacks side-by-side"
+	@echo "  make eval-sweep         All named stacks side-by-side"
 	@echo "  make eval-matrix        Seeds × stacks grid"
-	@echo "  make eval-ckpts         Compare training epochs"
+	@echo "  make eval-ckpts         Compare training epochs (FACE_PREFIX=x)"
+	@echo "  make eval-weights       Face × aux LoRA weight grid (AUX=realism)"
+	@echo "  make eval-loras         Sweep a list of aux LoRAs (LORAS=a,b,c)"
+	@echo "  make eval-seeds         Identity robustness (N seeds, 1 config)"
+	@echo "  make eval-i2i           Img2img denoise sweep (INPUT=file.png)"
 	@echo ""
 	@echo "ComfyUI model setup:"
 	@echo "  make setup-comfyui      Download checkpoints, IP-Adapter, CLIP, upscaler (~17 GB)"

@@ -119,15 +119,19 @@ All under `~/docker-volumes/`:
 - `eval/comfyui.py` — proxy-aware ComfyUI client (`submit`, `wait`, `generate`). Handles 503 retries during GPU mode swap.
 - `eval/workflows.py` — reusable workflow builders. `txt2img(prompt, loras, seed, ...)` and `img2img(prompt, input_image, loras, denoise, ...)`. LoRAs are applied as a chain of `LoraLoaderModelOnly` nodes so stacking is trivial.
 - `eval/presets.py` — `SUBJECT`, `NEG_*`, `PROMPTS` (id_lock / angle / photo / manhwa_stylized / manhwa_prompt), `STACKS` (named LoRA combinations), `STACK_PROMPT_PREFIX` (style trigger tokens), `SEEDS` (default 8-seed battery). User-specific prompt overrides can be added via a gitignored `eval/presets.local.py` that updates the `PROMPTS` dict at import time.
-- `eval/run.py` — CLI with sub-commands: `shot`, `stages`, `sweep`, `matrix`, `checkpoints`, `quicktest`.
+- `eval/run.py` — CLI with sub-commands: `shot`, `stages`, `sweep`, `matrix`, `checkpoints`, `quicktest`, `weights`, `loras`, `seeds`, `i2i`.
 
 **Make targets:**
 ```bash
-make eval-quick       # 4-scenario sanity (SFW/NSFW × real/manhwa) — use before full training
+make eval-quick       # 4-scenario sanity (plans from presets_local.py) — use before full training
 make eval-stages      # 3-stage: photo / stylized / prompt-only
-make eval-sweep       # All style stacks side-by-side for one prompt
+make eval-sweep       # All named stacks side-by-side for one prompt
 make eval-matrix      # Seeds × stacks grid
 make eval-ckpts       # Compare training checkpoints (ep2/4/6/...)
+make eval-weights     # Face × aux LoRA weight grid (e.g. face 0.7,0.85,1.0 × realism 0,0.5)
+make eval-loras       # Sweep a list of aux LoRAs head-to-head at fixed weights
+make eval-seeds       # Identity robustness — N seeds on one config
+make eval-i2i         # Img2img denoise sweep from an input image
 ```
 
 Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-webtoon`, `STACK_B=face_manhwa_v5`, etc.
