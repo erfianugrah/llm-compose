@@ -108,13 +108,44 @@ class CaptionJob:
 
     def cancel(self):
         if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+            _killpg(self.process)
             self.state = "cancelled"
             self.end_time = time.monotonic()
+
+
+def _killpg(proc, grace: int = 10):
+    """Kill the entire process group (proc + all its descendants).
+
+    Without this, accelerate/torch-inductor fork helper workers that
+    survive a simple proc.terminate() on the parent and linger as
+    orphans holding PID slots + compile cache + file handles until
+    the container restarts.
+
+    Requires the subprocess to have been started with
+    `preexec_fn=os.setsid` (or `start_new_session=True`) so it's the
+    leader of its own process group.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _run_caption(job):
@@ -129,6 +160,8 @@ def _run_caption(job):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            # New session so cancel can killpg the whole subprocess tree
+            start_new_session=True,
         )
         job.state = "running"
 
@@ -239,11 +272,7 @@ class TrainingJob:
 
     def cancel(self):
         if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+            _killpg(self.process)
             self.state = "cancelled"
             self.end_time = time.monotonic()
 
@@ -436,6 +465,9 @@ def _run_training(job):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["TRAIN_PROGRESS_FILE"] = progress_file
+        # Limit torch._inductor's compile worker pool so it doesn't fork
+        # 16 helper processes that turn the dev machine into a slideshow.
+        env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "4")
 
         job.process = subprocess.Popen(
             cmd,
@@ -444,6 +476,9 @@ def _run_training(job):
             text=True,
             bufsize=1,
             env=env,
+            # New session so cancel can killpg the whole accelerate tree
+            # (accelerate launcher -> python script -> inductor workers)
+            start_new_session=True,
         )
 
         # Reader thread for stdout (log lines — NOT tqdm progress)
@@ -709,6 +744,43 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
                 "dataset": dataset,
                 "trigger_word": trigger_word,
             })
+
+        elif path == "/cleanup":
+            # Safety-net: kill any orphaned training/captioning subprocesses
+            # that escaped normal cancel (e.g. after container restart mid-run,
+            # or a previous server instance that crashed). Only touches known
+            # process names — never touches /train-server.py itself.
+            import glob
+            killed = []
+            for proc_dir in glob.glob("/proc/[0-9]*"):
+                try:
+                    pid = int(os.path.basename(proc_dir))
+                    if pid == os.getpid():
+                        continue
+                    with open(f"{proc_dir}/cmdline", "rb") as f:
+                        cmdline = f.read().replace(b"\x00", b" ").decode(errors="replace")
+                    # Target known stragglers
+                    if any(marker in cmdline for marker in (
+                        "flux_train_network", "sdxl_train_network",
+                        "caption_blip2", "caption_florence",
+                        "compile_worker", "tag_images_by_wd14",
+                        "accelerate",
+                    )):
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                            killed.append({"pid": pid, "cmdline": cmdline[:120]})
+                        except ProcessLookupError:
+                            pass
+                except (OSError, ValueError):
+                    continue
+            # Give them a moment to exit cleanly, then SIGKILL any survivors
+            time.sleep(1)
+            for k in killed:
+                try:
+                    os.kill(k["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            _json_response(self, 200, {"killed": len(killed), "details": killed})
 
         elif path == "/caption/cancel":
             with caption_job_lock:

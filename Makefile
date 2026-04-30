@@ -400,6 +400,12 @@ caption-cancel:
 		| python3 -m json.tool 2>/dev/null \
 		|| echo "Caption service not reachable"
 
+## Kill orphaned training/captioning subprocesses (safety-net)
+train-cleanup:
+	@curl -s -X POST http://localhost:11434/train/cleanup \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Train service not reachable"
+
 # ── LoRA evaluation (prompts + workflows + sweeps) ───────────────────
 .PHONY: eval-quick eval-stages eval-sweep eval-matrix eval-ckpts
 
