@@ -11,12 +11,14 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir accelerate onnxruntime-gpu onnx timm einops
 
 # Copy training API server, progress hook, natural-language captioners,
-# and dataset filter utility
+# and dataset audit/filter utilities
 COPY train/server.py /train-server.py
 COPY train/progress_hook.py /train-hooks/progress_hook.py
 COPY train/caption_florence.py /train-hooks/caption_florence.py
 COPY train/caption_blip2.py /train-hooks/caption_blip2.py
+COPY scripts/audit-dataset.py /audit-dataset.py
 COPY scripts/filter-dataset.py /filter-dataset.py
+COPY scripts/pick-focus-subset.py /pick-focus-subset.py
 
 # Install .pth file that auto-loads our tqdm progress hook in ALL python processes
 # (including accelerate's subprocess). Only activates when TRAIN_PROGRESS_FILE is set.

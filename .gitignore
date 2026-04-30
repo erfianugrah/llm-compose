@@ -33,3 +33,7 @@ eval/presets.local.py
 *.png
 !docs/**/*.png
 !scraper/**/*.png
+
+# Python bytecode caches
+mcp/__pycache__/
+**/__pycache__/

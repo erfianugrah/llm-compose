@@ -347,27 +347,44 @@ rebuild-train:
 
 ## Audit a dataset's WD14 captions for issues (wrong person, conflicts, low quality).
 ## Usage: make dataset-audit DATASET=my-dataset [EXPECTED=freckles,red hair]
+## Runs inside lora_train container so the reject list can be written to the
+## root-owned datasets dir. Reject list saved as <dataset>-rejects.txt.
 dataset-audit:
 	@if [ -z "$${DATASET}" ]; then \
 		echo "Usage: make dataset-audit DATASET=<name> [EXPECTED=tag1,tag2]"; \
 		exit 1; \
 	fi
-	@python3 scripts/audit-dataset.py "$(TRAIN_DIR)/datasets/$$DATASET" \
-		$${EXPECTED:+--expected-tags $$EXPECTED} \
-		--reject-out "$(TRAIN_DIR)/datasets/$$DATASET-rejects.txt"
+	@docker exec lora_train python3 /audit-dataset.py \
+		"/data/datasets/$$DATASET" \
+		$${EXPECTED:+--expected-tags "$$EXPECTED"} \
+		--reject-out "/data/datasets/$$DATASET-rejects.txt"
+
+## Pick N images from a captioned dataset to a focused sub-dataset.
+## Strategy 'longest-caption' picks images whose BLIP-2 descriptions are
+## longest (proxy for richest content). Use for Flux face training where
+## 30-50 focused images beat 500+ under-trained-per-image.
+## Usage: make dataset-focus SRC=my-clean DST=my-focus [N=40] [STRATEGY=longest-caption|random]
+dataset-focus:
+	@if [ -z "$${SRC}" ] || [ -z "$${DST}" ]; then \
+		echo "Usage: make dataset-focus SRC=<source> DST=<focus-dest> [N=40]"; \
+		exit 1; \
+	fi
+	@docker exec lora_train python3 /pick-focus-subset.py \
+		"/data/datasets/$$SRC" "/data/datasets/$$DST" \
+		--n $${N:-40} \
+		--strategy $${STRATEGY:-longest-caption}
 
 ## Copy a dataset to a clean target, excluding files on the reject list.
 ## Usage: make dataset-filter SRC=my-dataset DST=my-dataset-clean
 dataset-filter:
 	@if [ -z "$${SRC}" ] || [ -z "$${DST}" ]; then \
 		echo "Usage: make dataset-filter SRC=<source> DST=<clean-dest>"; \
-		echo "  Requires $(TRAIN_DIR)/datasets/\$$SRC-rejects.txt from dataset-audit"; \
+		echo "  Requires /data/datasets/\$$SRC-rejects.txt from dataset-audit"; \
 		exit 1; \
 	fi
-	@docker exec lora_train python /filter-dataset.py \
+	@docker exec lora_train python3 /filter-dataset.py \
 		"/data/datasets/$$SRC" "/data/datasets/$$DST" \
-		--rejects "/data/datasets/$$SRC-rejects.txt" || \
-		{ echo "ensure filter-dataset.py is copied into lora_train"; exit 1; }
+		--rejects "/data/datasets/$$SRC-rejects.txt"
 
 ## Start a captioning job (async). Engines: blip2 (natural lang, default),
 ## florence (broken on current transformers), wd14 (tags for SDXL).
@@ -677,9 +694,10 @@ help:
 	@echo "  make deploy-lora NAME=x Copy trained LoRA to ComfyUI"
 	@echo "  make rebuild-train      Rebuild lora-train image"
 	@echo ""
-	@echo "Dataset prep (audit WD14 captions, filter, re-caption with BLIP-2):"
+	@echo "Dataset prep (audit WD14 captions, filter, re-caption, focus subset):"
 	@echo "  make dataset-audit DATASET=x         Audit WD14 captions for issues"
 	@echo "  make dataset-filter SRC=x DST=y      Copy dataset minus rejected stems"
+	@echo "  make dataset-focus SRC=x DST=y [N=40] Pick N best images for focus training"
 	@echo "  make dataset-caption DATASET=x       Start caption job (engine=blip2 default)"
 	@echo "  make caption-status                  Show caption progress"
 	@echo "  make caption-logs                    Tail caption logs"

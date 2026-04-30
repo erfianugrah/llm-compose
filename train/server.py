@@ -389,8 +389,14 @@ def _build_flux_command(config):
     - model_prediction_type=raw
     - Separate --ae, --clip_l, --t5xxl paths for Flux components
     - fp8_base optional for VRAM savings
+    - AdamW8bit default — kohya's recommended optimizer for Flux
+      (saves VRAM, similar quality to AdamW).
     """
     c = _common_config(config)
+    # Flux prefers AdamW8bit over AdamW — override only if caller
+    # didn't pick an optimizer explicitly.
+    if "optimizer" not in config:
+        c["optimizer"] = "AdamW8bit"
     base_model = config.get("base_model", "flux1-dev.safetensors")
     fp8_base = config.get("fp8_base", True)  # default True: 32GB VRAM needs fp8 for Flux 12B
     guidance_scale = config.get("guidance_scale", "1.0")
