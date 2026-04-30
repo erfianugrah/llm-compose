@@ -342,6 +342,59 @@ deploy-lora:
 rebuild-train:
 	docker compose --profile train build lora-train
 
+# ── LoRA evaluation (prompts + workflows + sweeps) ───────────────────
+.PHONY: eval-quick eval-stages eval-sweep eval-matrix eval-ckpts
+
+## 4-scenario sanity check on an existing face LoRA (content-neutral defaults)
+## Usage: make eval-quick [SEED=111] [FACE=my-face-lora] [STYLE=flux-manhwa-v5]
+## The FACE default comes from presets_local.py (FACE_LORA) if set.
+eval-quick:
+	@python3 eval/run.py quicktest \
+		--seed $${SEED:-111} \
+		$${FACE:+--face-lora $$FACE} \
+		$${FACE_WEIGHT:+--face-weight $$FACE_WEIGHT} \
+		--style-lora $${STYLE:-flux-manhwa-v5} \
+		--style-weight $${STYLE_WEIGHT:-0.9}
+
+## 3-stage comparison: photo / stylized / prompt-only at fixed seed
+## Usage: make eval-stages [SEED=111] [STACK_B=face_manhwa_v5]
+eval-stages:
+	@python3 eval/run.py stages \
+		--seed $${SEED:-111} \
+		--stack-a $${STACK_A:-face_realism} \
+		--stack-b $${STACK_B:-face_manhwa_v5}
+
+## Sweep all style stacks side-by-side at fixed seed
+## Usage: make eval-sweep [PROMPT=manhwa_stylized] [SEED=111]
+eval-sweep:
+	@python3 eval/run.py sweep \
+		--prompt $${PROMPT:-sfw_manhwa} \
+		--seed $${SEED:-111}
+
+## Full seeds × stacks matrix
+## Usage: make eval-matrix STACKS=face_manhwa_v5,face_manwha_web SEEDS=111,222,333
+eval-matrix:
+	@python3 eval/run.py matrix \
+		--prompt $${PROMPT:-sfw_manhwa} \
+		--stacks $${STACKS:-face_manhwa_v5,face_manwha_web,face_illust} \
+		--seeds $${SEEDS:-111,222,333,444}
+
+## Eval across training checkpoints (auto-handles kohya zero-padding)
+## Usage: make eval-ckpts FACE_PREFIX=<output_name> EPOCHS=2,4,6,8,10,12
+eval-ckpts:
+	@if [ -z "$${FACE_PREFIX}" ]; then \
+		echo "Usage: make eval-ckpts FACE_PREFIX=<output_name>"; \
+		echo "  Example: FACE_PREFIX=my-face-lora EPOCHS=2,4,6,8,10,12"; \
+		exit 1; \
+	fi
+	@python3 eval/run.py checkpoints \
+		--face-prefix $$FACE_PREFIX \
+		--epochs $${EPOCHS:-2,4,6,8,10,12} \
+		--zero-pad \
+		--weight $${WEIGHT:-0.85} \
+		--seed $${SEED:-111} \
+		--prompt $${PROMPT:-id_lock}
+
 # ── ComfyUI model setup ──────────────────────────────────────────────
 .PHONY: setup-comfyui
 
@@ -510,6 +563,13 @@ help:
 	@echo "  make logs-train         Follow lora-train container logs"
 	@echo "  make deploy-lora NAME=x Copy trained LoRA to ComfyUI"
 	@echo "  make rebuild-train      Rebuild lora-train image"
+	@echo ""
+	@echo "LoRA evaluation (routes via proxy — auto GPU swap):"
+	@echo "  make eval-quick         4-scenario sanity (SFW/NSFW × real/manhwa)"
+	@echo "  make eval-stages        3-stage comparison at fixed seed"
+	@echo "  make eval-sweep         All style stacks side-by-side"
+	@echo "  make eval-matrix        Seeds × stacks grid"
+	@echo "  make eval-ckpts         Compare training epochs"
 	@echo ""
 	@echo "ComfyUI model setup:"
 	@echo "  make setup-comfyui      Download checkpoints, IP-Adapter, CLIP, upscaler (~17 GB)"

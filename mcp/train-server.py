@@ -286,6 +286,19 @@ TOOLS = [
                 "gradient_checkpointing": {
                     "type": "boolean",
                     "description": "Enable gradient checkpointing (slower but uses less VRAM). Default: true"
+                },
+                "model_type": {
+                    "type": "string",
+                    "enum": ["sdxl", "flux"],
+                    "description": "Auto-detected from base_model filename (flux*.safetensors → flux). Override only if detection is wrong."
+                },
+                "fp8_base": {
+                    "type": "boolean",
+                    "description": "fp8 base model — MANDATORY for Flux on 32GB VRAM. Auto-enabled for Flux, ignored for SDXL. Default: true for Flux"
+                },
+                "v_parameterization": {
+                    "type": "boolean",
+                    "description": "Enable v-prediction training. Required for NoobAI-v-pred. Default: false"
                 }
             }
         }

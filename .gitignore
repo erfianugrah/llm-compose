@@ -23,3 +23,13 @@ scraper/scout.mjs
 train/__pycache__/
 train/test_progress.py
 train/train_wrapper.py
+
+# Eval local overrides (user-specific subjects, NSFW prompts, etc.)
+eval/__pycache__/
+eval/presets_local.py
+eval/presets.local.py
+
+# Accidentally-dropped test images in repo root
+*.png
+!docs/**/*.png
+!scraper/**/*.png

@@ -232,6 +232,11 @@ services:
       - ~/docker-volumes/training-data:/data
       - ~/docker-volumes/comfyui/models:/models:ro
       - ~/docker-volumes/comfyui/models/loras:/loras
+      # Bind-mount server.py for dev iteration — restart picks up changes
+      # without rebuilding the image. Baked-in copy at /train-server.py remains
+      # as the fallback if this mount is missing.
+      - ./train/server.py:/train-server.py:ro
+      - ./train/progress_hook.py:/train-hooks/progress_hook.py:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8787/health || exit 1"]
       interval: 30s

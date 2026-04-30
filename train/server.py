@@ -141,9 +141,25 @@ class TrainingJob:
             self.end_time = time.monotonic()
 
 
+def _detect_model_type(config):
+    """Auto-detect model_type from base_model filename if not set explicitly.
+
+    Flux patterns: 'flux', 'flux1-dev', 'flux.1'
+    SDXL patterns: illustrious, noobai, juggernaut, sd_xl, animagine, pony
+    """
+    explicit = config.get("model_type")
+    if explicit:
+        return explicit
+    base = (config.get("base_model") or "").lower()
+    if "flux" in base:
+        return "flux"
+    return "sdxl"
+
+
 def _build_train_command(config):
     """Build the training command. Dispatches to SDXL or Flux based on model_type."""
-    model_type = config.get("model_type", "sdxl")
+    model_type = _detect_model_type(config)
+    config["model_type"] = model_type  # persist for logging
     if model_type == "flux":
         return _build_flux_command(config)
     return _build_sdxl_command(config)

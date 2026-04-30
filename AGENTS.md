@@ -111,6 +111,37 @@ All under `~/docker-volumes/`:
 
 `make clean` removes Docker volumes but preserves downloaded models.
 
+## Evaluation workflow (LoRA testing)
+
+`eval/` holds the ComfyUI-based LoRA evaluation stack. Routes through the proxy on :11434 so GPU swap is automatic — no manual `make comfyui` needed.
+
+**Layout:**
+- `eval/comfyui.py` — proxy-aware ComfyUI client (`submit`, `wait`, `generate`). Handles 503 retries during GPU mode swap.
+- `eval/workflows.py` — reusable workflow builders. `txt2img(prompt, loras, seed, ...)` and `img2img(prompt, input_image, loras, denoise, ...)`. LoRAs are applied as a chain of `LoraLoaderModelOnly` nodes so stacking is trivial.
+- `eval/presets.py` — `SUBJECT`, `NEG_*`, `PROMPTS` (id_lock / angle / photo / manhwa_stylized / manhwa_prompt), `STACKS` (named LoRA combinations), `STACK_PROMPT_PREFIX` (style trigger tokens), `SEEDS` (default 8-seed battery). User-specific prompt overrides can be added via a gitignored `eval/presets.local.py` that updates the `PROMPTS` dict at import time.
+- `eval/run.py` — CLI with sub-commands: `shot`, `stages`, `sweep`, `matrix`, `checkpoints`, `quicktest`.
+
+**Make targets:**
+```bash
+make eval-quick       # 4-scenario sanity (SFW/NSFW × real/manhwa) — use before full training
+make eval-stages      # 3-stage: photo / stylized / prompt-only
+make eval-sweep       # All style stacks side-by-side for one prompt
+make eval-matrix      # Seeds × stacks grid
+make eval-ckpts       # Compare training checkpoints (ep2/4/6/...)
+```
+
+Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-webtoon`, `STACK_B=face_manhwa_v5`, etc.
+
+**Output:** all images land in `~/docker-volumes/comfyui/output/eval/<run>/` with deterministic filenames encoding prompt/stack/seed/epoch.
+
+**Named stacks** (see `eval/presets.py`):
+- `face_only` — face LoRA alone (placeholder name `face-lora`; override via presets.local.py)
+- `face_realism`/`face_super`/`face_ultrareal` — + anti-plastic realism LoRA
+- `face_manhwa_v5`/`face_manwha_web`/`face_manhwa_a18` — + CivitAI manhwa LoRA
+- `face_illust`/`face_anime` — + HuggingFace alvdansen style LoRA
+
+**Recommended before any full training run:** `make eval-quick` with existing checkpoints. Validates the 4-scenario pipeline in ~3 min before investing hours.
+
 ## Training data layout
 
 ```
