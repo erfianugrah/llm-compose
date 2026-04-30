@@ -103,3 +103,5 @@ if _local is not None:
         NEG_MANHWA = _local.NEG_MANHWA
     if hasattr(_local, "SEEDS"):
         SEEDS = _local.SEEDS
+    if hasattr(_local, "QUICKTEST_PLANS"):
+        QUICKTEST_PLANS = _local.QUICKTEST_PLANS
