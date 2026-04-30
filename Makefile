@@ -76,19 +76,50 @@ logs:
 logs-llama:
 	docker compose logs -f llama-server
 
-## Show container status, active mode, and health
+## Show container status, active mode, health, and progress of the active workload
+## (training + captioning when in train mode; safe — all read-only endpoints that
+## don't trigger GPU mode swaps).
 status:
 	@docker compose --profile llm --profile comfyui --profile train ps
 	@echo ""
 	@if grep -q MODEL_NAME .env 2>/dev/null; then \
 		echo "Active LLM model: $$(grep MODEL_NAME .env | cut -d= -f2)"; \
 	fi
-	@curl -sf http://localhost:11434/mode 2>/dev/null \
-		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'GPU mode: {d[\"mode\"] or \"idle\"}')" 2>/dev/null \
-		|| echo "Proxy: not reachable"
-	@curl -sf http://localhost:11434/health 2>/dev/null \
+	@MODE=$$(curl -sf http://localhost:11434/mode 2>/dev/null \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mode') or 'idle')" 2>/dev/null); \
+	echo "GPU mode: $${MODE:-unreachable}"; \
+	curl -sf http://localhost:11434/health 2>/dev/null \
 		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Health: {d[\"status\"]}')" 2>/dev/null \
-		|| echo "Health: not reachable"
+		|| echo "Health: unreachable"; \
+	if [ "$$MODE" = "train" ]; then \
+		TRAIN=$$(curl -sf http://localhost:11434/train/status 2>/dev/null); \
+		TSTATE=$$(echo "$$TRAIN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','idle'))" 2>/dev/null); \
+		if [ "$$TSTATE" != "idle" ] && [ -n "$$TSTATE" ]; then \
+			echo ""; echo "── Training job ──"; \
+			echo "$$TRAIN" | python3 -c "\
+import sys, json; d=json.load(sys.stdin); \
+print(f'State: {d.get(\"state\",\"idle\")}'); \
+[print(f'Output: {d[\"output_name\"]}') if d.get('output_name') else None]; \
+[print(f'Progress: {d[\"step\"]}/{d[\"total_steps\"]} ({round(d[\"step\"]/d[\"total_steps\"]*100,1)}%)') if d.get('total_steps',0)>0 else None]; \
+[print(f'Epoch: {d[\"epoch\"]}/{d[\"total_epochs\"]}') if d.get('total_epochs',0)>0 else None]; \
+[print(f'Loss: {d[\"loss\"]:.6f}') if d.get('loss',0)>0 else None]; \
+[print(f'Elapsed: {d[\"elapsed_seconds\"]}s ({round(d[\"elapsed_seconds\"]/60,1)} min)') if d.get('elapsed_seconds') else None]; \
+[print(f'ETA: {d[\"eta_seconds\"]}s ({round(d[\"eta_seconds\"]/60,1)} min)') if d.get('eta_seconds') else None]; \
+[print(f'Error: {d[\"error\"]}') if d.get('error') else None]"; \
+		fi; \
+		CAP=$$(curl -sf http://localhost:11434/train/caption/status 2>/dev/null); \
+		CSTATE=$$(echo "$$CAP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','idle'))" 2>/dev/null); \
+		if [ "$$CSTATE" != "idle" ] && [ -n "$$CSTATE" ]; then \
+			echo ""; echo "── Captioning job ──"; \
+			echo "$$CAP" | python3 -c "\
+import sys, json; d=json.load(sys.stdin); \
+print(f'State: {d.get(\"state\")}'); \
+print(f'Engine: {d.get(\"engine\")}  Dataset: {d.get(\"dataset\")}'); \
+[print(f'Progress: {d[\"captions_written\"]}/{d[\"images_total\"]} ({round(d[\"captions_written\"]/d[\"images_total\"]*100,1)}%)') if d.get('images_total',0)>0 else None]; \
+[print(f'Elapsed: {d[\"elapsed_seconds\"]}s') if d.get('elapsed_seconds') else None]; \
+[print(f'Error: {d[\"error\"]}') if d.get('error') else None]"; \
+		fi; \
+	fi
 
 ## Full deploy: setup, download all LLM + ComfyUI models, push images, start, configure UI
 deploy: setup download-all push up configure-webui
