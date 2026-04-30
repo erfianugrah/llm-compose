@@ -11,7 +11,12 @@ SUBJECT = "subject, portrait"
 
 NEG_REALISTIC = (
     "deformed, blurry, low quality, extra fingers, watermark, text, "
-    "bad anatomy, plastic skin, waxy, overly smooth, airbrushed"
+    "bad anatomy, plastic skin, waxy, overly smooth, airbrushed, "
+    # Flux.1-dev on 'realistic skin texture / pores / film grain' tends to
+    # produce rosacea-like red blotches on pale faces. These negative tokens
+    # keep the skin clean without going full plastic.
+    "rosacea, acne, red blotches, blotchy skin, skin blemishes, "
+    "over-textured skin"
 )
 NEG_MANHWA = (
     "deformed, blurry, low quality, extra fingers, watermark, text, "

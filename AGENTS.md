@@ -285,6 +285,16 @@ Data is scraped to `scraper/dataset/` (gitignored), then curated and moved to `~
 
 No test suite, no linter, no CI workflows. Verification is Docker build + runtime behavior (`make status`, `make health`, `make logs`).
 
+## Flux prompt gotchas
+
+- **Rosacea / blotchy skin on pale subjects**: Flux.1-dev produces red-blotch patches on pale faces when prompted with `realistic skin texture`, `pores`, `subsurface scattering`, `film grain`, `candid amateur photograph`, `shot on iphone`. These tokens push Flux toward an over-textured aesthetic that the base model renders as rosacea on low-pigment skin. Happens with zero LoRA loaded — verified with a bare base-model generation. Fix is prompt engineering, not training:
+  - Drop those tokens from the positive prompt
+  - Add to negative: `rosacea, acne, red blotches, blotchy skin, skin blemishes, over-textured skin`
+  - Prefer `portrait photograph, soft natural lighting, clean skin` for cleaner results
+- **Flux distilled "plastic" default**: the opposite failure mode. Without any texture cues Flux produces airbrushed porcelain skin. Realism LoRAs (`flux-realism-xlabs`, `flux-ultrarealism-canopus` at 0.4-0.5) counter this without triggering rosacea.
+- **Face LoRA identity drift through style stacking**: dim=16 face LoRAs don't survive when stacked with a trained style LoRA (like `flux-manhwa-v5`). The style LoRA has encoded face geometry that overrides character identity. Only weak style LoRAs (`flux-manhwa-a-18` at 18MB, `flux-manwha-webtoon` at 165MB) leave identity intact but their stylization is subtle. Chaining 3 weak styles at ~0.4 each can deliver legitimate manhwa aesthetic while face LoRA at 1.0 holds identity.
+- **Training step count floor**: Flux LoRA face training needs ~400+ steps minimum for meaningful identity learning. 32 steps (30 images × 2 epochs) is only useful for pipeline validation; ep2-ep4 of a ~1600-step training (~400-800 steps) is where usable identity emerges.
+
 ## Gotchas
 
 - First start without `make download-all` downloads a ~20 GB GGUF inside the container. Health check allows 12.5 min (`start_period: 600s`).

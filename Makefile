@@ -684,6 +684,7 @@ help:
 	@echo "  make caption-status                  Show caption progress"
 	@echo "  make caption-logs                    Tail caption logs"
 	@echo "  make caption-cancel                  Cancel running caption job"
+	@echo "  make train-cleanup                   Kill orphaned training/caption procs"
 	@echo ""
 	@echo "LoRA evaluation (routes via proxy — auto GPU swap):"
 	@echo "  make eval-quick         4-scenario sanity (see presets_local.py)"
