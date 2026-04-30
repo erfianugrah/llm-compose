@@ -210,6 +210,77 @@ def tool_datasets(params):
         return f"Failed to list datasets: {e}"
 
 
+def tool_caption_start(params):
+    """Start an async captioning job."""
+    dataset = params.get("dataset")
+    if not dataset:
+        return "Error: 'dataset' is required. Use train_datasets to list available datasets."
+    body = {
+        "dataset": dataset,
+        "engine": params.get("engine", "blip2"),
+        "trigger_word": params.get("trigger_word", ""),
+        "overwrite": params.get("overwrite", False),
+    }
+    if body["engine"] == "blip2":
+        body["prompt"] = params.get("prompt", "a photograph of")
+
+    result = _request("POST", "/train/caption", body)
+    status = result.get("status", "unknown")
+    if status == "started":
+        return (
+            f"Captioning started: engine={body['engine']}, dataset={dataset}\n"
+            f"Trigger word: {body['trigger_word'] or '(none)'}\n"
+            f"Use caption_status to monitor progress."
+        )
+    return f"Failed to start captioning: {json.dumps(result)}"
+
+
+def tool_caption_status(params):
+    """Check captioning job progress."""
+    try:
+        r = _request("GET", "/train/caption/status")
+    except RuntimeError as e:
+        return f"Caption API: {e}"
+    state = r.get("state", "unknown")
+    parts = [f"State: {state}"]
+    if state in ("starting", "running"):
+        parts.append(f"Engine: {r.get('engine')}  Dataset: {r.get('dataset')}")
+        done = r.get("captions_written", 0)
+        total = r.get("images_total", 0)
+        if total > 0:
+            parts.append(f"Progress: {done}/{total} ({round(done/total*100, 1)}%)")
+        parts.append(f"Elapsed: {r.get('elapsed_seconds', 0)}s")
+    elif state == "completed":
+        parts.append(f"Dataset: {r.get('dataset')}  Engine: {r.get('engine')}")
+        parts.append(f"Elapsed: {r.get('elapsed_seconds', 0)}s")
+    elif state == "failed":
+        parts.append(f"Error: {r.get('error', 'unknown')}")
+    return "\n".join(parts)
+
+
+def tool_caption_logs(params):
+    """Tail caption job logs."""
+    lines = params.get("lines", 50)
+    try:
+        r = _request("GET", f"/train/caption/logs?lines={lines}")
+    except RuntimeError as e:
+        return f"Caption API: {e}"
+    state = r.get("state", "idle")
+    log_lines = r.get("lines", [])
+    if not log_lines:
+        return f"State: {state}\nNo log output yet."
+    return f"State: {state}\nLast {len(log_lines)} lines:\n" + "\n".join(log_lines)
+
+
+def tool_caption_cancel(params):
+    """Cancel current caption job."""
+    try:
+        r = _request("POST", "/train/caption/cancel")
+        return f"Cancel: {r.get('status', 'unknown')}"
+    except RuntimeError as e:
+        return f"Failed to cancel: {e}"
+
+
 def tool_deploy(params):
     """Copy a trained LoRA to ComfyUI's loras directory."""
     name = params.get("name", "")
@@ -340,6 +411,54 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}}
     },
     {
+        "name": "caption_start",
+        "description": (
+            "Start an async captioning job on a dataset in /data/datasets/. "
+            "Engines: 'blip2' (natural language, recommended for Flux — aligns with T5-XXL), "
+            "'florence' (Florence-2, broken on transformers>=4.54, use blip2 instead), "
+            "'wd14' (Danbooru tags, recommended for SDXL/anime models). "
+            "Returns immediately; poll caption_status for progress. Overwrites existing "
+            ".txt captions if overwrite=true. Produces 1 image/sec for BLIP-2 on 32GB VRAM."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dataset": {"type": "string",
+                            "description": "dataset name under /data/datasets/"},
+                "engine": {"type": "string", "enum": ["blip2", "florence", "wd14"],
+                           "description": "Captioning engine. Default: blip2"},
+                "trigger_word": {"type": "string",
+                                 "description": "Prepended to every caption (e.g. subject name)"},
+                "prompt": {"type": "string",
+                           "description": "BLIP-2 conditional prompt prefix (default: 'a photograph of')"},
+                "overwrite": {"type": "boolean",
+                              "description": "Overwrite existing .txt captions. Default: false"}
+            },
+            "required": ["dataset"]
+        }
+    },
+    {
+        "name": "caption_status",
+        "description": "Check current captioning job progress (state, captions_written/images_total, elapsed).",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "caption_logs",
+        "description": "Tail lines of captioning log output.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lines": {"type": "integer",
+                          "description": "Number of log lines. Default: 50"}
+            }
+        }
+    },
+    {
+        "name": "caption_cancel",
+        "description": "Cancel current captioning job.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
         "name": "train_deploy",
         "description": "Copy a trained LoRA from the output directory to ComfyUI's loras directory so it can be used in generation workflows.",
         "inputSchema": {
@@ -363,6 +482,10 @@ TOOL_HANDLERS = {
     "train_list": tool_list,
     "train_datasets": tool_datasets,
     "train_deploy": tool_deploy,
+    "caption_start": tool_caption_start,
+    "caption_status": tool_caption_status,
+    "caption_logs": tool_caption_logs,
+    "caption_cancel": tool_caption_cancel,
 }
 
 SERVER_INFO = {"name": "lora-train", "version": "1.0.0"}

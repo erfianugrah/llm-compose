@@ -45,7 +45,114 @@ CHECKPOINTS_DIR = Path(os.environ.get("CHECKPOINTS_DIR", "/checkpoints"))
 
 # ── Job state ────────────────────────────────────────────────────────
 job_lock = threading.Lock()
-current_job = None  # dict with job state, or None
+current_job = None      # active TrainingJob or None
+caption_job_lock = threading.Lock()
+current_caption = None  # active CaptionJob or None
+
+
+class CaptionJob:
+    """Manages a single captioning run (WD14 / BLIP-2 / Florence-2).
+
+    Matches the TrainingJob pattern so captioning is non-blocking:
+    POST /caption returns 202 immediately, client polls /caption/status
+    and /caption/logs. This avoids hanging the HTTP thread (which in turn
+    breaks healthchecks and triggers proxy restart cascades).
+    """
+
+    def __init__(self, cmd, engine, dataset, trigger_word):
+        self.cmd = cmd
+        self.engine = engine
+        self.dataset = dataset
+        self.trigger_word = trigger_word
+        self.process = None
+        self.state = "starting"  # starting, running, completed, failed, cancelled
+        self.start_time = time.monotonic()
+        self.end_time = None
+        self.log_lines = []
+        self.log_lock = threading.Lock()
+        self.error = None
+        self.captions_written = 0
+        self.images_total = 0
+
+    def to_dict(self):
+        elapsed = (self.end_time or time.monotonic()) - self.start_time
+        return {
+            "state": self.state,
+            "engine": self.engine,
+            "dataset": self.dataset,
+            "trigger_word": self.trigger_word,
+            "captions_written": self.captions_written,
+            "images_total": self.images_total,
+            "elapsed_seconds": round(elapsed),
+            "error": self.error,
+        }
+
+    def append_log(self, line):
+        with self.log_lock:
+            self.log_lines.append(line)
+            if len(self.log_lines) > 2000:
+                self.log_lines = self.log_lines[-1000:]
+        # Parse progress: "Found N images in ..." and "[N/M] filename: ..."
+        m = re.search(r"Found (\d+) images", line)
+        if m:
+            self.images_total = int(m.group(1))
+        m = re.search(r"\[(\d+)/(\d+)\]", line)
+        if m:
+            self.captions_written = int(m.group(1))
+            if self.state == "starting":
+                self.state = "running"
+
+    def get_logs(self, n=100):
+        with self.log_lock:
+            return self.log_lines[-n:]
+
+    def cancel(self):
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.state = "cancelled"
+            self.end_time = time.monotonic()
+
+
+def _run_caption(job):
+    """Run the captioning subprocess in a background thread."""
+    global current_caption
+
+    try:
+        job.append_log(f"[CMD] {' '.join(job.cmd)}")
+        job.process = subprocess.Popen(
+            job.cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        job.state = "running"
+
+        for line in job.process.stdout:
+            job.append_log(line.rstrip("\n"))
+
+        rc = job.process.wait()
+        job.end_time = time.monotonic()
+
+        if job.state == "cancelled":
+            pass
+        elif rc == 0:
+            job.state = "completed"
+            job.append_log("[DONE] Captioning completed successfully")
+        else:
+            job.state = "failed"
+            job.error = f"Process exited with code {rc}"
+            job.append_log(f"[ERROR] Captioning failed with exit code {rc}")
+
+    except Exception as e:
+        job.state = "failed"
+        job.error = str(e)
+        job.end_time = time.monotonic()
+        job.append_log(f"[ERROR] {e}")
 
 
 class TrainingJob:
@@ -466,6 +573,27 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
                     })
             _json_response(self, 200, {"datasets": datasets})
 
+        elif path == "/caption/status":
+            if current_caption:
+                _json_response(self, 200, current_caption.to_dict())
+            else:
+                _json_response(self, 200, {"state": "idle"})
+
+        elif path.startswith("/caption/logs"):
+            n = 100
+            if "?" in path:
+                for param in path.split("?")[1].split("&"):
+                    if param.startswith("lines="):
+                        n = int(param.split("=")[1])
+            if current_caption:
+                _json_response(self, 200, {
+                    "state": current_caption.state,
+                    "engine": current_caption.engine,
+                    "lines": current_caption.get_logs(n),
+                })
+            else:
+                _json_response(self, 200, {"state": "idle", "lines": []})
+
         elif path == "/configs":
             configs = []
             for f in sorted(CONFIGS_DIR.glob("*.toml")):
@@ -513,11 +641,16 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
                     _json_response(self, 200, {"status": "no active job"})
 
         elif path == "/caption":
-            # WD14 captioning endpoint
+            # Async caption job. Returns 202 immediately; poll /caption/status.
+            # Supported engines: blip2 (default, natural language for Flux T5),
+            # florence (Florence-2, broken on transformers>=4.54 — prefer blip2),
+            # wd14 (Danbooru tags, for SDXL/anime models).
+            global current_caption
             body = _read_body(self)
             dataset = body.get("dataset")
+            engine = body.get("engine", "blip2")
             trigger_word = body.get("trigger_word", "")
-            threshold = body.get("threshold", 0.35)
+            overwrite = body.get("overwrite", False)
 
             if not dataset:
                 _json_response(self, 400, {"error": "dataset required"})
@@ -528,35 +661,63 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
                 _json_response(self, 404, {"error": f"Dataset not found: {dataset}"})
                 return
 
-            # Run WD14 tagger (synchronous — usually fast enough)
-            cmd = [
-                "python", "/sd-scripts/finetune/tag_images_by_wd14_tagger.py",
-                str(dataset_dir),
-                "--repo_id=SmilingWolf/wd-swinv2-tagger-v3",
-                f"--thresh={threshold}",
-                "--onnx",
-                "--remove_underscore",
-            ]
-            if trigger_word:
-                cmd.append(f"--always_first_tags={trigger_word}")
+            with caption_job_lock:
+                if current_caption and current_caption.state in ("starting", "running"):
+                    _json_response(self, 409, {
+                        "error": "Captioning already in progress",
+                        "engine": current_caption.engine,
+                        "dataset": current_caption.dataset,
+                    })
+                    return
 
-            try:
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=600
-                )
-                if result.returncode == 0:
-                    _json_response(self, 200, {
-                        "status": "done",
-                        "dataset": dataset,
-                        "trigger_word": trigger_word,
-                    })
+                if engine == "blip2":
+                    cmd = ["python", "/train-hooks/caption_blip2.py", str(dataset_dir)]
+                    if body.get("prompt"):
+                        cmd.extend(["--prompt", body["prompt"]])
+                elif engine == "florence":
+                    cmd = ["python", "/train-hooks/caption_florence.py",
+                           str(dataset_dir),
+                           "--task", body.get("task", "MORE_DETAILED_CAPTION")]
+                elif engine == "wd14":
+                    cmd = ["python",
+                           "/sd-scripts/finetune/tag_images_by_wd14_tagger.py",
+                           str(dataset_dir),
+                           "--repo_id=SmilingWolf/wd-swinv2-tagger-v3",
+                           f"--thresh={body.get('threshold', 0.35)}",
+                           "--onnx", "--remove_underscore"]
+                    if trigger_word:
+                        cmd.append(f"--always_first_tags={trigger_word}")
                 else:
-                    _json_response(self, 500, {
-                        "error": "Captioning failed",
-                        "stderr": result.stderr[-500:],
-                    })
-            except subprocess.TimeoutExpired:
-                _json_response(self, 504, {"error": "Captioning timed out"})
+                    _json_response(self, 400, {"error": f"Unknown engine: {engine}"})
+                    return
+
+                if engine != "wd14":
+                    if trigger_word:
+                        cmd.extend(["--trigger-word", trigger_word])
+                    if overwrite:
+                        cmd.append("--overwrite")
+
+                job = CaptionJob(cmd, engine, dataset, trigger_word)
+                current_caption = job
+
+            thread = threading.Thread(target=_run_caption, args=(job,), daemon=True)
+            thread.start()
+            log(f"Started caption job: engine={engine} dataset={dataset}")
+            _json_response(self, 202, {
+                "status": "started",
+                "engine": engine,
+                "dataset": dataset,
+                "trigger_word": trigger_word,
+            })
+
+        elif path == "/caption/cancel":
+            with caption_job_lock:
+                if current_caption and current_caption.state in ("starting", "running"):
+                    current_caption.cancel()
+                    log("Caption cancelled")
+                    _json_response(self, 200, {"status": "cancelled"})
+                else:
+                    _json_response(self, 200, {"status": "no active caption job"})
 
         else:
             _json_response(self, 404, {"error": f"Not found: {path}"})

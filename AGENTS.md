@@ -167,7 +167,7 @@ Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-w
 `train/server.py` is the HTTP API server that runs inside the lora-train container. Stdlib-only Python.
 
 **Training API endpoints** (via proxy at `/train/*`):
-- `POST /train` — start a training job (JSON config: dataset, base model, hyperparams)
+- `POST /train` — start a training job (JSON config: dataset, base model, hyperparams). Returns 202.
 - `GET /status` — current job state, step/total, loss, epoch, elapsed, ETA
 - `GET /logs?lines=N` — last N lines of training output
 - `POST /cancel` — kill current training job
@@ -175,7 +175,27 @@ Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-w
 - `GET /datasets` — list available datasets with image/caption counts
 - `GET /configs` — list available training TOML configs
 - `GET /health` — health check
-- `POST /caption` — run WD14 auto-captioning on a dataset
+
+**Captioning API endpoints** (same container, async like training):
+- `POST /caption` — start async caption job. Body: `{dataset, engine, trigger_word, overwrite, prompt?}`. Returns 202. Engines: `blip2` (default — natural language, aligns with Flux T5), `florence` (broken on current transformers), `wd14` (Danbooru tags, for SDXL/anime).
+- `GET /caption/status` — captions_written / images_total, elapsed
+- `GET /caption/logs?lines=N` — tail subprocess stdout
+- `POST /caption/cancel` — kill current caption job
+
+**Dataset prep workflow** (required before training on scraped data):
+```bash
+# 1. Audit existing WD14 captions for wrong-person / conflict / low-quality issues
+make dataset-audit DATASET=my-scraped EXPECTED=freckles
+
+# 2. Copy to clean dataset excluding rejected files
+make dataset-filter SRC=my-scraped DST=my-clean
+
+# 3. Re-caption with BLIP-2 (natural language — Flux T5 understands properly)
+make dataset-caption DATASET=my-clean TRIGGER=subject
+make caption-status   # poll until done (~1 img/s on 32GB GPU)
+
+# 4. Create TOML training config pointing at the clean dataset, then train.
+```
 
 **Supports two model types:**
 
@@ -238,6 +258,10 @@ Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-w
 - `train_list` — list trained LoRA files
 - `train_datasets` — list available training datasets
 - `train_deploy` — copy a trained LoRA to ComfyUI's loras dir
+- `caption_start` — start async captioning job (engines: blip2/florence/wd14)
+- `caption_status` — check caption progress (captions_written/images_total)
+- `caption_logs` — get recent caption log output
+- `caption_cancel` — cancel current caption job
 
 **Usage:** ask the model to "start training a LoRA" and it calls MCP tools. Proxy auto-swaps to train mode — **LLM backend stops for the entire training duration** (10-60+ min). LLM restarts on next chat request after training completes.
 

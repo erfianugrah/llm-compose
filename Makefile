@@ -342,6 +342,64 @@ deploy-lora:
 rebuild-train:
 	docker compose --profile train build lora-train
 
+# ── Dataset prep (audit, filter, caption) ────────────────────────────
+.PHONY: dataset-audit dataset-filter dataset-caption caption-status caption-logs caption-cancel
+
+## Audit a dataset's WD14 captions for issues (wrong person, conflicts, low quality).
+## Usage: make dataset-audit DATASET=my-dataset [EXPECTED=freckles,red hair]
+dataset-audit:
+	@if [ -z "$${DATASET}" ]; then \
+		echo "Usage: make dataset-audit DATASET=<name> [EXPECTED=tag1,tag2]"; \
+		exit 1; \
+	fi
+	@python3 scripts/audit-dataset.py "$(TRAIN_DIR)/datasets/$$DATASET" \
+		$${EXPECTED:+--expected-tags $$EXPECTED} \
+		--reject-out "$(TRAIN_DIR)/datasets/$$DATASET-rejects.txt"
+
+## Copy a dataset to a clean target, excluding files on the reject list.
+## Usage: make dataset-filter SRC=my-dataset DST=my-dataset-clean
+dataset-filter:
+	@if [ -z "$${SRC}" ] || [ -z "$${DST}" ]; then \
+		echo "Usage: make dataset-filter SRC=<source> DST=<clean-dest>"; \
+		echo "  Requires $(TRAIN_DIR)/datasets/\$$SRC-rejects.txt from dataset-audit"; \
+		exit 1; \
+	fi
+	@docker exec lora_train python /filter-dataset.py \
+		"/data/datasets/$$SRC" "/data/datasets/$$DST" \
+		--rejects "/data/datasets/$$SRC-rejects.txt" || \
+		{ echo "ensure filter-dataset.py is copied into lora_train"; exit 1; }
+
+## Start a captioning job (async). Engines: blip2 (natural lang, default),
+## florence (broken on current transformers), wd14 (tags for SDXL).
+## Usage: make dataset-caption DATASET=my-dataset [ENGINE=blip2] [TRIGGER=name] [OVERWRITE=true]
+dataset-caption:
+	@if [ -z "$${DATASET}" ]; then \
+		echo "Usage: make dataset-caption DATASET=<name> [ENGINE=blip2|florence|wd14] [TRIGGER=word]"; \
+		exit 1; \
+	fi
+	@curl -s -X POST http://localhost:11434/train/caption \
+		-H 'Content-Type: application/json' \
+		-d "{\"dataset\": \"$(DATASET)\", \"engine\": \"$${ENGINE:-blip2}\", \"trigger_word\": \"$${TRIGGER:-}\", \"prompt\": \"a photograph of\", \"overwrite\": $${OVERWRITE:-false}}" \
+		| python3 -m json.tool 2>/dev/null || echo "Caption API not reachable. Ensure train mode is active: make train"
+
+## Show captioning job progress
+caption-status:
+	@curl -sf http://localhost:11434/train/caption/status 2>/dev/null \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Caption service not reachable"
+
+## Show last 50 lines of caption logs
+caption-logs:
+	@curl -sf 'http://localhost:11434/train/caption/logs?lines=50' 2>/dev/null \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(d.get('lines',[])))" 2>/dev/null \
+		|| echo "Caption service not reachable"
+
+## Cancel current captioning job
+caption-cancel:
+	@curl -sf -X POST http://localhost:11434/train/caption/cancel \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Caption service not reachable"
+
 # ── LoRA evaluation (prompts + workflows + sweeps) ───────────────────
 .PHONY: eval-quick eval-stages eval-sweep eval-matrix eval-ckpts
 
@@ -401,6 +459,7 @@ eval-weights:
 	@python3 eval/run.py weights \
 		--prompt $${PROMPT:-photo} \
 		--seed $${SEED:-111} \
+		$${FACE:+--face-lora $$FACE} \
 		--face-weights $${FACE_WEIGHTS:-0.7,0.85,1.0} \
 		$${AUX:+--aux $$AUX} \
 		--aux-weights $${AUX_WEIGHTS:-0,0.5}
@@ -425,6 +484,7 @@ eval-seeds:
 		--prompt $${PROMPT:-photo} \
 		--seeds $${SEEDS:-111,222,333,444,555,666} \
 		$${STACK:+--stack $$STACK} \
+		$${FACE:+--face-lora $$FACE} \
 		--face-weight $${FACE_WEIGHT:-0.7}
 
 ## Img2img denoise sweep from an input image in ~/docker-volumes/comfyui/input/
@@ -610,6 +670,14 @@ help:
 	@echo "  make logs-train         Follow lora-train container logs"
 	@echo "  make deploy-lora NAME=x Copy trained LoRA to ComfyUI"
 	@echo "  make rebuild-train      Rebuild lora-train image"
+	@echo ""
+	@echo "Dataset prep (audit WD14 captions, filter, re-caption with BLIP-2):"
+	@echo "  make dataset-audit DATASET=x         Audit WD14 captions for issues"
+	@echo "  make dataset-filter SRC=x DST=y      Copy dataset minus rejected stems"
+	@echo "  make dataset-caption DATASET=x       Start caption job (engine=blip2 default)"
+	@echo "  make caption-status                  Show caption progress"
+	@echo "  make caption-logs                    Tail caption logs"
+	@echo "  make caption-cancel                  Cancel running caption job"
 	@echo ""
 	@echo "LoRA evaluation (routes via proxy — auto GPU swap):"
 	@echo "  make eval-quick         4-scenario sanity (see presets_local.py)"
