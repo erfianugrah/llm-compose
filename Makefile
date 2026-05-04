@@ -352,27 +352,35 @@ train-logs:
 		| python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(d.get('lines',[])))" 2>/dev/null \
 		|| echo "Training service not reachable"
 
-## Copy a trained LoRA to ComfyUI: make deploy-lora NAME=my-lora
+## Copy a trained LoRA from /data/output to ComfyUI's loras dir.
+## Usage: make deploy-lora LORA=my-lora      (.safetensors suffix optional)
+##        make deploy-lora                   (lists available LoRAs)
+## Renamed from NAME= to LORA= because $NAME collides with shell env var
+## that some users have set globally.
 deploy-lora:
-	@if [ -z "$(NAME)" ]; then \
-		echo "Usage: make deploy-lora NAME=<filename>"; \
-		echo "Available LoRAs:"; \
+	@if [ -z "$(LORA)" ]; then \
+		echo "Usage: make deploy-lora LORA=<filename>"; \
+		echo ""; \
+		echo "Available LoRAs in $(TRAIN_DIR)/output/:"; \
 		docker run --rm -v "$(TRAIN_DIR)/output:/out" alpine sh -c \
-			'ls /out/*.safetensors 2>/dev/null | sed "s|/out/||"' || true; \
+			'ls /out/*.safetensors 2>/dev/null | sed "s|/out/||;s|\.safetensors$$||;s|^|  |"' || true; \
 		exit 1; \
 	fi
 	@docker run --rm \
 		-v "$(TRAIN_DIR)/output:/src:ro" \
 		-v "$(COMFYUI_DIR)/models/loras:/dst" \
 		alpine sh -c '\
-			NAME="$(NAME)"; \
-			case "$$NAME" in *.safetensors) ;; *) NAME="$${NAME}.safetensors" ;; esac; \
-			if [ -f "/src/$$NAME" ]; then \
-				cp "/src/$$NAME" /dst/ && echo "Copied $$NAME"; \
+			LORA="$(LORA)"; \
+			case "$$LORA" in *.safetensors) ;; *) LORA="$${LORA}.safetensors" ;; esac; \
+			if [ -f "/src/$$LORA" ]; then \
+				cp "/src/$$LORA" /dst/ && echo "Copied $$LORA"; \
 			else \
-				echo "Not found: /src/$$NAME"; exit 1; \
+				echo "Not found: /src/$$LORA"; \
+				echo "Available:"; \
+				ls /src/*.safetensors 2>/dev/null | sed "s|/src/||;s|^|  |"; \
+				exit 1; \
 			fi'
-	@echo "✓ Deployed $(NAME) to $(COMFYUI_DIR)/models/loras/"
+	@echo "✓ Deployed $(LORA) to $(COMFYUI_DIR)/models/loras/"
 
 ## Rebuild lora-train image from source
 rebuild-train:
@@ -727,7 +735,7 @@ help:
 	@echo "  make train-status       Show training progress (step, loss, ETA)"
 	@echo "  make train-logs         Show last 50 lines of training output"
 	@echo "  make logs-train         Follow lora-train container logs"
-	@echo "  make deploy-lora NAME=x Copy trained LoRA to ComfyUI"
+	@echo "  make deploy-lora LORA=x Copy trained LoRA to ComfyUI"
 	@echo "  make rebuild-train      Rebuild lora-train image"
 	@echo ""
 	@echo "Dataset prep (audit WD14 captions, filter, re-caption, focus subset):"
