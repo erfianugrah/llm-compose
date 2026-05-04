@@ -48,7 +48,7 @@ services:
       # Model presets (read-only)
       - ./models:/presets:ro
       # Models cache dir — proxy downloads mmproj/templates on demand
-      - ${HOME}/docker-volumes/llama-server/models:/assets:rw
+      - /mnt/data/docker-volumes/llama-server/models:/assets:rw
     # No depends_on for llama-server — it's profile-gated and started on
     # demand by the proxy. The proxy handles health polling internally.
     healthcheck:
@@ -136,8 +136,8 @@ services:
               capabilities: [gpu, compute, utility]
     shm_size: "2g"
     volumes:
-      - ~/docker-volumes/llama-server:/root/.cache
-      - ~/docker-volumes/llama-server/models:/models
+      - /mnt/data/docker-volumes/llama-server:/root/.cache
+      - /mnt/data/docker-volumes/llama-server/models:/models
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -179,11 +179,11 @@ services:
               capabilities: [gpu, compute, utility]
     shm_size: "4g"
     volumes:
-      - ~/docker-volumes/comfyui/models:/app/ComfyUI/models
-      - ~/docker-volumes/comfyui/output:/app/ComfyUI/output
-      - ~/docker-volumes/comfyui/input:/app/ComfyUI/input
-      - ~/docker-volumes/comfyui/custom_nodes:/app/ComfyUI/custom_nodes
-      - ~/docker-volumes/comfyui/user:/app/ComfyUI/user
+      - /mnt/data/docker-volumes/comfyui/models:/app/ComfyUI/models
+      - /mnt/data/docker-volumes/comfyui/output:/app/ComfyUI/output
+      - /mnt/data/docker-volumes/comfyui/input:/app/ComfyUI/input
+      - /mnt/data/docker-volumes/comfyui/custom_nodes:/app/ComfyUI/custom_nodes
+      - /mnt/data/docker-volumes/comfyui/user:/app/ComfyUI/user
     ports:
       - "127.0.0.1:8188:8188"
     healthcheck:
@@ -233,9 +233,9 @@ services:
       - DATA_DIR=/data
       - CHECKPOINTS_DIR=/checkpoints
     volumes:
-      - ~/docker-volumes/training-data:/data
-      - ~/docker-volumes/comfyui/models:/models:ro
-      - ~/docker-volumes/comfyui/models/loras:/loras
+      - /mnt/data/docker-volumes/training-data:/data
+      - /mnt/data/docker-volumes/comfyui/models:/models:ro
+      - /mnt/data/docker-volumes/comfyui/models/loras:/loras
       # NOTE: tried bind-mounting train/ for dev iteration — Docker Desktop
       # on WSL has intermittent bugs where single-file OR directory mounts
       # of source code break with "can't find '__main__' module". After
@@ -277,7 +277,7 @@ services:
     volumes:
       - ./bench:/work:ro
       - ./bench/results:/results:rw
-      - ${HOME}/docker-volumes/bench-cache:/cache:rw
+      - /mnt/data/docker-volumes/bench-cache:/cache:rw
     networks:
       llm:
         ipv4_address: 172.28.0.7
@@ -322,7 +322,7 @@ services:
     ports:
       - "127.0.0.1:3000:8080"
     volumes:
-      - ~/docker-volumes/webui:/app/backend/data
+      - /mnt/data/docker-volumes/webui:/app/backend/data
     tmpfs:
       - /tmp:noexec,nosuid,size=256m
     depends_on:
