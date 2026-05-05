@@ -390,11 +390,10 @@ def switch_model(preset_info):
         )
         if secret:
             content += f"\n{secret}\n"
-        # Atomic write: tmp file + rename so a crash mid-write can't
-        # leave .env truncated/corrupt.
-        tmp_env = env_file.with_suffix(".env.tmp")
-        tmp_env.write_text(content)
-        tmp_env.rename(env_file)
+        # NOTE: .env is a bind mount inside the container — os.rename()
+        # over a mount point fails with EBUSY. write_text() is the only
+        # option here. Atomicity must be handled on the host side (Makefile).
+        env_file.write_text(content)
 
         # Recreate llama-server with new env (docker compose reads .env).
         # If we're not in LLM mode yet, stop the other service first.
