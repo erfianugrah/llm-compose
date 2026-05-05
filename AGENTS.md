@@ -94,7 +94,7 @@ When a request arrives for a mode that isn't active, the proxy:
 - **ComfyUI** (`comfyui.Dockerfile`): PyTorch 2.11 + CUDA 12.8 for Blackwell. ~5 min. Pinned via `COMFYUI_VERSION=v0.19.5`. Includes ComfyUI-Manager for custom node installation.
 - **lora-train** (`lora-train.Dockerfile`): PyTorch 2.7 + CUDA 12.8 + kohya sd-scripts. ~5 min. Runs HTTP API server on :8787 by default. CMD override for one-shot training.
 - **model-proxy** (`proxy/Dockerfile`): Python 3.12 + Docker CLI. <30s build.
-- **Open WebUI**: Third-party, pulled from GHCR. Pinned to `v0.8.12`.
+- **Open WebUI**: Third-party, pulled from GHCR. Pinned to `v0.9.2`.
 
 ## Volumes
 

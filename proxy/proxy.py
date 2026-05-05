@@ -64,8 +64,11 @@ def _compose_env():
     return env
 
 
-def _compose_run(args, timeout=30):
-    """Run a docker compose command. Returns (success, stderr)."""
+def _compose_run(args, timeout=120):
+    """Run a docker compose command. Returns (success, stderr).
+    Default timeout 120s — `docker compose up -d` on a profile-gated
+    service can take 30-60s for container creation + network setup,
+    especially on first run after a build."""
     cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, *args]
     result = subprocess.run(
         cmd,
@@ -268,13 +271,21 @@ def _ensure_asset(filename, url, kind):
 def _stop_service(service, profile):
     """Stop a profiled service. Tolerates already-stopped."""
     log(f"Stopping {service}...")
-    _compose_run(["--profile", profile, "stop", service])
+    _compose_run(["--profile", profile, "stop", service], timeout=60)
 
 
 def _start_service(service, profile):
-    """Start a profiled service."""
+    """Start a profiled service.
+
+    `docker compose up -d` may pull the image if it's not cached locally
+    (multi-GB GPU images), so we use a generous timeout. The actual
+    readiness wait happens in _wait_healthy after this returns.
+    """
     log(f"Starting {service}...")
-    ok, _ = _compose_run(["--profile", profile, "up", "-d", service])
+    ok, _ = _compose_run(
+        ["--profile", profile, "up", "-d", service],
+        timeout=600,  # 10 min — covers image pull + container create
+    )
     return ok
 
 
@@ -388,7 +399,8 @@ def switch_model(preset_info):
             _stop_service("lora-train", "train")
 
         ok, _ = _compose_run(
-            ["--profile", "llm", "up", "-d", "--force-recreate", "llama-server"]
+            ["--profile", "llm", "up", "-d", "--force-recreate", "llama-server"],
+            timeout=600,
         )
         if not ok:
             return False
@@ -799,10 +811,47 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             log(f"{self.address_string()} {msg}")
 
 
+# ── Startup probe ────────────────────────────────────────────────────
+def _detect_active_mode():
+    """Probe GPU services to recover active_mode after a proxy restart.
+    Without this, a proxy container restart loses the in-memory mode
+    state and the next request triggers an unnecessary swap cycle."""
+    # Check in likely order: LLM is the most common default.
+    try:
+        conn = http.client.HTTPConnection(LLAMA_HOST, LLAMA_PORT, timeout=2)
+        conn.request("GET", "/health")
+        if conn.getresponse().status == 200:
+            conn.close()
+            return "llm"
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = http.client.HTTPConnection(COMFYUI_HOST, COMFYUI_PORT, timeout=2)
+        conn.request("GET", "/system_stats")
+        if conn.getresponse().status == 200:
+            conn.close()
+            return "comfyui"
+        conn.close()
+    except Exception:
+        pass
+    try:
+        conn = http.client.HTTPConnection(TRAIN_HOST, TRAIN_PORT, timeout=2)
+        conn.request("GET", "/health")
+        if conn.getresponse().status == 200:
+            conn.close()
+            return "train"
+        conn.close()
+    except Exception:
+        pass
+    return None
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     presets = load_presets()
     current_model_id = detect_current_model()
+    active_mode = _detect_active_mode()
 
     log(f"Listening on :{PROXY_PORT}")
     log(f"LLM backend: {LLAMA_HOST}:{LLAMA_PORT}")
@@ -812,7 +861,10 @@ if __name__ == "__main__":
     log(f"LLM presets: {', '.join(presets.keys())}")
     if current_model_id:
         log(f"Active LLM model: {current_model_id}")
-    log(f"Mode: idle (no GPU service running — will start on first request)")
+    if active_mode:
+        log(f"Recovered mode: {active_mode} (service already running)")
+    else:
+        log(f"Mode: idle (no GPU service running — will start on first request)")
 
     server = http.server.ThreadingHTTPServer(("", PROXY_PORT), ProxyHandler)
     try:

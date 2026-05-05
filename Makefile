@@ -52,13 +52,21 @@ build:
 	fi
 	@docker compose build model-proxy
 
-## Start the stack (proxy + Open WebUI). GPU service starts on first request.
+## Start the stack: proxy + Open WebUI + LLM.
+## 1. `docker compose up -d` starts proxy + webui (no GPU service).
+## 2. `POST /mode` tells the proxy to bring up llama-server and
+##    health-poll it (up to HEALTH_TIMEOUT=900s for first GGUF load).
+## The mode switch blocks until llama-server is ready, so `make up`
+## returns with a fully operational stack.
 up:
 	docker compose up -d
-	@echo "Proxy + Open WebUI started. GPU service starts on first request."
-	@echo "  Force LLM mode:     make llm"
-	@echo "  Force ComfyUI mode: make comfyui"
-	@echo "  Force train mode:   make train"
+	@echo "Proxy + Open WebUI started. Starting LLM mode..."
+	@curl --max-time 900 -sf -X POST http://localhost:11434/mode \
+		-H 'Content-Type: application/json' \
+		-d '{"mode":"llm"}' \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "Warning: LLM mode switch timed out. Check: make status"
+	@echo "Stack ready.  Switch GPU: make comfyui | make train"
 
 ## Stop the stack (all profiles)
 down:
@@ -290,29 +298,30 @@ models:
 # ── GPU mode switching ────────────────────────────────────────────────
 .PHONY: llm comfyui train mode logs-comfyui logs-train
 
-## Switch to LLM mode (stops ComfyUI, starts llama-server)
+## Switch to LLM mode (stops ComfyUI/train, starts llama-server).
+## Blocks until healthy — GGUF first-load can take up to 15 min.
 llm:
-	@curl -sf -X POST http://localhost:11434/mode \
+	@curl --max-time 900 -sf -X POST http://localhost:11434/mode \
 		-H 'Content-Type: application/json' \
 		-d '{"mode":"llm"}' \
 		| python3 -m json.tool 2>/dev/null \
-		|| echo "Proxy not reachable. Start with: make up"
+		|| echo "Proxy not reachable or swap timed out. Start with: make up"
 
-## Switch to ComfyUI mode (stops llama-server, starts ComfyUI)
+## Switch to ComfyUI mode (stops llama-server/train, starts ComfyUI)
 comfyui:
-	@curl -sf -X POST http://localhost:11434/mode \
+	@curl --max-time 300 -sf -X POST http://localhost:11434/mode \
 		-H 'Content-Type: application/json' \
 		-d '{"mode":"comfyui"}' \
 		| python3 -m json.tool 2>/dev/null \
-		|| echo "Proxy not reachable. Start with: make up"
+		|| echo "Proxy not reachable or swap timed out. Start with: make up"
 
 ## Switch to train mode (stops llama-server/ComfyUI, starts lora-train)
 train:
-	@curl -sf -X POST http://localhost:11434/mode \
+	@curl --max-time 300 -sf -X POST http://localhost:11434/mode \
 		-H 'Content-Type: application/json' \
 		-d '{"mode":"train"}' \
 		| python3 -m json.tool 2>/dev/null \
-		|| echo "Proxy not reachable. Start with: make up"
+		|| echo "Proxy not reachable or swap timed out. Start with: make up"
 
 ## Show current GPU mode (llm, comfyui, train, or idle)
 mode:

@@ -293,7 +293,7 @@ Docker Hub), one is third-party:
 | `erfianugrah/llama-server:cuda12.8-sm120` | Docker Hub | llama.cpp with CUDA 12.8 / sm_120 |
 | `erfianugrah/comfyui:cuda12.8-sm120` | Docker Hub | ComfyUI with PyTorch 2.11 / CUDA 12.8 |
 | `erfianugrah/model-proxy:latest` | Docker Hub | Python reverse proxy with Docker CLI |
-| `ghcr.io/open-webui/open-webui:v0.8.12` | GHCR | Third-party chat UI (not built) |
+| `ghcr.io/open-webui/open-webui:v0.9.2` | GHCR | Third-party chat UI (not built) |
 
 ### Building from source vs pulling
 
@@ -406,7 +406,7 @@ The image ships with no diffusion models — download checkpoints to
 ### Open WebUI
 
 Third-party image pulled from GHCR. Not built locally. Pinned to a specific
-version (`v0.8.12`) to avoid breaking changes.
+version (`v0.9.2`) to avoid breaking changes.
 
 ## Performance tuning
 
@@ -822,7 +822,7 @@ These are set in `docker-compose.yml` for the `open-webui` service:
 ### How model capabilities flow
 
 The proxy enriches the `/v1/models` response with metadata that Open WebUI
-picks up automatically (v0.8.12+, PR #22441). Priority chain:
+picks up automatically (v0.9.2+, PR #22441). Priority chain:
 
 1. **`DEFAULT_MODEL_METADATA`** (env var) — global baseline for all models
 2. **Proxy `/v1/models` meta** — per-model description + capabilities
