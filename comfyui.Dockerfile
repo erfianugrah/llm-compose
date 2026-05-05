@@ -44,23 +44,17 @@ RUN git clone --depth 1 --branch ${COMFYUI_MANAGER_VERSION} \
     fi
 
 # IP-Adapter Plus — character consistency via reference images
-RUN git clone --depth 1 \
-      https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
-      custom_nodes_builtin/ComfyUI_IPAdapter_plus
+# Pinned to avoid silent breakage from upstream. To update:
+# git ls-remote --refs https://github.com/cubiq/ComfyUI_IPAdapter_plus.git main
+ARG IPADAPTER_VERSION=a0f451a5113cf9becb0847b92884cb10cbdec0ef
+RUN git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git \
+      custom_nodes_builtin/ComfyUI_IPAdapter_plus && \
+    cd custom_nodes_builtin/ComfyUI_IPAdapter_plus && \
+    git checkout ${IPADAPTER_VERSION}
 
 # ── Entrypoint ───────────────────────────────────────────────────────
-# Copy built-in nodes to the volume-mounted custom_nodes/ on startup
-# if they don't already exist there. This handles the empty-volume case
-# while allowing user modifications to persist.
-RUN printf '#!/bin/sh\n\
-for src in /app/ComfyUI/custom_nodes_builtin/*/; do\n\
-  name=$(basename "$src")\n\
-  if [ ! -d "/app/ComfyUI/custom_nodes/$name" ]; then\n\
-    echo "[init] Installing built-in node: $name"\n\
-    cp -r "$src" "/app/ComfyUI/custom_nodes/$name"\n\
-  fi\n\
-done\n\
-exec python main.py "$@"\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+COPY comfyui-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 VOLUME ["/app/ComfyUI/models", "/app/ComfyUI/output", \
         "/app/ComfyUI/input", "/app/ComfyUI/custom_nodes"]

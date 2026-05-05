@@ -1,9 +1,9 @@
 FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
-# Pin sd-scripts to a known commit/tag for reproducible builds. The default
-# tracks the `sd3` branch (kohya's primary Flux line as of 2025); override
-# with `--build-arg SD_SCRIPTS_REF=<commit-sha>` for true pinning.
-ARG SD_SCRIPTS_REF=sd3
+# Pin sd-scripts to a known commit for reproducible builds.
+# Override with `--build-arg SD_SCRIPTS_REF=<commit-sha>` if needed.
+# To update: git ls-remote --refs https://github.com/kohya-ss/sd-scripts.git sd3
+ARG SD_SCRIPTS_REF=ae0b0e6be8d0a458bef308944672a1079b162061
 
 RUN apt-get update && apt-get install -y \
       git libgl1-mesa-glx libglib2.0-0 gcc curl ca-certificates \

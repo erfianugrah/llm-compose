@@ -25,6 +25,7 @@ All paths are served relative to the container's /data volume:
 Zero external dependencies — stdlib only.
 """
 
+import glob
 import http.server
 import json
 import os
@@ -519,7 +520,7 @@ def _run_training(job):
         # freeze for entire epochs. Read raw and split on either.
         buf = b""
         while True:
-            chunk = job.process.stdout.read(256)
+            chunk = job.process.stdout.read(4096)
             if not chunk:
                 break
             buf += chunk
@@ -594,8 +595,10 @@ def _read_body(handler):
 
 class TrainHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        # Suppress default access log spam
-        pass
+        # Log POST requests and errors; suppress health/status polling spam
+        msg = fmt % args if args else fmt
+        if "POST" in msg or "404" in msg or "500" in msg:
+            log(msg)
 
     def do_GET(self):
         path = self.path.rstrip("/") or "/"
@@ -683,7 +686,7 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
             _json_response(self, 404, {"error": f"Not found: {path}"})
 
     def do_POST(self):
-        global current_job
+        global current_job, current_caption
         path = self.path.rstrip("/") or "/"
 
         if path == "/train":
@@ -752,7 +755,6 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
             # Supported engines: blip2 (default, natural language for Flux T5),
             # florence (Florence-2, broken on transformers>=4.54 — prefer blip2),
             # wd14 (Danbooru tags, for SDXL/anime models).
-            global current_caption
             body = _read_body(self)
             dataset = body.get("dataset")
             engine = body.get("engine", "blip2")
@@ -823,7 +825,6 @@ class TrainHandler(http.server.BaseHTTPRequestHandler):
             # or a previous server instance that crashed). Match cmdlines as
             # whole-word tokens to avoid false positives like a venv path
             # containing the literal "accelerate".
-            import glob
             # Whole-process-name markers (executable basename or python script)
             MARKERS = (
                 "flux_train_network.py", "sdxl_train_network.py",

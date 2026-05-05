@@ -19,6 +19,7 @@ import http.server
 import http.client
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -389,7 +390,11 @@ def switch_model(preset_info):
         )
         if secret:
             content += f"\n{secret}\n"
-        env_file.write_text(content)
+        # Atomic write: tmp file + rename so a crash mid-write can't
+        # leave .env truncated/corrupt.
+        tmp_env = env_file.with_suffix(".env.tmp")
+        tmp_env.write_text(content)
+        tmp_env.rename(env_file)
 
         # Recreate llama-server with new env (docker compose reads .env).
         # If we're not in LLM mode yet, stop the other service first.
@@ -569,7 +574,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     # ── Ensure mode helpers ──────────────────────────────────────────
     def _ensure_llm(self):
         """Ensure LLM mode is active. Returns True or sends error."""
-        global active_mode
         if active_mode == "llm":
             return True
         with switch_lock:
@@ -585,7 +589,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def _ensure_comfyui(self):
         """Ensure ComfyUI mode is active. Returns True or sends error."""
-        global active_mode
         if active_mode == "comfyui":
             return True
         with switch_lock:
@@ -601,7 +604,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def _ensure_train(self):
         """Ensure train mode is active. Returns True or sends error."""
-        global active_mode
         if active_mode == "train":
             return True
         with switch_lock:
@@ -867,6 +869,13 @@ if __name__ == "__main__":
         log(f"Mode: idle (no GPU service running — will start on first request)")
 
     server = http.server.ThreadingHTTPServer(("", PROXY_PORT), ProxyHandler)
+
+    def _shutdown(signum, frame):
+        log("Shutting down (signal)")
+        server.shutdown()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

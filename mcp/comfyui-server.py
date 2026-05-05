@@ -24,6 +24,7 @@ mode on the next /v1/ request.
 """
 
 import json
+import random
 import sys
 import urllib.request
 import urllib.error
@@ -207,7 +208,7 @@ def tool_generate(params):
         if seed is not None:
             workflow["3"]["inputs"]["seed"] = seed
         else:
-            workflow["3"]["inputs"]["seed"] = int(time.time()) % (2**32)
+            workflow["3"]["inputs"]["seed"] = random.randint(0, 2**32 - 1)
         if checkpoint:
             workflow["4"]["inputs"]["ckpt_name"] = checkpoint
 

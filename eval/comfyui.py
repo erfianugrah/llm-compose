@@ -32,7 +32,12 @@ def _req(method: str, path: str, data: dict | None = None, timeout: int = 30) ->
 
 
 def submit(workflow: dict, client_id: str | None = None, swap_wait: int = 120) -> str:
-    """Submit a workflow. Retries through proxy swap."""
+    """Submit a workflow. Retries through proxy swap.
+
+    Only retries 503s that indicate a GPU mode swap in progress (body
+    contains "switching"). Other 503s (queue full, invalid workflow)
+    are raised immediately to avoid masking real errors.
+    """
     payload = {"prompt": workflow, "client_id": client_id or str(uuid.uuid4())}
     start = time.monotonic()
     while True:
@@ -41,8 +46,11 @@ def submit(workflow: dict, client_id: str | None = None, swap_wait: int = 120) -
             return res["prompt_id"]
         except urllib.error.HTTPError as e:
             if e.code == 503 and time.monotonic() - start < swap_wait:
-                time.sleep(3)
-                continue
+                # Only retry if proxy is mid-swap (not a real ComfyUI error)
+                body = e.read().decode(errors="replace")
+                if "switching" in body or "starting" in body:
+                    time.sleep(3)
+                    continue
             raise
         except urllib.error.URLError:
             if time.monotonic() - start < swap_wait:
