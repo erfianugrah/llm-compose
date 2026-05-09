@@ -238,6 +238,36 @@ def _merge_system_messages(messages):
 
 
 # ── Asset download ───────────────────────────────────────────────────
+def _download_file(dest, url, kind, timeout=30):
+    """Download a file following redirects (handles Xet storage).
+    Raises RuntimeError on failure."""
+    import urllib.request
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "llm-compose/proxy"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            total = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            with tmp.open("wb") as f:
+                while True:
+                    chunk = response.read(1 << 20)  # 1 MiB
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = downloaded * 100 // total
+                        if downloaded % (50 << 20) < (1 << 20):  # log every ~50MB
+                            log(f"  {kind}: {downloaded >> 20}MB / {total >> 20}MB ({pct}%)")
+        tmp.rename(dest)
+        log(f"Downloaded {kind}: {dest.name} ({downloaded >> 20}MB)")
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise RuntimeError(f"download failed for {kind} at {url}: {exc}") from exc
+
+
 def _ensure_asset(filename, url, kind):
     """Download mmproj/template to ASSETS_DIR if missing. Called before
     recreating llama-server so the new model's assets are ready.
@@ -248,24 +278,22 @@ def _ensure_asset(filename, url, kind):
     if dest.exists():
         return
     log(f"Downloading {kind}: {filename}")
-    import urllib.request
-    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".tmp")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "llm-compose/proxy"})
-        with urllib.request.urlopen(req, timeout=30) as response:
-            with tmp.open("wb") as f:
-                while True:
-                    chunk = response.read(1 << 20)  # 1 MiB
-                    if not chunk:
-                        break
-                    f.write(chunk)
-        tmp.rename(dest)
-        log(f"Downloaded {kind}: {filename}")
-    except Exception as exc:
-        if tmp.exists():
-            tmp.unlink()
-        raise RuntimeError(f"download failed for {kind} at {url}: {exc}") from exc
+    _download_file(dest, url, kind)
+
+
+def _ensure_model_gguf(repo, filename):
+    """Pre-download model GGUF to ASSETS_DIR if not already present.
+    Uses HuggingFace direct URL with redirect following (handles Xet storage).
+    Raises RuntimeError if download fails."""
+    if not repo or not filename:
+        return
+    dest = ASSETS_DIR / filename
+    if dest.exists():
+        log(f"Model already cached: {filename}")
+        return
+    url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    log(f"Pre-downloading model: {filename} from {repo}")
+    _download_file(dest, url, "model", timeout=600)
 
 
 # ── Mode switching (GPU exclusivity) ─────────────────────────────────
@@ -368,6 +396,7 @@ def switch_model(preset_info):
 
         # Download assets BEFORE touching .env so a failure leaves state intact
         try:
+            _ensure_model_gguf(cfg.get("MODEL_REPO", ""), cfg.get("MODEL_FILE", ""))
             _ensure_asset(mmproj_file, mmproj_url, "mmproj")
             _ensure_asset(tmpl_file, tmpl_url, "template")
         except RuntimeError as exc:
@@ -578,6 +607,17 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         with switch_lock:
             if active_mode == "llm":
                 return True
+            # Pre-download model GGUF on cold start (handles Xet/redirect)
+            if current_model_id and current_model_id in self.presets:
+                cfg = self.presets[current_model_id]["config"]
+                try:
+                    _ensure_model_gguf(cfg.get("MODEL_REPO", ""), cfg.get("MODEL_FILE", ""))
+                except RuntimeError as exc:
+                    log(f"Model pre-download failed: {exc}")
+                    _json_response(self, 503, {
+                        "error": {"message": f"Model download failed: {exc}", "type": "server_error", "code": 503}
+                    })
+                    return False
             ok = ensure_mode("llm")
         if not ok:
             _json_response(self, 503, {
@@ -727,6 +767,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # Unknown model
         if requested_model not in self.presets:
+            log(f"Model '{requested_model}' not in presets, passing through (known: {', '.join(self.presets.keys())})")
             return True  # Let llama-server handle the unknown model
 
         # VRAM budget gate — reject before touching anything

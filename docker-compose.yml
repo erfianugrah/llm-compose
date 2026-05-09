@@ -85,9 +85,13 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        if [ -f "/models/$${MODEL_FILE}" ]; then
+          MODEL_ARGS="-m /models/$${MODEL_FILE}"
+        else
+          MODEL_ARGS="--hf-repo $${MODEL_REPO} --hf-file $${MODEL_FILE}"
+        fi
         exec llama-server \
-          --hf-repo $${MODEL_REPO} \
-          --hf-file $${MODEL_FILE} \
+          $$MODEL_ARGS \
           $${MMPROJ_FILE:+--mmproj /models/$${MMPROJ_FILE}} \
           --jinja \
           $${TEMPLATE_FILE:+--chat-template-file /models/$${TEMPLATE_FILE}} \
@@ -100,7 +104,7 @@ services:
           -ctv q8_0 \
           -c $${CONTEXT_SIZE:-65536} \
           --fit on \
-          --fit-ctx 32768 \
+          --fit-ctx $${CONTEXT_SIZE:-65536} \
           --temp $${TEMPERATURE:-1.0} \
           --top-p $${TOP_P:-0.95} \
           --top-k $${TOP_K:-64} \
