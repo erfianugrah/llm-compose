@@ -32,6 +32,8 @@ import time
 import os
 
 WHISPER_URL = os.environ.get("WHISPER_URL", "http://localhost:7860")
+LLM_URL = os.environ.get("LLM_URL", "http://localhost:11434/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.5-4B-Q8_0")
 POLL_INTERVAL = 5  # seconds between status polls for long transcriptions
 POLL_TIMEOUT = 1800  # max 30 min for very long videos
 
@@ -58,6 +60,80 @@ def _request(method, path, data=None, timeout=600):
         return {"error": f"Connection failed: {e.reason}"}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ── Smart hotwords ───────────────────────────────────────────────────
+
+import re
+import html as html_mod
+
+
+def _fetch_video_description(video_id):
+    """Fetch YouTube video description for proper noun context."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+        match = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', page)
+        if match:
+            return html_mod.unescape(match.group(1))
+        match = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', page)
+        if match:
+            return html_mod.unescape(match.group(1))
+    except Exception as e:
+        log(f"Description fetch failed: {e}")
+    return ""
+
+
+def _generate_hotwords(title, description=""):
+    """Ask LLM to generate hotwords from video title + description."""
+    if not title:
+        return ""
+
+    prompt = (
+        "Given this video title and description, list proper nouns, technical terms, "
+        "jargon, and names that a speech-to-text model might mishear. Include character "
+        "names, place names, game/product terminology, brand names, and specialized vocabulary. "
+        "Output ONLY a comma-separated list, nothing else. No explanations.\n\n"
+        f"Title: {title}\n"
+        f"Description: {description or '(none)'}"
+    )
+
+    payload = json.dumps({
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 256,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{LLM_URL}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        hotwords = data["choices"][0]["message"]["content"].strip()
+        log(f"Generated hotwords: {hotwords[:120]}")
+        return hotwords
+    except Exception as e:
+        log(f"Hotword generation failed (non-fatal): {e}")
+        return ""
+
+
+def _extract_video_id(url):
+    """Extract video ID from various YouTube URL formats."""
+    patterns = [
+        r"(?:v=|youtu\.be/|shorts/)([\w-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return ""
+
 
 
 # ── Tool implementations ─────────────────────────────────────────────
@@ -192,7 +268,16 @@ def tool_yt_transcribe(args):
 
     log(f"yt_transcribe: downloaded '{title}' ({duration}s), transcribing...")
 
-    # Step 2: Transcribe (cleanup=true removes the temp download after)
+    # Step 2: Smart hotwords — generate from title + description if user didn't provide
+    user_hotwords = args.get("hotwords", "")
+    if not user_hotwords:
+        video_id = _extract_video_id(url)
+        description = _fetch_video_description(video_id) if video_id else ""
+        hotwords = _generate_hotwords(title, description)
+    else:
+        hotwords = user_hotwords
+
+    # Step 3: Transcribe (cleanup=true removes the temp download after)
     params = {
         "file_path": filename,
         "model": args.get("model", "turbo"),
@@ -201,7 +286,7 @@ def tool_yt_transcribe(args):
         "diarize": args.get("diarize", False),
         "min_speakers": args.get("min_speakers", 0),
         "max_speakers": args.get("max_speakers", 0),
-        "hotwords": args.get("hotwords", ""),
+        "hotwords": hotwords,
         "initial_prompt": args.get("initial_prompt", ""),
         "cleanup": True,
     }
@@ -267,12 +352,15 @@ def tool_yt_transcribe_playlist(args):
             continue
 
         log(f"  [{i+1}/{len(items)}] Transcribing: {title}")
+        # Generate hotwords per video from title
+        item_hotwords = _generate_hotwords(title, "")
         params = {
             "file_path": filename,
             "model": args.get("model", "turbo"),
             "language": args.get("language", "Auto-detect"),
             "format": "txt",
             "diarize": args.get("diarize", False),
+            "hotwords": item_hotwords,
             "cleanup": True,
         }
 
