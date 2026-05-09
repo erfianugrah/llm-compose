@@ -34,6 +34,7 @@ import os
 WHISPER_URL = os.environ.get("WHISPER_URL", "http://localhost:7860")
 LLM_URL = os.environ.get("LLM_URL", "http://localhost:11434/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "Qwen3.5-4B-Q8_0")
+EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
 POLL_INTERVAL = 5  # seconds between status polls for long transcriptions
 POLL_TIMEOUT = 1800  # max 30 min for very long videos
 
@@ -68,17 +69,36 @@ import re
 import html as html_mod
 
 
+def _extract_video_id(url):
+    """Extract video ID from various YouTube URL formats."""
+    match = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", url)
+    return match.group(1) if match else ""
+
+
 def _fetch_video_description(video_id):
-    """Fetch YouTube video description for proper noun context."""
+    """Fetch full YouTube video description from page JSON."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en",
+        })
         with urllib.request.urlopen(req, timeout=10) as resp:
             page = resp.read().decode("utf-8", errors="replace")
-        match = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', page)
+
+        # Try full description from ytInitialPlayerResponse
+        match = re.search(r"var ytInitialPlayerResponse\s*=\s*(\{.+?\});", page)
         if match:
-            return html_mod.unescape(match.group(1))
-        match = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', page)
+            try:
+                data = json.loads(match.group(1))
+                desc = data.get("videoDetails", {}).get("shortDescription", "")
+                if desc:
+                    return desc
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Fallback: meta description
+        match = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', page)
         if match:
             return html_mod.unescape(match.group(1))
     except Exception as e:
@@ -86,18 +106,85 @@ def _fetch_video_description(video_id):
     return ""
 
 
-def _generate_hotwords(title, description=""):
-    """Ask LLM to generate hotwords from video title + description."""
+def _exa_search(title, description=""):
+    """Search via Exa API for authoritative sources with correct terminology."""
+    if not EXA_API_KEY:
+        return ""
+
+    query = title
+    if description:
+        first_sentence = description.split(".")[0] if "." in description else description[:100]
+        query = f"{title} — {first_sentence}"
+
+    payload = json.dumps({
+        "query": query,
+        "type": "auto",
+        "numResults": 5,
+        "contents": {
+            "highlights": True,
+            "text": {"maxCharacters": 5000},
+        },
+        "excludeDomains": ["youtube.com", "reddit.com"],
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            "https://api.exa.ai/search",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": EXA_API_KEY,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        log(f"Exa search failed (non-fatal): {e}")
+        return ""
+
+    results = data.get("results", [])
+    if not results:
+        return ""
+
+    context_parts = []
+    for r in results[:3]:
+        parts = []
+        r_title = r.get("title", "")
+        if r_title:
+            parts.append(f"Source: {r_title}")
+        highlights = r.get("highlights", [])
+        if highlights:
+            parts.extend(highlights)
+        text = r.get("text", "")
+        if text and not highlights:
+            parts.append(text[:2000])
+        if parts:
+            context_parts.append("\n".join(parts))
+
+    context = "\n---\n".join(context_parts)
+    if context:
+        log(f"Exa: {len(results)} results, {len(context)} chars context")
+    return context
+
+
+def _generate_hotwords(title, description="", web_context=""):
+    """Ask LLM to generate hotwords from video title + description + web context."""
     if not title:
         return ""
 
+    context_parts = []
+    if description:
+        context_parts.append(f"Description: {description[:2000]}")
+    if web_context:
+        context_parts.append(f"Web research: {web_context[:2000]}")
+    context = "\n".join(context_parts) or "(no additional context)"
+
     prompt = (
-        "Given this video title and description, list proper nouns, technical terms, "
+        "Given this video title and reference material, list proper nouns, technical terms, "
         "jargon, and names that a speech-to-text model might mishear. Include character "
         "names, place names, game/product terminology, brand names, and specialized vocabulary. "
         "Output ONLY a comma-separated list, nothing else. No explanations.\n\n"
-        f"Title: {title}\n"
-        f"Description: {description or '(none)'}"
+        f"Title: {title}\n{context}"
     )
 
     payload = json.dumps({
@@ -121,18 +208,6 @@ def _generate_hotwords(title, description=""):
     except Exception as e:
         log(f"Hotword generation failed (non-fatal): {e}")
         return ""
-
-
-def _extract_video_id(url):
-    """Extract video ID from various YouTube URL formats."""
-    patterns = [
-        r"(?:v=|youtu\.be/|shorts/)([\w-]{11})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return ""
 
 
 
@@ -266,16 +341,19 @@ def tool_yt_transcribe(args):
     if not filename:
         return "Download succeeded but no filename returned"
 
-    log(f"yt_transcribe: downloaded '{title}' ({duration}s), transcribing...")
+    log(f"yt_transcribe: downloaded '{title}' ({duration}s), researching context...")
 
-    # Step 2: Smart hotwords — generate from title + description if user didn't provide
+    # Step 2: Smart hotwords — web research + description + LLM
     user_hotwords = args.get("hotwords", "")
     if not user_hotwords:
         video_id = _extract_video_id(url)
         description = _fetch_video_description(video_id) if video_id else ""
-        hotwords = _generate_hotwords(title, description)
+        web_context = _exa_search(title, description)
+        hotwords = _generate_hotwords(title, description, web_context)
     else:
         hotwords = user_hotwords
+
+    log(f"yt_transcribe: transcribing...")
 
     # Step 3: Transcribe (cleanup=true removes the temp download after)
     params = {
@@ -352,8 +430,10 @@ def tool_yt_transcribe_playlist(args):
             continue
 
         log(f"  [{i+1}/{len(items)}] Transcribing: {title}")
-        # Generate hotwords per video from title
-        item_hotwords = _generate_hotwords(title, "")
+        # Generate hotwords per video from title + Exa research
+        item_desc = _fetch_video_description(_extract_video_id(item.get("url", ""))) if item.get("url") else ""
+        item_web = _exa_search(title, item_desc)
+        item_hotwords = _generate_hotwords(title, item_desc, item_web)
         params = {
             "file_path": filename,
             "model": args.get("model", "turbo"),
