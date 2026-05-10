@@ -41,11 +41,17 @@ services:
       # NOTE: `:ro` is theatre — Docker daemon doesn't enforce read-only on
       # the socket; clients can still POST/DELETE. Kept as defense-in-depth.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Project files — narrow scope: only what the proxy actually touches.
-      # docker-compose.yml is needed because compose subcommands re-parse it.
-      - ./.env:/project/.env:rw
-      - ./docker-compose.yml:/project/docker-compose.yml:ro
-      # Model presets (read-only)
+      # Project root mounted as a directory (NOT individual files).
+      # File-level bind-mounts on Docker Desktop / WSL2 break whenever
+      # the host file gets atomically replaced (write→rename, which most
+      # editors and `make migrate-env` do). Directory mounts survive
+      # inode replacement of files inside.
+      # Trust boundary note: the proxy already has docker.sock, so any
+      # exposure of repo files here is moot — proxy is fully privileged
+      # against the host already.
+      - ./:/project:rw
+      # Model presets (separate path inside container so proxy reads
+      # them via /presets like before)
       - ./models:/presets:ro
       # Models cache dir — proxy downloads mmproj/templates on demand
       - ${DOCKER_VOLUMES_DIR:-./docker-volumes}/llama-server/models:/assets:rw
