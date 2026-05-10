@@ -11,10 +11,25 @@ KV cache, and auto-fit context. All inside Docker.
 ## Quick start
 
 ```bash
+git clone https://github.com/erfianugrah/llm-compose.git
+cd llm-compose
 make setup          # one-time: .env, volumes, model assets, image build
 make download-all   # pre-download all model GGUFs (~98 GB total)
 make up             # start the stack (proxy + Open WebUI; GPU service starts on first request)
 ```
+
+`make setup` writes `.env` for you with a random `WEBUI_SECRET_KEY` and a
+`DOCKER_VOLUMES_DIR` pointing at `$HOME/docker-volumes`. To put volumes
+somewhere else (different drive, NAS mount), edit `.env` before running
+`make up`:
+
+```dotenv
+DOCKER_VOLUMES_DIR=/srv/data/llm-compose
+```
+
+If you upgrade an existing checkout that pre-dates `DOCKER_VOLUMES_DIR`,
+run `make migrate-env` once to append the missing variables to your `.env`
+without touching anything else (idempotent, safe to re-run).
 
 Open the chat UI at [http://localhost:3000](http://localhost:3000).
 ComfyUI web UI at [http://localhost:8188](http://localhost:8188) (when ComfyUI mode is active).
