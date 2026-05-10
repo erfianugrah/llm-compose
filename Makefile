@@ -163,8 +163,11 @@ switch: dirs
 		echo "Warning: $(PRESET) missing VRAM_ESTIMATE_GB, skipping budget check"; \
 	fi
 	@echo "Switching to $(MODEL)..."
-	@# Preserve WEBUI_SECRET_KEY, replace everything else
-	@SECRET=$$(grep '^WEBUI_SECRET_KEY=' .env 2>/dev/null | head -1); \
+	@# Preserve host-local config vars (everything that ISN'T a model preset
+	# field). The preset fields get replaced; everything else carries over.
+	@# Pattern: any var that doesn't appear in a preset file is host-local.
+	@PRESET_VARS='^(VRAM_ESTIMATE_GB|MODEL_REPO|MODEL_FILE|MODEL_NAME|MMPROJ_URL|MMPROJ_FILE|TEMPLATE_URL|TEMPLATE_FILE|REASONING|CONTEXT_SIZE|TEMPERATURE|TOP_P|TOP_K|MIN_P|PRESENCE_PENALTY|REPEAT_PENALTY)='; \
+	HOST_LOCAL=$$(grep -vE "$$PRESET_VARS" .env 2>/dev/null | grep -vE '^[[:space:]]*(#|$$)' || true); \
 	cp "$(PRESET)" .env.tmp; \
 	echo "" >> .env.tmp; \
 	echo "# Auto-derived asset filenames (based on preset name)" >> .env.tmp; \
@@ -180,12 +183,16 @@ switch: dirs
 	else \
 		echo "TEMPLATE_FILE=" >> .env.tmp; \
 	fi; \
-	if [ -n "$$SECRET" ]; then \
+	if [ -n "$$HOST_LOCAL" ]; then \
 		echo "" >> .env.tmp; \
-		echo "$$SECRET" >> .env.tmp; \
-	else \
-		echo "" >> .env.tmp; \
+		echo "# Host-local config — preserved across `make switch`" >> .env.tmp; \
+		echo "$$HOST_LOCAL" >> .env.tmp; \
+	fi; \
+	if ! echo "$$HOST_LOCAL" | grep -q '^WEBUI_SECRET_KEY='; then \
 		echo "WEBUI_SECRET_KEY=$$(openssl rand -hex 32)" >> .env.tmp; \
+	fi; \
+	if ! echo "$$HOST_LOCAL" | grep -q '^DOCKER_VOLUMES_DIR='; then \
+		echo "DOCKER_VOLUMES_DIR=$(HOME)/docker-volumes" >> .env.tmp; \
 	fi; \
 	mv .env.tmp .env
 	@$(MAKE) --no-print-directory assets
