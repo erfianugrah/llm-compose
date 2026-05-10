@@ -743,6 +743,12 @@ migrate-env:
 		echo "WEBUI_SECRET_KEY=$$(openssl rand -hex 32)" >> .env; \
 		echo "  + WEBUI_SECRET_KEY=<random>"; \
 	fi
+	@if ! grep -q "^WEBUI_PORT=" .env; then \
+		echo "" >> .env; \
+		echo "# Open WebUI host port — change if 3000 is in use" >> .env; \
+		echo "WEBUI_PORT=3000" >> .env; \
+		echo "  + WEBUI_PORT=3000 (override in .env if 3000 is taken)"; \
+	fi
 	@echo "✓ .env up to date"
 
 ## Show this help message

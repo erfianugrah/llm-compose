@@ -158,8 +158,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      llm:
-        ipv4_address: 172.28.0.2
+      - llm
 
   # ── Image / video generation engine ─────────────────────────────────
   # ComfyUI node-based workflow engine for Stable Diffusion, Flux, etc.
@@ -207,8 +206,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      llm:
-        ipv4_address: 172.28.0.5
+      - llm
 
   # ── LoRA training engine ──────────────────────────────────────────────
   # HTTP API server wrapping kohya sd-scripts for LoRA fine-tuning.
@@ -259,8 +257,7 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      llm:
-        ipv4_address: 172.28.0.6
+      - llm
 
   # ── Accuracy benchmark harness ───────────────────────────────────────
   # EvalPlus (HumanEval) + lm-eval (HellaSwag) + BFCL bundled in one image.
@@ -283,8 +280,7 @@ services:
       - ./bench/results:/results:rw
       - ${DOCKER_VOLUMES_DIR:-./docker-volumes}/bench-cache:/cache:rw
     networks:
-      llm:
-        ipv4_address: 172.28.0.7
+      - llm
 
   # ── Chat UI ──────────────────────────────────────────────────────────
   # Open WebUI's image uses UID 1000. We set user: explicitly so files
@@ -324,7 +320,10 @@ services:
       - WEBUI_ADMIN_PASSWORD=${WEBUI_ADMIN_PASSWORD:-}
       - WEBUI_ADMIN_NAME=${WEBUI_ADMIN_NAME:-Admin}
     ports:
-      - "127.0.0.1:3000:8080"
+      # Host port is env-driven so collisions with other dev tools (Grafana,
+      # node dev servers, etc.) don't block the stack. Override with
+      # WEBUI_PORT in .env. Default 3000 keeps backward compatibility.
+      - "127.0.0.1:${WEBUI_PORT:-3000}:8080"
     volumes:
       - ${DOCKER_VOLUMES_DIR:-./docker-volumes}/webui:/app/backend/data
     tmpfs:
@@ -348,8 +347,12 @@ services:
         max-size: "50m"
         max-file: "3"
     networks:
-      llm:
-        ipv4_address: 172.28.0.3
+      # No static IP — Open WebUI is reached only by host port-forward
+      # (127.0.0.1:${WEBUI_PORT}:8080). Sister containers don't need a
+      # fixed IP for it. Pinning .3 used to cause collisions when
+      # whisper-transcribe joined this network via its overlay and
+      # grabbed .3 first.
+      - llm
 
 networks:
   llm:
