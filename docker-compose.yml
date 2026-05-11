@@ -117,7 +117,7 @@ services:
           $${MIN_P:+--min-p $${MIN_P}} \
           $${PRESENCE_PENALTY:+--presence-penalty $${PRESENCE_PENALTY}} \
           $${REPEAT_PENALTY:+--repeat-penalty $${REPEAT_PENALTY}} \
-          -np 1 \
+          -np $${PARALLEL_SLOTS:-1} \
           -b 4096 \
           -ub 4096 \
           --threads 8 \
@@ -131,6 +131,7 @@ services:
       - TEMPLATE_FILE=${TEMPLATE_FILE}
       - REASONING=${REASONING}
       - CONTEXT_SIZE=${CONTEXT_SIZE}
+      - PARALLEL_SLOTS=${PARALLEL_SLOTS:-1}
       - TEMPERATURE=${TEMPERATURE}
       - TOP_P=${TOP_P}
       - TOP_K=${TOP_K}

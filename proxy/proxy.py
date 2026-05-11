@@ -391,8 +391,19 @@ def switch_model(preset_info):
         cfg = preset_info["config"]
         mmproj_url = cfg.get("MMPROJ_URL", "").strip()
         tmpl_url = cfg.get("TEMPLATE_URL", "").strip()
-        mmproj_file = f"{preset_name}-mmproj.gguf" if mmproj_url else ""
-        tmpl_file = f"{preset_name}-template.jinja" if tmpl_url else ""
+        # Resolution order for asset filenames:
+        #   1. Preset's explicit MMPROJ_FILE / TEMPLATE_FILE (user-managed,
+        #      file is expected to already exist in /models). This is the
+        #      "single source of truth" path — no auto-download.
+        #   2. Auto-derived `{preset}-mmproj.gguf` when MMPROJ_URL is set
+        #      (proxy fetches URL → /models on first use).
+        #   3. Empty when neither is set (no vision capability).
+        mmproj_file = cfg.get("MMPROJ_FILE", "").strip() or (
+            f"{preset_name}-mmproj.gguf" if mmproj_url else ""
+        )
+        tmpl_file = cfg.get("TEMPLATE_FILE", "").strip() or (
+            f"{preset_name}-template.jinja" if tmpl_url else ""
+        )
 
         # Download assets BEFORE touching .env so a failure leaves state intact
         try:
@@ -684,7 +695,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         models = []
         for model_id, info in self.presets.items():
             cfg = info["config"]
-            has_vision = bool(cfg.get("MMPROJ_URL"))
+            # Vision capability — true when EITHER a remote MMPROJ_URL is set
+            # (auto-downloaded by the proxy on first use) OR a local MMPROJ_FILE
+            # is provided (manually placed in the models dir, used as-is).
+            has_vision = bool(cfg.get("MMPROJ_URL") or cfg.get("MMPROJ_FILE"))
             reasoning = cfg.get("REASONING", "").strip().lower() in ("on", "true", "1")
             try:
                 context = int(cfg.get("CONTEXT_SIZE", "65536"))
