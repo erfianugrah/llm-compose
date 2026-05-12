@@ -270,6 +270,54 @@ def _format_duration(seconds: int) -> str:
     return f"{seconds // 60:.0f}m {seconds % 60:.0f}s" if seconds >= 60 else f"{seconds}s"
 
 
+def _submit_and_poll_whisper_job(params: dict, label: str = "whisper-job") -> dict:
+    """Submit transcription via the server-side queue (/api/jobs) and poll
+    until terminal. Returns the result dict on success or {"error": ...} on
+    failure — preserves the contract of the previous _request("POST",
+    "/api/transcribe", ...) call so the surrounding tool functions need
+    minimal changes.
+
+    Falls back to the legacy /api/transcribe with wait=true when the queue
+    backend is down (whisper running without valkey), so the MCP tools keep
+    working even when the queue layer is unavailable.
+    """
+    params = {**params, "consumer": params.get("consumer", "mcp")}
+    sub = _request("POST", "/api/jobs", params, timeout=30)
+    if "error" in sub:
+        err_str = str(sub.get("error", ""))
+        if "queue backend unavailable" in err_str or "503" in err_str:
+            log(f"[{label}] queue unavailable; falling back to /api/transcribe wait=true")
+            return _request(
+                "POST", "/api/transcribe",
+                {**params, "wait": True}, timeout=POLL_TIMEOUT,
+            )
+        return sub
+
+    job_id = sub.get("job_id")
+    if not job_id:
+        return {"error": f"submit returned no job_id: {sub}"}
+    log(f"[{label}] queued as {job_id} (position={sub.get('position')})")
+
+    deadline = time.time() + POLL_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(2)  # 2s tick — cheap (single HGETALL on valkey)
+        poll = _request("GET", f"/api/jobs/{job_id}", timeout=10)
+        if "error" in poll:
+            # Transient network blip — keep polling. The job continues on
+            # the server regardless of whether we're listening.
+            continue
+        status = poll.get("status")
+        if status == "done":
+            return poll.get("result") or {}
+        if status == "failed":
+            err = poll.get("error", "unknown")
+            return {"error": err, "permanent": poll.get("permanent", False)}
+        if status == "cancelled":
+            return {"error": "cancelled"}
+        # queued or running — keep polling
+    return {"error": f"timed out polling job {job_id} after {POLL_TIMEOUT}s"}
+
+
 def _do_yt_transcribe(args):
     """Background-thread body for yt_transcribe."""
     url = args["url"]
@@ -313,16 +361,17 @@ def _do_yt_transcribe(args):
     if args.get("batch_size"):
         params["batch_size"] = args["batch_size"]
 
-    result = _request("POST", "/api/transcribe", params, timeout=POLL_TIMEOUT)
+    result = _submit_and_poll_whisper_job(params, label=f"yt_transcribe {title[:40]}")
     if "error" in result:
         return f"Download succeeded but transcription failed: {result['error']}"
 
     transcript = result.get("transcript", "")
     status = result.get("status", "")
+    cached_tag = " (cache hit)" if result.get("cached") else ""
     header = (
         f"Video: {title}\n"
         f"Duration: {_format_duration(duration)}\n"
-        f"Transcription: {status}\n"
+        f"Transcription: {status}{cached_tag}\n"
         f"\n--- TRANSCRIPT ---\n\n"
     )
     return header + transcript
@@ -351,7 +400,7 @@ def _do_transcribe(args):
         params["batch_size"] = args["batch_size"]
 
     log(f"Transcribing: {file_path}")
-    result = _request("POST", "/api/transcribe", params, timeout=POLL_TIMEOUT)
+    result = _submit_and_poll_whisper_job(params, label=f"transcribe {os.path.basename(file_path)}")
     if "error" in result:
         return f"Transcription failed: {result['error']}"
 
@@ -361,7 +410,8 @@ def _do_transcribe(args):
     lines = transcript.count("\n") + 1 if transcript else 0
     chars = len(transcript)
 
-    header = f"Transcription complete: {status}\n({lines} lines, {chars} chars)\n"
+    cached_tag = " (cache hit)" if result.get("cached") else ""
+    header = f"Transcription complete: {status}{cached_tag}\n({lines} lines, {chars} chars)\n"
     if subtitle_file:
         header += f"Subtitle file: {subtitle_file}\n"
     header += "\n--- TRANSCRIPT ---\n\n"
@@ -409,7 +459,9 @@ def _do_yt_transcribe_playlist(args):
             "hotwords": _extract_hotwords(title),
             "cleanup": True,
         }
-        result = _request("POST", "/api/transcribe", params, timeout=POLL_TIMEOUT)
+        result = _submit_and_poll_whisper_job(
+            params, label=f"playlist[{i+1}/{len(items)}] {title[:40]}"
+        )
         if "error" in result:
             all_transcripts.append(
                 f"\n--- [{i+1}/{len(items)}] {title} ({duration_str}) ---\n"
@@ -417,8 +469,9 @@ def _do_yt_transcribe_playlist(args):
             )
         else:
             transcript = result.get("transcript", "")
+            cached_tag = " (cache hit)" if result.get("cached") else ""
             all_transcripts.append(
-                f"\n--- [{i+1}/{len(items)}] {title} ({duration_str}) ---\n"
+                f"\n--- [{i+1}/{len(items)}] {title} ({duration_str}){cached_tag} ---\n"
                 f"{transcript}\n"
             )
 
