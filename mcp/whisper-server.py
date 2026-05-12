@@ -356,6 +356,11 @@ def _do_yt_transcribe(args):
         "max_speakers": args.get("max_speakers", 0),
         "hotwords": hotwords,
         "initial_prompt": args.get("initial_prompt", ""),
+        # Server-side translate policy. "auto" (default) translates
+        # non-English sources to English — best for LLM consumption per
+        # CS-FLEURS (arXiv:2509.14161). Pass translate=False to preserve
+        # the source language.
+        "translate": args.get("translate", "auto"),
         "cleanup": True,
     }
     if args.get("batch_size"):
@@ -395,6 +400,7 @@ def _do_transcribe(args):
         "hotwords": args.get("hotwords", ""),
         "initial_prompt": args.get("initial_prompt", ""),
         "suppress_numerals": args.get("suppress_numerals", False),
+        "translate": args.get("translate", "auto"),
     }
     if args.get("batch_size"):
         params["batch_size"] = args["batch_size"]
@@ -457,6 +463,7 @@ def _do_yt_transcribe_playlist(args):
             "format": "txt",
             "diarize": args.get("diarize", False),
             "hotwords": _extract_hotwords(title),
+            "translate": args.get("translate", "auto"),
             "cleanup": True,
         }
         result = _submit_and_poll_whisper_job(
@@ -626,6 +633,18 @@ TOOLS = [
                 "model": {"type": "string", "description": "Whisper model. Default: turbo",
                           "enum": ["tiny", "base", "small", "medium", "large", "turbo"]},
                 "language": {"type": "string", "description": "Language code (e.g. 'en', 'fr') or 'Auto-detect'. Default: Auto-detect"},
+                "translate": {
+                    "description": (
+                        "Translation policy. 'auto' (default) — server runs a "
+                        "30s LID pre-pass and translates non-English sources to "
+                        "English (best for downstream summarisation). true — "
+                        "force task=translate. false — preserve source language."
+                    ),
+                    "oneOf": [
+                        {"type": "string", "enum": ["auto"]},
+                        {"type": "boolean"},
+                    ],
+                },
                 "diarize": {"type": "boolean", "description": "Enable speaker diarization. Default: false"},
                 "hotwords": {"type": "string", "description": "Comma-separated proper-noun bias terms"},
                 "initial_prompt": {"type": "string", "description": "Context hint for the first transcription window"},
@@ -648,6 +667,17 @@ TOOLS = [
                 "model": {"type": "string", "description": "Whisper model. Default: turbo",
                           "enum": ["tiny", "base", "small", "medium", "large", "turbo"]},
                 "language": {"type": "string", "description": "Language code or 'Auto-detect'. Default: Auto-detect"},
+                "translate": {
+                    "description": (
+                        "Translation policy. 'auto' (default) translates "
+                        "non-English sources to English; true forces translate; "
+                        "false preserves source language."
+                    ),
+                    "oneOf": [
+                        {"type": "string", "enum": ["auto"]},
+                        {"type": "boolean"},
+                    ],
+                },
                 "diarize": {"type": "boolean", "description": "Enable speaker diarization. Default: false"},
                 "hotwords": {"type": "string", "description": "Words the model might mishear"},
                 "initial_prompt": {"type": "string", "description": "Context hint for transcription"},
@@ -672,6 +702,16 @@ TOOLS = [
                 "model": {"type": "string", "description": "Whisper model. Default: turbo",
                           "enum": ["tiny", "base", "small", "medium", "large", "turbo"]},
                 "language": {"type": "string", "description": "Language code or 'Auto-detect'. Default: Auto-detect"},
+                "translate": {
+                    "description": (
+                        "Translation policy applied to every video in the "
+                        "playlist. 'auto' (default), true (force), false (native)."
+                    ),
+                    "oneOf": [
+                        {"type": "string", "enum": ["auto"]},
+                        {"type": "boolean"},
+                    ],
+                },
                 "diarize": {"type": "boolean", "description": "Enable speaker diarization. Default: false"},
                 "wait_max_sec": {"type": "integer", "description": "Max seconds to wait inline before returning a job_id. Default 120."}
             },
