@@ -34,7 +34,6 @@ from llmc.orchestrator import (
     GpuService,
     Orchestrator,
     OrchestratorError,
-    _llama_command,
 )
 from llmc.presets import load_preset
 
@@ -55,34 +54,11 @@ class TestServiceDefinitions(unittest.TestCase):
         self.assertEqual(set(SERVICES), {"llm", "comfyui", "train"})
 
 
-class TestLlamaCommand(unittest.TestCase):
-    """The orchestrator's inline llama-server command builder.
-
-    Backwards-compatible fallback until every llama-server image in the
-    fleet is rebuilt with llama-server-entrypoint.sh baked in. Phase 7
-    introduced the baked-in script; this inline command duplicates the
-    same logic so old images still work."""
-
-    def test_command_uses_model_args(self):
-        cmd = _llama_command()
-        self.assertIn("MODEL_FILE", cmd)
-        self.assertIn("MODEL_REPO", cmd)
-        self.assertIn("--hf-repo", cmd)
-        self.assertIn("/models/", cmd)
-
-    def test_command_has_required_flags(self):
-        cmd = _llama_command()
-        for flag in ("--port 8080", "--host 0.0.0.0", "-ngl 99", "--flash-attn on",
-                     "-ctk q8_0", "-ctv q8_0", "--metrics"):
-            self.assertIn(flag, cmd, f"missing {flag!r} in llama command")
-
-
 class TestLlamaEntrypointScript(unittest.TestCase):
-    """The llama-server image's ENTRYPOINT script (Phase 7). Lives at
-    repo root so we can validate its contents without building the image.
-
-    When this script is baked into the image, the orchestrator's inline
-    _llama_command can be removed (env vars alone suffice)."""
+    """The llama-server image's ENTRYPOINT script. Lives at repo root so
+    we can validate its contents without building the image. The proxy
+    no longer carries an inline command override — the image's ENTRYPOINT
+    is the single source of truth for the llama-server command line."""
 
     @classmethod
     def setUpClass(cls):
@@ -105,19 +81,6 @@ class TestLlamaEntrypointScript(unittest.TestCase):
                     "MIN_P", "PRESENCE_PENALTY", "REPEAT_PENALTY"):
             self.assertIn(f"${{{var}:+", self.script,
                           f"missing optional-flag handling for {var}")
-
-    def test_script_and_inline_command_agree_on_flags(self):
-        """The inline _llama_command (orchestrator fallback) and the baked
-        script must use the same llama-server flags. If you change one,
-        change the other or they'll drift."""
-        cmd = _llama_command()
-        # Both should have the same fixed flags. Optional flag syntax
-        # differs slightly (script uses quoted vars) so we only check
-        # the parts that must match.
-        for flag in ("-ngl 99", "--flash-attn on", "-ctk q8_0",
-                     "-ctv q8_0", "--metrics", "--jinja"):
-            self.assertIn(flag, cmd)
-            self.assertIn(flag, self.script)
 
 
 @unittest.skipUnless(HAS_DOCKER, "docker SDK not installed; pip install docker")

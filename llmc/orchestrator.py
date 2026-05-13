@@ -100,57 +100,13 @@ class OrchestratorError(RuntimeError):
     to the client (e.g. image missing, healthcheck timeout)."""
 
 
-# ── llama-server command builder ───────────────────────────────────────
-
-
-def _llama_command() -> str:
-    """The shell command that the llama-server container runs.
-
-    Same logic as llama-server-entrypoint.sh which lives in the image.
-    Kept as a fallback for backwards compatibility with images built
-    before that script was added (pre-Phase 7). Once every machine in
-    your fleet has rebuilt llama-server, this function and spawn_llama's
-    entrypoint+command overrides can be removed, since the image's
-    ENTRYPOINT script does the same thing from env vars alone.
-    """
-    return r"""
-if [ -f "/models/${MODEL_FILE}" ]; then
-  MODEL_ARGS="-m /models/${MODEL_FILE}"
-else
-  MODEL_ARGS="--hf-repo ${MODEL_REPO} --hf-file ${MODEL_FILE}"
-fi
-exec llama-server \
-  $MODEL_ARGS \
-  ${MMPROJ_FILE:+--mmproj /models/${MMPROJ_FILE}} \
-  --jinja \
-  ${TEMPLATE_FILE:+--chat-template-file /models/${TEMPLATE_FILE}} \
-  ${REASONING:+--reasoning ${REASONING}} \
-  --port 8080 \
-  --host 0.0.0.0 \
-  -ngl 99 \
-  --flash-attn on \
-  -ctk q8_0 \
-  -ctv q8_0 \
-  -c ${CONTEXT_SIZE:-65536} \
-  --fit on \
-  --fit-ctx ${CONTEXT_SIZE:-65536} \
-  --temp ${TEMPERATURE:-1.0} \
-  --top-p ${TOP_P:-0.95} \
-  --top-k ${TOP_K:-64} \
-  ${MIN_P:+--min-p ${MIN_P}} \
-  ${PRESENCE_PENALTY:+--presence-penalty ${PRESENCE_PENALTY}} \
-  ${REPEAT_PENALTY:+--repeat-penalty ${REPEAT_PENALTY}} \
-  -np ${PARALLEL_SLOTS:-1} \
-  -b 2048 \
-  -ub 2048 \
-  --threads 8 \
-  --threads-batch 8 \
-  -v \
-  --metrics
-""".strip()
-
-
 # ── Orchestrator ───────────────────────────────────────────────────────
+#
+# The llama-server image's ENTRYPOINT (llama-server-entrypoint.sh inside
+# the image) reads MODEL_FILE / MODEL_REPO / CONTEXT_SIZE / etc. from the
+# container environment and assembles the llama-server command. The
+# orchestrator only needs to set those env vars and start the container —
+# no inline bash command, no entrypoint override.
 
 
 class Orchestrator:
@@ -263,17 +219,12 @@ class Orchestrator:
         """Start llama-server with the given preset. Existing GPU services
         are stopped first.
 
-        Currently passes the command inline (entrypoint=/bin/sh -c + command
-        = the script string) for backwards compatibility with llama-server
-        images built before Phase 7's entrypoint script. Once the image at
-        ``cuda12.8-sm120`` is rebuilt with llama-server-entrypoint.sh baked
-        in, the entrypoint+command overrides can be dropped — the image
-        handles it. See _llama_command's docstring."""
+        The image's ENTRYPOINT (llama-server-entrypoint.sh) reads the
+        preset env vars and assembles the llama-server command line — we
+        just pass the environment and let the image do its job."""
         return self.spawn(
             LLAMA_SERVICE,
             environment=preset_to_env(preset),
-            entrypoint=["/bin/sh", "-c"],
-            command=[_llama_command()],
             volumes={
                 "llmc-llama-cache": {"bind": "/root/.cache", "mode": "rw"},
                 "llmc-llama-models": {"bind": "/models", "mode": "rw"},
