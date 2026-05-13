@@ -201,13 +201,18 @@ class Orchestrator:
         environment: Optional[dict] = None,
         volumes: Optional[dict] = None,
         extra_mounts: Optional[list[dict]] = None,
-        command: Optional[str] = None,
+        command: Optional[list[str] | str] = None,
         entrypoint: Optional[list[str]] = None,
         shm_size: str = "2g",
     ) -> Container:
         """Generic container spawn for a GPU service. Stops any other GPU
         service first (mutual exclusion). Returns the created container.
-        Caller should call `wait_healthy()` before forwarding requests."""
+        Caller should call `wait_healthy()` before forwarding requests.
+
+        IMPORTANT: pass `command` as a list[str], not a bare string. The
+        Docker SDK shlex-splits string commands at whitespace, which mangles
+        any non-trivial shell script (sees `if [` as three tokens, etc.).
+        Use `["the script"]` to keep it as one Cmd entry."""
         self.stop_gpu_services()
 
         run_kwargs = dict(
@@ -242,12 +247,18 @@ class Orchestrator:
 
     def spawn_llama(self, preset: Preset) -> Container:
         """Start llama-server with the given preset. Existing GPU services
-        are stopped first."""
+        are stopped first.
+
+        Note: command is passed as a single-element list, not a bare string.
+        Docker SDK shlex-splits string commands at whitespace, which mangles
+        the multi-line bash script. Wrapping in [] yields Cmd=[<script>]
+        on the engine, which is what `entrypoint=["/bin/sh", "-c"]` consumes.
+        """
         return self.spawn(
             LLAMA_SERVICE,
             environment=preset_to_env(preset),
             entrypoint=["/bin/sh", "-c"],
-            command=_llama_command(),
+            command=[_llama_command()],
             volumes={
                 "llmc-llama-cache": {"bind": "/root/.cache", "mode": "rw"},
                 "llmc-llama-models": {"bind": "/models", "mode": "rw"},
