@@ -37,8 +37,15 @@ path = "llama-server"
 path = "llama-server/models"
 
 [volumes.llmc-comfyui-models]
-# Diffusion checkpoints, LoRAs, VAE, upscalers
+# Diffusion checkpoints, LoRAs, VAE, upscalers (full tree)
 path = "comfyui/models"
+
+[volumes.llmc-comfyui-loras]
+# LoRA destination subdir, mounted separately by lora-train so it can
+# write trained adapters without rw on the whole models/ tree.
+# Lives inside the comfyui/models tree so ComfyUI sees the new LoRA
+# without any copy step.
+path = "comfyui/models/loras"
 
 [volumes.llmc-comfyui-output]
 # Generated images and videos
