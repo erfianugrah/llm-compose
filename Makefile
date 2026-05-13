@@ -24,29 +24,45 @@ TRAIN_IMAGE   := erfianugrah/lora-train:latest
 .PHONY: help setup up down restart status shell test test-docker test-integration \
         build build-proxy build-llama build-comfyui build-train \
         rebuild-proxy rebuild-llama rebuild-comfyui rebuild-train \
-        pull push release ship deploy clean \
+        pull push push-proxy push-llama push-comfyui push-train \
+        release ship ship-proxy deploy clean \
         logs-proxy logs-webui logs-llama logs-comfyui logs-train \
         gpu health metrics
 
-# ── Stack lifecycle ──────────────────────────────────────────────────
+# ── Stack lifecycle (pure shell — no Python startup) ──────────────────
 
 ## First-time setup: generate .env + create named volumes
+## Uses llmc because it does schema validation + crypto-random secret gen.
 setup:
 	@$(LLMC) setup
 
-## Start the stack (proxy + Open WebUI)
+## Start proxy + Open WebUI. Pre-flights .env and volumes existence so the
+## error message points at `make setup` instead of compose's cryptic
+## "external volume not found" / "${WEBUI_SECRET_KEY:?...}".
 up:
-	@$(LLMC) up
+	@if [ ! -f .env ]; then \
+		echo "Missing .env. Run: make setup"; exit 1; fi
+	@if ! docker volume inspect llmc-state >/dev/null 2>&1; then \
+		echo "Named volumes not created. Run: make setup"; exit 1; fi
+	docker compose up -d
+	@echo "Stack ready. Proxy at http://localhost:11434"
 
-## Stop the stack and any running GPU service
+## Stop the stack and any running GPU service (labelled llmc.mode=...)
 down:
-	@$(LLMC) down
+	@gpu_ids=$$(docker ps -q --filter "label=llmc.mode"); \
+	if [ -n "$$gpu_ids" ]; then \
+		echo "Stopping GPU services..."; \
+		echo "$$gpu_ids" | xargs docker stop >/dev/null; \
+		echo "$$gpu_ids" | xargs docker rm -f >/dev/null; \
+	fi
+	docker compose down
 
-## Restart proxy + Open WebUI (force-recreate, keeps any running GPU service)
+## Force-recreate proxy + Open WebUI (keep any running GPU service)
 restart:
 	docker compose up -d --force-recreate model-proxy open-webui
 
-## Show stack + active mode + active model
+## Show stack + active mode + active model.
+## Uses llmc because it queries the proxy's mode endpoint and renders a table.
 status:
 	@$(LLMC) status
 
@@ -54,10 +70,10 @@ status:
 shell:
 	@$(LLMC) volumes shell
 
-## Stop the stack and remove named volumes (DOES NOT delete bind-mount data)
-clean:
-	@$(LLMC) down
-	@echo "Removing named volumes (bind-mount data at the device paths is preserved)..."
+## Stop the stack and remove named volumes (preserves bind-mount data
+## at the device path — your GGUFs / LoRAs / WebUI DB stay on disk)
+clean: down
+	@echo "Removing llmc-* named volumes (bind-mount data preserved)..."
 	@docker volume ls -q --filter "name=llmc-" | xargs -r docker volume rm
 
 # ── Logs (pure docker, no Python startup) ───────────────────────────
@@ -113,33 +129,20 @@ test-integration:
 	@LLMC_TEST_INTEGRATION=1 python3 -m unittest discover llmc.tests
 
 # ── Image builds ─────────────────────────────────────────────────────
+#
+# All build targets call `docker build` directly — no "skip if exists"
+# check. Docker's BuildKit layer cache is what decides whether to rerun
+# each step. If nothing changed in the Dockerfile or build context, the
+# build resolves in <1 s (just metadata). If the entrypoint script or
+# llmc/ source changed, only the affected layers rebuild — for the
+# llama-server image that's typically just the COPY + chmod layers, not
+# the 10-minute CUDA + llama.cpp compile.
+#
+# The previous `docker image inspect && skip` guard was misleading:
+# it skipped rebuilds even when the source had changed.
 
-## Build any missing images (skip if already present)
-build:
-	@if ! docker image inspect $(PROXY_IMAGE) >/dev/null 2>&1; then \
-		echo "Building $(PROXY_IMAGE)..."; \
-		docker build -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .; \
-	else \
-		echo "$(PROXY_IMAGE) already built (make rebuild-proxy to force)"; \
-	fi
-	@if ! docker image inspect $(LLAMA_IMAGE) >/dev/null 2>&1; then \
-		echo "Building $(LLAMA_IMAGE) (~10 min)..."; \
-		docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .; \
-	else \
-		echo "$(LLAMA_IMAGE) already built (make rebuild-llama to force)"; \
-	fi
-	@if ! docker image inspect $(COMFYUI_IMAGE) >/dev/null 2>&1; then \
-		echo "Building $(COMFYUI_IMAGE) (~5 min)..."; \
-		docker build -t $(COMFYUI_IMAGE) -f comfyui.Dockerfile .; \
-	else \
-		echo "$(COMFYUI_IMAGE) already built (make rebuild-comfyui to force)"; \
-	fi
-	@if ! docker image inspect $(TRAIN_IMAGE) >/dev/null 2>&1; then \
-		echo "Building $(TRAIN_IMAGE) (~5 min)..."; \
-		docker build -t $(TRAIN_IMAGE) -f lora-train.Dockerfile .; \
-	else \
-		echo "$(TRAIN_IMAGE) already built (make rebuild-train to force)"; \
-	fi
+## Build all images (Docker's layer cache makes this fast if unchanged)
+build: build-proxy build-llama build-comfyui build-train
 
 build-proxy:
 	docker build -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
@@ -153,14 +156,24 @@ build-comfyui:
 build-train:
 	docker build -t $(TRAIN_IMAGE) -f lora-train.Dockerfile .
 
-rebuild-proxy: build-proxy
-rebuild-llama: build-llama
-rebuild-comfyui: build-comfyui
-rebuild-train: build-train
+## Force a full rebuild of a single image (busts Docker's layer cache).
+## Use when you actually need to recompile (CUDA flags, llama.cpp version
+## bump) — for "I changed a Python file" just `make build-proxy`.
+rebuild-proxy:
+	docker build --no-cache -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
+
+rebuild-llama:
+	docker build --no-cache -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
+
+rebuild-comfyui:
+	docker build --no-cache -t $(COMFYUI_IMAGE) -f comfyui.Dockerfile .
+
+rebuild-train:
+	docker build --no-cache -t $(TRAIN_IMAGE) -f lora-train.Dockerfile .
 
 # ── Registry ─────────────────────────────────────────────────────────
 
-## Pull pre-built images from the registry (skip local build)
+## Pull all pre-built images from the registry
 pull:
 	docker pull $(PROXY_IMAGE)
 	docker pull $(LLAMA_IMAGE)
@@ -168,20 +181,34 @@ pull:
 	docker pull $(TRAIN_IMAGE)
 
 ## Push all custom images to the registry
-push:
+push: push-proxy push-llama push-comfyui push-train
+
+push-proxy:
 	docker push $(PROXY_IMAGE)
+
+push-llama:
 	docker push $(LLAMA_IMAGE)
+
+push-comfyui:
 	docker push $(COMFYUI_IMAGE)
+
+push-train:
 	docker push $(TRAIN_IMAGE)
 
-## Build all images and push to the registry
+## Build all images + push to the registry
 release: build push
 	@echo "All images built and pushed"
 
 ## Alias for release — old muscle-memory shortcut
 ship: release
 
-## Full bootstrap: setup volumes + build images + start stack
+## Ship just the proxy (the only image that changes daily — bake llmc/
+## changes, push, restart). The rest of the images change rarely so
+## save the time on re-pushing 14 GB of CUDA layers.
+ship-proxy: build-proxy push-proxy restart
+	@echo "Proxy shipped and restarted"
+
+## Full bootstrap: setup + build all + start
 deploy: setup build up
 	@echo "Stack deployed. Configure WebUI: llmc webui configure"
 
@@ -217,11 +244,18 @@ help:
 	@echo "  make test-docker     + Docker daemon integration (~30s)"
 	@echo "  make test-integration  + end-to-end GPU tests (~90s, needs stack up)"
 	@echo ""
-	@echo "Images:"
-	@echo "  make build           Build any missing images"
-	@echo "  make rebuild-proxy   Force-rebuild a single image"
-	@echo "  make pull / push     Sync with the registry"
-	@echo "  make release / ship  Build all + push"
+	@echo "Images (Docker's layer cache makes incremental builds fast):"
+	@echo "  make build           docker build all 4 (cache-aware, ~5s if unchanged)"
+	@echo "  make build-proxy     just the proxy (use for llmc/ source changes)"
+	@echo "  make build-{llama,comfyui,train}  single-image variants"
+	@echo "  make rebuild-X       --no-cache (slow — for base image bumps, etc.)"
+	@echo ""
+	@echo "Registry:"
+	@echo "  make pull            pull all 4 images from Docker Hub"
+	@echo "  make push            push all 4"
+	@echo "  make push-X          push just one image"
+	@echo "  make release / ship  build all + push all"
+	@echo "  make ship-proxy      build proxy + push proxy + restart (daily flow)"
 	@echo ""
 	@echo "Operations (use the CLI):"
 	@echo "  llmc switch <preset>   Hot-swap LLM model"

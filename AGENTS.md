@@ -7,35 +7,57 @@ container lifecycle via the Docker SDK.
 
 ## Commands
 
+Tool boundary: **make** for pure docker/curl/nvidia-smi (~30 ms),
+**llmc** for proxy state + schema + HTTP (~120 ms). Don't go through
+the CLI for things make does fine — Python startup is real for tight
+loops.
+
 ```bash
-# Operator UX: `llmc <cmd>` for everything dynamic, `make <target>` for shortcuts.
-# bin/llmc is a wrapper that sets PYTHONPATH so the CLI works from any cwd.
-# Add to PATH:  export PATH="$HOME/llm-compose/bin:$PATH"
-llmc --help                # or: python3 -m llmc --help
+# Add the llmc wrapper to PATH (one-time)
+export PATH="$HOME/llm-compose/bin:$PATH"   # then: llmc --help
 
-# Stack lifecycle
-make setup              # one-time: .env + create named volumes
-make up                 # start proxy + Open WebUI
-make down               # stop everything (incl. spawned GPU service)
-make status             # show stack + GPU mode + active model
+# Stack lifecycle (pure shell)
+make setup              # generate .env + create named volumes
+make up                 # docker compose up + pre-flight check
+make down               # stop GPU services + docker compose down
+make restart            # force-recreate proxy + webui
+make status             # via llmc (proxy state + table render)
+make deploy             # setup + build + up (full bootstrap)
+make clean              # down + remove llmc-* volumes (bind data preserved)
 
-# Mode + model switching
+# Logs (direct docker, no Python startup)
+make logs-{proxy,webui,llama,comfyui,train}
+
+# Quick checks
+make gpu                # nvidia-smi
+make health             # curl /health
+make metrics            # curl /metrics
+
+# Mode + model switching (CLI)
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
-llmc status / health
 
 # Training (proxies /train/*; needs train mode active)
 llmc train status / logs / cancel / list / cleanup / deploy <name>
 llmc dataset audit / filter / focus / caption / caption-status / ...
 
 # Volumes
-llmc volumes ls / create / shell
+llmc volumes ls / create / refresh / shell
+#   refresh = drop+recreate every volume (Docker Desktop bind-mount fix)
+
+# WebUI + ComfyUI helpers
+llmc webui configure / reset --yes
+llmc comfyui open       # print direct URL, auto-swap to comfyui mode
 
 # Images
-make build              # build any missing images
-make rebuild-proxy      # force rebuild a single image
-make pull / push        # registry sync
+make build              # all 4 images (cache-aware, ~5s if unchanged)
+make build-proxy        # just the proxy (daily flow for llmc/ changes)
+make rebuild-llama      # --no-cache full rebuild (slow, ~10 min)
+make pull               # pull from registry instead of building
+make ship-proxy         # build-proxy + push-proxy + restart (daily ship loop)
+make ship               # full release: build all + push all
+make push-{proxy,llama,comfyui,train}  # per-image push
 
 # Tests
 make test               # unit + schema (~1s, no Docker)

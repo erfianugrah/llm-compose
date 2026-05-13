@@ -48,24 +48,34 @@ are welcome — see the Dockerfiles for the targeting flags.
 ```bash
 git clone https://github.com/erfianugrah/llm-compose.git
 cd llm-compose
-make setup           # generate .env, create named volumes
-make build           # build all images locally (or `make pull`)
-make up              # start proxy + Open WebUI
+# One-time: add the wrapper to PATH so `llmc` is on $PATH
+echo 'export PATH="$HOME/llm-compose/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+make deploy          # setup + build + up
 ```
 
 For changes to the proxy / orchestrator / CLI (Python code under `llmc/`):
 
 ```bash
-make rebuild-proxy && docker compose up -d --force-recreate model-proxy
+make ship-proxy      # build proxy + push to registry + restart container
+                     # — or skip the push: `make build-proxy && make restart`
 ```
+
+`make build-proxy` invokes `docker build` directly; Docker's layer cache
+takes care of the heavy `pip install docker` step, so a code-only change
+rebuilds the `COPY llmc/` layer in ~1 s.
 
 For changes to a GPU service Dockerfile (heavy):
 
 ```bash
-make rebuild-llama     # ~10 min
-make rebuild-comfyui   # ~5 min
-make rebuild-train     # ~5 min
+make build-llama        # cache-aware, fast if only entrypoint/script changed
+make rebuild-llama      # --no-cache, full from-scratch rebuild (~10 min)
 ```
+
+The `rebuild-X` targets are for when you actually need a clean build
+(base image bump, CUDA arch change, dependency pin update). For typical
+code edits, `make build-X` lets Docker cache handle incrementality.
 
 ## Tests
 

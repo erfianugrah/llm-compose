@@ -30,21 +30,22 @@ Built for an **RTX 5090** (32 GB VRAM) on **WSL2**. All inside Docker.
 ```bash
 git clone https://github.com/erfianugrah/llm-compose.git
 cd llm-compose
-make setup    # generate .env, create named volumes
-make build    # build / pull all images (or `make pull` to use the registry)
-make up       # start proxy + Open WebUI
+
+# Add the llmc wrapper to your PATH (one-time)
+echo 'export PATH="$HOME/llm-compose/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# Bootstrap (~10 min on first run for image pulls)
+make deploy   # = setup + build + up
 ```
 
-Add the `bin/` wrapper to your PATH so the `llmc` CLI is usable from
-anywhere:
+Or step-by-step:
 
 ```bash
-# ~/.zshrc or ~/.bashrc
-export PATH="$HOME/llm-compose/bin:$PATH"
+make setup    # generate .env, create named volumes
+make pull     # pull images from Docker Hub (~17 GB) or `make build` to compile
+make up       # start proxy + Open WebUI
 ```
-
-Without it, every `llmc <command>` in these docs reads as
-`python3 -m llmc <command>` from the repo root.
 
 Chat UI: <http://localhost:3000>
 LLM API: <http://localhost:11434/v1>
@@ -58,8 +59,36 @@ llmc models                # list available presets
 llmc status                # show what's running
 ```
 
-`make help` lists the operational shortcuts that go through `make`.
-`llmc --help` lists the full CLI surface.
+### Tool boundary
+
+The `Makefile` covers anything that benefits from being a direct
+docker/curl/nvidia-smi call — fast targets that don't need Python's
+~100 ms interpreter startup:
+
+| make target | does |
+|---|---|
+| `up` / `down` / `restart` | pre-flight check + docker compose |
+| `logs-{proxy,webui,llama,comfyui,train}` | `docker logs -f` |
+| `gpu` / `health` / `metrics` | nvidia-smi + curl |
+| `build` / `build-X` / `push-X` | docker build / docker push |
+| `rebuild-X` | docker build `--no-cache` (slow — for base bumps) |
+| `ship` / `ship-proxy` | build + push (all four / proxy only) |
+| `deploy` | full bootstrap: setup + build + up |
+
+The `llmc` CLI covers anything that needs proxy state, schema
+validation, or HTTP coordination:
+
+| llmc command | does |
+|---|---|
+| `switch <preset>` / `mode <m>` | hot-swap LLM / change GPU mode |
+| `models` | list TOML presets (live from proxy or local) |
+| `status` | full status table (mode, health, presets, active model) |
+| `train *` / `dataset *` | training + caption job lifecycle |
+| `eval *` / `bench *` | pass-through to eval/run.py / bench scripts |
+| `volumes ls / create / refresh / shell` | named volume admin |
+| `webui configure / reset` | Open WebUI workspace setup |
+
+`make help` for the make surface, `llmc --help` for the CLI.
 
 ## Concepts
 
@@ -130,11 +159,12 @@ llmc mode <m>              get / set GPU mode (llm | comfyui | train)
 llmc switch <preset>       hot-swap LLM model
 llmc models                list TOML presets
 
-llmc up / down / logs      stack lifecycle
+llmc up / down             stack lifecycle (or use `make up`/`down` for speed)
 llmc setup                 first-time: generate .env, create volumes
 
 llmc volumes ls            list named volumes + verify bind paths
 llmc volumes create        create all volumes from volumes.toml
+llmc volumes refresh       drop+recreate volumes (Docker Desktop snapshot fix)
 llmc volumes shell         busybox with all volumes mounted at /vol/<name>
 
 llmc webui configure       import workspace models from webui/models.json
@@ -147,9 +177,6 @@ llmc dataset audit / filter / focus / caption / caption-status / ...
 llmc eval <subcommand> [args...]   pass-through to eval/run.py
 llmc bench <subcommand> [args...]  pass-through to bench scripts
 ```
-
-`make` shortcuts are in `Makefile` (limited to setup/up/down/status/
-build/test/release — everything else is `llmc`).
 
 ## Available models
 
@@ -261,16 +288,30 @@ make test-integration  # + end-to-end GPU swap correctness (~90s, stack must be 
 ### Building images
 
 ```bash
-make build            # build any missing images
-make rebuild-proxy    # force-rebuild proxy
-make pull             # pull from registry instead
-make release          # build all + push to Docker Hub
+make build              # all 4 (docker build, cache-aware, ~5s if unchanged)
+make build-proxy        # just the proxy — daily flow for llmc/ changes
+make rebuild-llama      # --no-cache full rebuild (slow, ~10 min)
+make pull               # pull instead of building
+make ship-proxy         # build-proxy + push-proxy + restart (daily ship loop)
+make ship               # full release: build all + push all
 ```
 
-The proxy image (`erfianugrah/llmc-proxy:v2`) is the only image llmc
-itself owns — it bundles the `docker` Python SDK + the llmc package and
-is ~216 MB. The other three (llama-server, comfyui, lora-train) are
-larger purpose-built images that haven't changed in v2.
+`make build` always invokes `docker build` — there's no "skip if image
+already exists" guard. Docker's layer cache handles incrementality: when
+nothing changed in the Dockerfile or build context, each image resolves
+in under a second. When a single file in the context changes (`llmc/cli.py`,
+`llama-server-entrypoint.sh`, etc.), only the affected layers rebuild.
+
+`make rebuild-X` adds `--no-cache` for the rare case where you need a
+totally fresh build (base image bump, CUDA arch change, etc.). For
+"I changed Python code, rebuild the proxy", just `make build-proxy`.
+
+The proxy image (`erfianugrah/llmc-proxy:v2`, ~216 MB) is the only image
+llmc itself owns — it bundles the `docker` Python SDK + the llmc package.
+The other three (llama-server, comfyui, lora-train) are larger
+purpose-built images that change rarely. `make ship-proxy` is the
+common-case shortcut for daily code changes: rebuild proxy, push, restart
+the running container.
 
 ### Adding a model
 
