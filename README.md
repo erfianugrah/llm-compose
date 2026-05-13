@@ -72,7 +72,7 @@ docker/curl/nvidia-smi call — fast targets that don't need Python's
 | `gpu` / `health` / `metrics` | nvidia-smi + curl |
 | `build` / `build-X` / `push-X` | docker build / docker push |
 | `rebuild-X` | docker build `--no-cache` (slow — for base bumps) |
-| `ship` / `ship-proxy` | build + push (all four / proxy only) |
+| `ship` / `ship-proxy` | build + push + restart stack (all four / proxy only) |
 | `deploy` | full bootstrap: setup + build + up |
 
 The `llmc` CLI covers anything that needs proxy state, schema
@@ -293,8 +293,14 @@ make build-proxy        # just the proxy — daily flow for llmc/ changes
 make rebuild-llama      # --no-cache full rebuild (slow, ~10 min)
 make pull               # pull instead of building
 make ship-proxy         # build-proxy + push-proxy + restart (daily ship loop)
-make ship               # full release: build all + push all
+make ship               # full release: build all + push all + restart stack
 ```
+
+Both `ship-proxy` and `ship` end with a `docker compose up -d --force-recreate
+model-proxy open-webui` so the running stack picks up the new proxy image.
+GPU services (llama-server, comfyui, lora-train) aren't restarted — they're
+spawned on demand and the next mode swap will use the freshly-pushed image
+automatically.
 
 `make build` always invokes `docker build` — there's no "skip if image
 already exists" guard. Docker's layer cache handles incrementality: when

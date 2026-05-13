@@ -195,16 +195,20 @@ push-comfyui:
 push-train:
 	docker push $(TRAIN_IMAGE)
 
-## Build all images + push to the registry
-release: build push
-	@echo "All images built and pushed"
+## Build all images + push + restart proxy + WebUI so the running stack
+## picks up the new proxy image. Won't touch llama-server / comfyui /
+## lora-train containers — those are spawned on demand by the proxy and
+## the next `llmc switch` / `llmc mode X` will use the freshly-pushed
+## image automatically.
+release: build push restart
+	@echo "All images built, pushed, and stack restarted"
 
 ## Alias for release — old muscle-memory shortcut
 ship: release
 
-## Ship just the proxy (the only image that changes daily — bake llmc/
-## changes, push, restart). The rest of the images change rarely so
-## save the time on re-pushing 14 GB of CUDA layers.
+## Ship just the proxy (common case: llmc/ source changed). Skips the
+## ~14 GB of llama-server + comfyui + lora-train pushes that are no-ops
+## on every layer when only Python changed.
 ship-proxy: build-proxy push-proxy restart
 	@echo "Proxy shipped and restarted"
 
@@ -254,7 +258,7 @@ help:
 	@echo "  make pull            pull all 4 images from Docker Hub"
 	@echo "  make push            push all 4"
 	@echo "  make push-X          push just one image"
-	@echo "  make release / ship  build all + push all"
+	@echo "  make release / ship  build all + push all + restart stack"
 	@echo "  make ship-proxy      build proxy + push proxy + restart (daily flow)"
 	@echo ""
 	@echo "Operations (use the CLI):"

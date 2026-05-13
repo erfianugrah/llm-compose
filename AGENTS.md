@@ -56,7 +56,7 @@ make build-proxy        # just the proxy (daily flow for llmc/ changes)
 make rebuild-llama      # --no-cache full rebuild (slow, ~10 min)
 make pull               # pull from registry instead of building
 make ship-proxy         # build-proxy + push-proxy + restart (daily ship loop)
-make ship               # full release: build all + push all
+make ship               # full release: build all + push all + restart stack
 make push-{proxy,llama,comfyui,train}  # per-image push
 
 # Tests
