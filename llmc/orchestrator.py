@@ -200,7 +200,7 @@ class Orchestrator:
         *,
         environment: Optional[dict] = None,
         volumes: Optional[dict] = None,
-        extra_mounts: Optional[list[dict]] = None,
+        ports: Optional[dict] = None,
         command: Optional[list[str] | str] = None,
         entrypoint: Optional[list[str]] = None,
         shm_size: str = "2g",
@@ -228,6 +228,8 @@ class Orchestrator:
             restart_policy={"Name": "unless-stopped"},
             labels={SERVICE_LABEL: service.hostname, GPU_LABEL: service.mode},
         )
+        if ports is not None:
+            run_kwargs["ports"] = ports
         if entrypoint is not None:
             run_kwargs["entrypoint"] = entrypoint
         if command is not None:
@@ -269,6 +271,13 @@ class Orchestrator:
         return self.spawn(
             COMFYUI_SERVICE,
             shm_size="4g",
+            ports={
+                # Bind 8188 to host loopback so the ComfyUI web UI is directly
+                # reachable while comfyui mode is active. Proxy at /comfyui/*
+                # also works, but the websocket-based live preview only works
+                # via direct connection.
+                "8188/tcp": ("127.0.0.1", 8188),
+            },
             volumes={
                 "llmc-comfyui-models": {"bind": "/app/ComfyUI/models", "mode": "rw"},
                 "llmc-comfyui-output": {"bind": "/app/ComfyUI/output", "mode": "rw"},

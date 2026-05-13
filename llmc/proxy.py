@@ -366,9 +366,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
-        # Optionally accept a model to switch to in the same request
+        # POST /mode {mode: llm, model: X} must do a model swap even when
+        # we're already in LLM mode (different model running). Route to
+        # _ensure_model which handles both "enter LLM mode" and "swap model
+        # within LLM mode". Pre-flight the preset existence + VRAM check
+        # here so the caller gets 404/422 instead of generic 503.
         requested_model = payload.get("model")
-        if requested_model and target == "llm":
+        if target == "llm" and requested_model:
             preset = self.ctx.preset_by_name(requested_model)
             if preset is None:
                 _json_response(self, 404, {"error": f"unknown preset {requested_model!r}"})
@@ -377,8 +381,24 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not ok:
                 _json_response(self, 422, {"error": vram_msg})
                 return
-            self.ctx.state = state_mod.update(self.ctx.config.state_path, model=preset.name)
 
+            with self.ctx.swap_lock:
+                ok, msg = _ensure_model(self.ctx, preset.name)
+            if ok:
+                _json_response(self, 200, {
+                    "mode": self.ctx.orchestrator.current_mode(),
+                    "model": self.ctx.state.model,
+                    "switched": True,
+                })
+            else:
+                _json_response(self, 503, {
+                    "error": msg,
+                    "mode": self.ctx.orchestrator.current_mode(),
+                })
+            return
+
+        # POST /mode {mode: X} — just mode swap, use the model already in
+        # state (set by a previous call or first-run config).
         with self.ctx.swap_lock:
             ok, msg = _ensure_mode(self.ctx, target)
         if ok:
