@@ -289,6 +289,142 @@ class TestVolumesCommand(unittest.TestCase):
             self.assertIn(name, out.getvalue())
 
 
+class TestTrainCommands(unittest.TestCase):
+    """Train CLI commands: 503-handling + happy path."""
+
+    def test_train_status_returns_transient_when_service_inactive(self):
+        responses = {
+            ("GET", "/train/status"): (503, {
+                "error": {
+                    "message": "train service is not active",
+                    "type": "service_inactive",
+                    "code": 503,
+                },
+            }),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, err):
+                rc = main(["train", "status"])
+        self.assertEqual(rc, EXIT_TRANSIENT)
+        self.assertIn("not active", err.getvalue())
+        # Critical: must NOT silently print 'State: idle' as the legacy bug did
+        self.assertNotIn("State: idle", out.getvalue())
+
+    def test_train_status_happy_path(self):
+        responses = {
+            ("GET", "/train/status"): (200, {
+                "state": "training",
+                "step": 100,
+                "total_steps": 2680,
+                "loss": 0.12345,
+                "epoch": 1,
+                "total_epochs": 4,
+                "elapsed_seconds": 180,
+                "eta_seconds": 4500,
+            }),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, _):
+                rc = main(["train", "status"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("State: training", out.getvalue())
+        self.assertIn("100/2680", out.getvalue())
+        self.assertIn("Loss:", out.getvalue())
+
+    def test_train_logs_when_inactive(self):
+        responses = {
+            ("GET", "/train/logs?lines=50"): (503, {"error": {"message": "inactive"}}),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (_, err):
+                rc = main(["train", "logs"])
+        self.assertEqual(rc, EXIT_TRANSIENT)
+        self.assertIn("Switch to train mode", err.getvalue())
+
+    def test_train_list_happy_path(self):
+        responses = {
+            ("GET", "/train/jobs"): (200, {
+                "files": [
+                    {"name": "lora-a.safetensors", "size_mb": 123.4},
+                    {"name": "lora-b.safetensors", "size_mb": 56.7},
+                ],
+            }),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, _):
+                rc = main(["train", "list"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("lora-a.safetensors", out.getvalue())
+        self.assertIn("123.4", out.getvalue())
+
+    def test_train_list_empty(self):
+        responses = {
+            ("GET", "/train/jobs"): (200, {"files": []}),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, _):
+                rc = main(["train", "list"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("no trained LoRAs", out.getvalue())
+
+
+class TestDatasetCommands(unittest.TestCase):
+    """Dataset CLI commands: 503-handling + happy path."""
+
+    def test_caption_start_when_inactive(self):
+        responses = {
+            ("POST", "/train/caption"): (503, {
+                "error": {"message": "train service is not active"},
+            }),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (_, err):
+                rc = main(["dataset", "caption", "my-set", "--trigger", "subject"])
+        self.assertEqual(rc, EXIT_TRANSIENT)
+        self.assertIn("not active", err.getvalue())
+
+    def test_caption_status_happy_path(self):
+        responses = {
+            ("GET", "/train/caption/status"): (200, {
+                "state": "running",
+                "engine": "blip2",
+                "dataset": "my-set",
+                "captions_written": 30,
+                "images_total": 100,
+                "elapsed_seconds": 25,
+            }),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, _):
+                rc = main(["dataset", "caption-status"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("State: running", out.getvalue())
+        self.assertIn("30/100", out.getvalue())
+        self.assertIn("blip2", out.getvalue())
+
+
+class TestPassthroughCommands(unittest.TestCase):
+    """Eval and bench commands forward args to underlying scripts."""
+
+    def test_eval_no_args_shows_help(self):
+        with _capture() as (_, err):
+            rc = main(["eval"])
+        self.assertEqual(rc, EXIT_USER_ERROR)
+        self.assertIn("Usage: llmc eval", err.getvalue())
+
+    def test_bench_no_args_shows_help(self):
+        with _capture() as (_, err):
+            rc = main(["bench"])
+        self.assertEqual(rc, EXIT_USER_ERROR)
+        self.assertIn("Usage: llmc bench", err.getvalue())
+
+    def test_bench_unknown_subcommand(self):
+        with _capture() as (_, err):
+            rc = main(["bench", "not-a-real-thing"])
+        self.assertEqual(rc, EXIT_USER_ERROR)
+        self.assertIn("Unknown bench", err.getvalue())
+
+
 class TestProxyClient(unittest.TestCase):
     def test_reachable_true_on_200(self):
         responses = {("GET", "/health"): (200, {"status": "ok"})}

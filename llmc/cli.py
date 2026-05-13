@@ -1,9 +1,9 @@
 """llmc CLI — operator-facing command-line tool.
 
 Replaces the bulk of the legacy Makefile. Subcommands either talk to the
-running proxy over HTTP (mode swaps, status, model switches) or operate
-on the Docker daemon directly via the `docker` CLI (volume management,
-stack lifecycle, logs).
+running proxy over HTTP (mode swaps, status, model switches, training
+jobs) or operate on the Docker daemon directly via the `docker` CLI
+(volume management, stack lifecycle, logs).
 
 Pure stdlib — no third-party deps on the host. The `docker` Python SDK
 is only required inside the proxy container.
@@ -11,7 +11,13 @@ is only required inside the proxy container.
 Subcommand groups:
     Core orchestration  status, health, mode, switch, models
     Volumes             volumes ls, volumes create, volumes shell
-    Stack lifecycle     up, down, restart, logs, setup, build, pull, push
+    Stack lifecycle     up, down, logs, setup
+    Training            train status, train logs, train cancel,
+                        train list, train deploy, train cleanup
+    Dataset prep        dataset audit, dataset filter, dataset focus,
+                        dataset caption (+ caption-status/logs/cancel)
+    Eval (pass-thru)    eval <subcommand> [args...]   → eval/run.py
+    Bench (pass-thru)   bench <subcommand> [args...]  → bench/*.sh
 
 Each subcommand exits with:
     0 success
@@ -458,6 +464,367 @@ def cmd_logs(args: argparse.Namespace) -> int:
     return EXIT_OK if result.returncode == 0 else EXIT_BACKEND_ERROR
 
 
+# ── Training (proxies /train/* on the proxy) ───────────────────────────
+
+
+def _train_get(path: str, params: str = "") -> tuple[int, dict]:
+    """GET /train<path>?<params> via the proxy."""
+    full = f"/train{path}"
+    if params:
+        full = f"{full}?{params}"
+    client = ProxyClient(timeout=30)
+    return client._request("GET", full)
+
+
+def _train_post(path: str, body: Optional[dict] = None) -> tuple[int, dict]:
+    full = f"/train{path}"
+    client = ProxyClient(timeout=60)
+    return client._request("POST", full, body=body)
+
+
+def _train_inactive_msg(payload: dict) -> str:
+    """Extract a friendly message from a 503 'service inactive' response."""
+    err = payload.get("error", {})
+    if isinstance(err, dict):
+        return err.get("message", "train service inactive")
+    return str(err)
+
+
+def _check_train_active(status: int, payload: dict, args: argparse.Namespace) -> Optional[int]:
+    """Return EXIT_TRANSIENT (and print friendly message) if the train
+    service is not active, else None to continue."""
+    if status == 503:
+        if args.json:
+            _print_json(payload)
+        else:
+            _err(_train_inactive_msg(payload))
+            _err("Switch to train mode first: llmc mode train")
+        return EXIT_TRANSIENT
+    return None
+
+
+def cmd_train_status(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_get("/status")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+        return EXIT_OK
+    state = payload.get("state", "idle")
+    print(f"State: {state}")
+    if state == "idle":
+        return EXIT_OK
+    if payload.get("output_name"):
+        print(f"Output: {payload['output_name']}")
+    total = payload.get("total_steps", 0)
+    step = payload.get("step", 0)
+    if total > 0:
+        pct = step / total * 100
+        print(f"Progress: {step}/{total} ({pct:.1f}%)")
+    if payload.get("total_epochs"):
+        print(f"Epoch: {payload.get('epoch', 0)}/{payload['total_epochs']}")
+    if payload.get("loss"):
+        print(f"Loss: {payload['loss']:.6f}")
+    if payload.get("elapsed_seconds"):
+        print(f"Elapsed: {payload['elapsed_seconds']}s ({payload['elapsed_seconds']/60:.1f} min)")
+    if payload.get("eta_seconds"):
+        print(f"ETA: {payload['eta_seconds']}s ({payload['eta_seconds']/60:.1f} min)")
+    if payload.get("error"):
+        print(f"Error: {payload['error']}")
+    return EXIT_OK
+
+
+def cmd_train_logs(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_get("/logs", params=f"lines={args.lines}")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        for line in payload.get("lines", []):
+            print(line)
+    return EXIT_OK
+
+
+def cmd_train_cancel(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_post("/cancel")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        print(payload.get("status", "cancelled"))
+    return EXIT_OK
+
+
+def cmd_train_list(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_get("/jobs")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+        return EXIT_OK
+    files = payload.get("files", [])
+    if not files:
+        print("(no trained LoRAs)")
+        return EXIT_OK
+    rows = [[f["name"], f'{f.get("size_mb", 0):.1f}'] for f in files]
+    _print_table(["lora", "size (MB)"], rows)
+    return EXIT_OK
+
+
+def cmd_train_cleanup(args: argparse.Namespace) -> int:
+    """Kill orphaned training/captioning subprocesses (safety net)."""
+    try:
+        status, payload = _train_post("/cleanup")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        killed = payload.get("killed", [])
+        if killed:
+            for p in killed:
+                print(f"killed pid {p}")
+        else:
+            print("no orphaned processes")
+    return EXIT_OK
+
+
+def cmd_train_deploy(args: argparse.Namespace) -> int:
+    """Copy a trained LoRA from llmc-training-data:output → llmc-comfyui-loras."""
+    if not _docker_available():
+        _err("`docker` CLI not found in PATH")
+        return EXIT_USER_ERROR
+    name = args.lora
+    if not name.endswith(".safetensors"):
+        name = f"{name}.safetensors"
+    result = subprocess.run([
+        "docker", "run", "--rm",
+        "-v", "llmc-training-data:/src:ro",
+        "-v", "llmc-comfyui-loras:/dst",
+        "alpine", "sh", "-c",
+        f"if [ -f /src/output/{name} ]; then cp /src/output/{name} /dst/ && echo copied; "
+        f"else echo 'not found: {name}'; ls /src/output/*.safetensors 2>/dev/null || true; exit 1; fi",
+    ], capture_output=True, text=True)
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        if result.stderr:
+            _err(result.stderr.strip())
+        return EXIT_BACKEND_ERROR
+    print(f"Deployed {name} to llmc-comfyui-loras")
+    return EXIT_OK
+
+
+# ── Dataset prep (mix of HTTP + docker exec) ───────────────────────────
+
+
+def cmd_dataset_caption(args: argparse.Namespace) -> int:
+    """Start an async captioning job. Engines: blip2 | wd14."""
+    body = {
+        "dataset": args.dataset,
+        "engine": args.engine,
+        "trigger_word": args.trigger or "",
+        "overwrite": args.overwrite,
+    }
+    if args.prompt:
+        body["prompt"] = args.prompt
+    try:
+        status, payload = _train_post("/caption", body=body)
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        print(payload.get("status", f"caption job started for {args.dataset}"))
+    return EXIT_OK
+
+
+def cmd_dataset_caption_status(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_get("/caption/status")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+        return EXIT_OK
+    state = payload.get("state", "idle")
+    print(f"State: {state}")
+    if state == "idle":
+        return EXIT_OK
+    print(f"Engine: {payload.get('engine', '?')}  Dataset: {payload.get('dataset', '?')}")
+    total = payload.get("images_total", 0)
+    done = payload.get("captions_written", 0)
+    if total:
+        pct = done / total * 100
+        print(f"Progress: {done}/{total} ({pct:.1f}%)")
+    if payload.get("elapsed_seconds"):
+        print(f"Elapsed: {payload['elapsed_seconds']}s")
+    if payload.get("error"):
+        print(f"Error: {payload['error']}")
+    return EXIT_OK
+
+
+def cmd_dataset_caption_logs(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_get("/caption/logs", params=f"lines={args.lines}")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        for line in payload.get("lines", []):
+            print(line)
+    return EXIT_OK
+
+
+def cmd_dataset_caption_cancel(args: argparse.Namespace) -> int:
+    try:
+        status, payload = _train_post("/caption/cancel")
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Train service unreachable: {exc}")
+        return EXIT_TRANSIENT
+    rc = _check_train_active(status, payload, args)
+    if rc is not None:
+        return rc
+    if args.json:
+        _print_json(payload)
+    else:
+        print(payload.get("status", "cancelled"))
+    return EXIT_OK
+
+
+def _dataset_exec(script: str, *args_extra: str) -> int:
+    """Run a script inside the running lora_train container. The scripts
+    live inside the image at /audit-dataset.py / /filter-dataset.py /
+    /pick-focus-subset.py."""
+    if not _docker_available():
+        _err("`docker` CLI not found in PATH")
+        return EXIT_USER_ERROR
+    cmd = ["docker", "exec", "lora_train", "python3", script, *args_extra]
+    result = subprocess.run(cmd, capture_output=False)
+    return EXIT_OK if result.returncode == 0 else EXIT_BACKEND_ERROR
+
+
+def cmd_dataset_audit(args: argparse.Namespace) -> int:
+    """Run WD14 caption auditor inside lora_train. Requires train mode."""
+    extra = []
+    if args.expected:
+        extra.extend(["--expected-tags", args.expected])
+    extra.extend(["--reject-out", f"/data/datasets/{args.dataset}-rejects.txt"])
+    return _dataset_exec(
+        "/audit-dataset.py",
+        f"/data/datasets/{args.dataset}",
+        *extra,
+    )
+
+
+def cmd_dataset_filter(args: argparse.Namespace) -> int:
+    return _dataset_exec(
+        "/filter-dataset.py",
+        f"/data/datasets/{args.src}",
+        f"/data/datasets/{args.dst}",
+        "--rejects", f"/data/datasets/{args.src}-rejects.txt",
+    )
+
+
+def cmd_dataset_focus(args: argparse.Namespace) -> int:
+    return _dataset_exec(
+        "/pick-focus-subset.py",
+        f"/data/datasets/{args.src}",
+        f"/data/datasets/{args.dst}",
+        "--n", str(args.n),
+        "--strategy", args.strategy,
+    )
+
+
+# ── Eval / Bench (pass-through to scripts) ─────────────────────────────
+
+
+def _passthrough(script: list[str], rest: list[str]) -> int:
+    """Run a script with positional args. stdout/stderr inherited so the
+    user sees output in real time."""
+    result = subprocess.run(script + rest, capture_output=False)
+    return EXIT_OK if result.returncode == 0 else EXIT_BACKEND_ERROR
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Pass through to eval/run.py. The CLI doesn't need to know the eval
+    subcommand schema; it just forwards everything after `llmc eval`."""
+    if not args.rest:
+        _err("Usage: llmc eval <subcommand> [args...]")
+        _err("Subcommands: quicktest, stages, sweep, matrix, checkpoints,")
+        _err("             weights, loras, seeds, shot, i2i")
+        return EXIT_USER_ERROR
+    return _passthrough([sys.executable, str(REPO_ROOT / "eval" / "run.py")], args.rest)
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Pass through to bench scripts."""
+    if not args.rest:
+        _err("Usage: llmc bench <subcommand> [args...]")
+        _err("Subcommands: perf, quants, quants-quick, accuracy, report, image")
+        return EXIT_USER_ERROR
+    sub = args.rest[0]
+    rest = args.rest[1:]
+
+    mapping = {
+        "perf":         [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--perf-only"],
+        "quants":       [str(REPO_ROOT / "bench" / "bench-quants.sh")],
+        "quants-quick": [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--quick"],
+        "accuracy":     [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--skip-perf"],
+        "report":       [sys.executable, str(REPO_ROOT / "bench" / "bench-report.py"), "latest"],
+        "image":        ["docker", "build",
+                         "-t", "erfianugrah/bench-eval:latest",
+                         "-f", str(REPO_ROOT / "bench" / "Dockerfile.eval"),
+                         str(REPO_ROOT / "bench")],
+        # Single-model wrappers
+        "model":        [str(REPO_ROOT / "scripts" / "bench.sh")],
+        "model-quick":  [str(REPO_ROOT / "scripts" / "bench.sh"), "--quick"],
+    }
+    if sub not in mapping:
+        _err(f"Unknown bench subcommand: {sub!r}")
+        _err(f"Available: {', '.join(sorted(mapping))}")
+        return EXIT_USER_ERROR
+    return _passthrough(mapping[sub], rest)
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """First-time setup: generate .env if missing, create volumes."""
     print("Generating .env (if missing)...")
@@ -558,7 +925,104 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("setup", help="first-time setup: create volumes")
     sp.set_defaults(func=cmd_setup)
 
+    # Training (proxies to /train/* on the proxy — needs train mode active)
+    train = sub.add_parser("train", help="LoRA training: status, logs, deploy, ...")
+    train_sub = train.add_subparsers(dest="train_command", metavar="<subcommand>")
+
+    tp = train_sub.add_parser("status", help="training job progress + ETA")
+    tp.set_defaults(func=cmd_train_status)
+
+    tp = train_sub.add_parser("logs", help="tail training log output")
+    tp.add_argument("--lines", type=int, default=50)
+    tp.set_defaults(func=cmd_train_logs)
+
+    tp = train_sub.add_parser("cancel", help="cancel current training job")
+    tp.set_defaults(func=cmd_train_cancel)
+
+    tp = train_sub.add_parser("list", help="list trained LoRA files")
+    tp.set_defaults(func=cmd_train_list)
+
+    tp = train_sub.add_parser("cleanup",
+                              help="kill orphaned training subprocesses (safety net)")
+    tp.set_defaults(func=cmd_train_cleanup)
+
+    tp = train_sub.add_parser("deploy",
+                              help="copy a trained LoRA from output → comfyui/loras")
+    tp.add_argument("lora", help="LoRA filename (.safetensors suffix optional)")
+    tp.set_defaults(func=cmd_train_deploy)
+
+    # Dataset prep
+    ds = sub.add_parser("dataset", help="dataset prep: audit, filter, focus, caption")
+    ds_sub = ds.add_subparsers(dest="dataset_command", metavar="<subcommand>")
+
+    dp = ds_sub.add_parser("audit", help="audit a dataset's WD14 captions for issues")
+    dp.add_argument("dataset", help="dataset name under /data/datasets/")
+    dp.add_argument("--expected", help="comma-separated expected tags")
+    dp.set_defaults(func=cmd_dataset_audit)
+
+    dp = ds_sub.add_parser("filter", help="copy a dataset minus rejected stems")
+    dp.add_argument("src", help="source dataset name")
+    dp.add_argument("dst", help="destination dataset name")
+    dp.set_defaults(func=cmd_dataset_filter)
+
+    dp = ds_sub.add_parser("focus",
+                           help="pick N best images for focus training")
+    dp.add_argument("src")
+    dp.add_argument("dst")
+    dp.add_argument("--n", type=int, default=40)
+    dp.add_argument("--strategy", default="longest-caption",
+                    choices=["longest-caption", "random"])
+    dp.set_defaults(func=cmd_dataset_focus)
+
+    dp = ds_sub.add_parser("caption",
+                           help="start an async caption job (engine: blip2 | wd14)")
+    dp.add_argument("dataset")
+    dp.add_argument("--engine", default="blip2", choices=["blip2", "wd14"])
+    dp.add_argument("--trigger", help="trigger word prepended to each caption")
+    dp.add_argument("--prompt", help="BLIP-2 conditional prompt prefix")
+    dp.add_argument("--overwrite", action="store_true",
+                    help="overwrite existing .txt captions")
+    dp.set_defaults(func=cmd_dataset_caption)
+
+    dp = ds_sub.add_parser("caption-status", help="caption job progress")
+    dp.set_defaults(func=cmd_dataset_caption_status)
+
+    dp = ds_sub.add_parser("caption-logs", help="tail caption log output")
+    dp.add_argument("--lines", type=int, default=50)
+    dp.set_defaults(func=cmd_dataset_caption_logs)
+
+    dp = ds_sub.add_parser("caption-cancel", help="cancel running caption job")
+    dp.set_defaults(func=cmd_dataset_caption_cancel)
+
+    # Eval — pass-through to eval/run.py
+    sp = sub.add_parser(
+        "eval",
+        help="LoRA eval pass-through to eval/run.py",
+        # argparse.REMAINDER preserves --flags as positional args
+    )
+    sp.add_argument("rest", nargs=argparse.REMAINDER,
+                    help="forwarded verbatim to eval/run.py")
+    sp.set_defaults(func=cmd_eval)
+
+    # Bench — wrappers around bench scripts
+    sp = sub.add_parser(
+        "bench",
+        help="benchmark pass-through: perf | quants | accuracy | report | image",
+    )
+    sp.add_argument("rest", nargs=argparse.REMAINDER,
+                    help="<subcommand> [args...] forwarded to the right bench script")
+    sp.set_defaults(func=cmd_bench)
+
     return p
+
+
+# Sub-subcommand groups: when invoked without a sub-subcommand we should
+# print that group's help, not silently crash with AttributeError.
+_SUB_GROUPS = {
+    "volumes": "volumes_command",
+    "train": "train_command",
+    "dataset": "dataset_command",
+}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -569,11 +1033,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.print_help()
         return EXIT_USER_ERROR
 
-    # `volumes` without a subcommand: show help
-    if args.command == "volumes" and getattr(args, "volumes_command", None) is None:
-        # find the volumes subparser to print its help
+    # Subcommand group without a sub-subcommand — print group help
+    sub_attr = _SUB_GROUPS.get(args.command)
+    if sub_attr and getattr(args, sub_attr, None) is None:
         for action in parser._subparsers._group_actions[0].choices.values():
-            if action.prog.endswith("llmc volumes"):
+            if action.prog.endswith(f"llmc {args.command}"):
                 action.print_help()
                 return EXIT_USER_ERROR
         return EXIT_USER_ERROR

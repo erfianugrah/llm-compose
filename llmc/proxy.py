@@ -415,6 +415,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     # ── Backend forwarding ─────────────────────────────────────────────
 
+    # Methods that auto-trigger a GPU mode swap when their route's backend
+    # isn't active. Read-only methods (GET, HEAD, OPTIONS) do not — they
+    # 503 cleanly instead, so a status poll can't accidentally stop the
+    # currently-running service.
+    _SWAP_TRIGGER_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
     def _ensure_and_forward(
         self,
         target_mode: str,
@@ -424,8 +430,20 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         """Ensure the target mode is active, then proxy to the backend."""
         service = SERVICES[target_mode]
 
-        # Mode swap if needed
         if self.ctx.orchestrator.current_mode() != target_mode:
+            if self.command not in self._SWAP_TRIGGER_METHODS:
+                _json_response(self, 503, {
+                    "error": {
+                        "message": (
+                            f"{target_mode} service is not active "
+                            f"(current mode: {self.ctx.orchestrator.current_mode()}). "
+                            f"Switch with POST /mode {{\"mode\":\"{target_mode}\"}}."
+                        ),
+                        "type": "service_inactive",
+                        "code": 503,
+                    }
+                })
+                return
             with self.ctx.swap_lock:
                 if self.ctx.orchestrator.current_mode() != target_mode:
                     ok, msg = _ensure_mode(self.ctx, target_mode)

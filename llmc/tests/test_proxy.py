@@ -315,6 +315,33 @@ class TestProxyEndpoints(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertIn("VRAM", payload["error"])
 
+    def test_get_train_route_does_not_trigger_swap(self):
+        """Read-only methods (GET) must NOT auto-swap the GPU mode.
+        Regression: GET /train/status used to trigger a train-mode swap,
+        which on first run would try to pull the (then-private) lora-train
+        image and hang for minutes. The proxy now returns 503 cleanly so
+        CLI tooling and monitoring polls can't accidentally stop the
+        running GPU service."""
+        ctx = self._make_ctx(current_mode="idle")
+        with _ProxyServer(ctx) as srv:
+            status, _, payload = _http_get(srv.port, "/train/status")
+        self.assertEqual(status, 503)
+        self.assertIn("not active", payload["error"]["message"])
+        # Crucially: orchestrator should NOT have been asked to swap
+        ctx.orchestrator.spawn_train.assert_not_called()
+        ctx.orchestrator.spawn_llama.assert_not_called()
+        ctx.orchestrator.spawn_comfyui.assert_not_called()
+
+    def test_get_comfyui_route_does_not_trigger_swap(self):
+        """Same as /train but for /comfyui/* — common case: Open WebUI
+        polling /comfyui/history/{id} while in LLM mode shouldn't stop
+        llama-server."""
+        ctx = self._make_ctx(current_mode="llm")
+        with _ProxyServer(ctx) as srv:
+            status, _, payload = _http_get(srv.port, "/comfyui/history/abc")
+        self.assertEqual(status, 503)
+        ctx.orchestrator.spawn_comfyui.assert_not_called()
+
 
 class TestBuildContext(unittest.TestCase):
     """build_context() reconciles state.toml vs running containers."""
