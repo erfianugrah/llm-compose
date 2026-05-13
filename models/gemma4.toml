@@ -1,0 +1,25 @@
+name = "Gemma 4 31B Dense — multimodal, vision, thinking"
+description = """
+Gemma 4 31B Dense — multimodal (text + vision), tool calling, thinking.
+~19 GB model + 1.2 GB mmproj. 31B active params (dense).
+Best for: coding with image context, multimodal tasks, general agentic work.
+"""
+vram_gb = 20.2
+
+[model]
+repo = "ggml-org/gemma-4-31B-it-GGUF"
+file = "gemma-4-31B-it-Q4_K_M.gguf"
+
+[mmproj]
+url = "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/mmproj-gemma-4-31B-it-bf16.gguf"
+
+[template]
+url = "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/templates/google-gemma-4-31B-it-interleaved.jinja"
+
+[runtime]
+reasoning = "on"
+context_size = 65536
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+min_p = 0.05

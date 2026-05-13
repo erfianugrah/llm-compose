@@ -62,9 +62,17 @@ COPY --from=build /app/lib/ /usr/local/lib/
 RUN ldconfig
 COPY --from=build /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
+# Entrypoint script — builds the command line from env vars set by the
+# proxy at container create time. See the script for the env contract.
+# Keeping the flag assembly inside the image (instead of in the proxy's
+# orchestrator) means no caller needs to know llama-server's CLI surface;
+# they just pass MODEL_FILE / CONTEXT_SIZE / etc.
+COPY llama-server-entrypoint.sh /usr/local/bin/llama-server-entrypoint.sh
+RUN chmod +x /usr/local/bin/llama-server-entrypoint.sh
+
 # Default model storage
 VOLUME /models
 
 EXPOSE 8080
 
-ENTRYPOINT ["llama-server"]
+ENTRYPOINT ["/usr/local/bin/llama-server-entrypoint.sh"]

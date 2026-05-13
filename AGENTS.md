@@ -1,316 +1,307 @@
 # AGENTS.md
 
-Local LLM + image/video inference + LoRA training stack: llama.cpp (GPU) + ComfyUI (GPU) + lora-train (GPU) + model-switching proxy + Open WebUI. All Docker, no application code to build/test/lint. Only one GPU workload runs at a time — proxy manages container lifecycle.
+Local LLM + image/video inference + LoRA training stack: llama.cpp (GPU)
++ ComfyUI (GPU) + lora-train (GPU) + model-switching proxy + Open WebUI.
+All Docker. Only one GPU workload runs at a time — the proxy manages
+container lifecycle via the Docker SDK.
 
 ## Commands
 
 ```bash
-make help             # all targets
-make setup            # first-time: .env, volumes, assets, image build, ComfyUI models (~17 GB)
-make setup-comfyui    # (re)download ComfyUI checkpoints, IP-Adapter, CLIP, upscaler
-make up / make down   # start / stop stack
-make run MODEL=qwen35 # switch model + restart (one shot)
-make switch MODEL=x   # update .env + download assets (no restart)
-make download-all     # pre-cache all GGUFs (~98 GB) — avoids 5-10 min first-load
-make build            # build images (skips if already present)
-make rebuild          # force rebuild llama-server from source (~10 min)
-make rebuild-comfyui  # force rebuild ComfyUI from source (~5 min)
-make rebuild-train    # force rebuild lora-train from source (~5 min)
-make pull             # pull pre-built images from Docker Hub instead
-make configure-webui  # import workspace models into Open WebUI (needs admin auth)
-make status           # container health + active GPU mode
+# Operator UX: `llmc <cmd>` for everything dynamic, `make <target>` for shortcuts
+python3 -m llmc --help
 
-# GPU mode switching (proxy auto-swaps on route, or switch manually):
-make mode             # show current GPU mode (llm/comfyui/train/idle)
-make llm              # switch to LLM mode (stops ComfyUI/train)
-make comfyui          # switch to ComfyUI mode (stops llama-server/train)
-make train            # switch to train mode (stops llama-server/ComfyUI)
-make logs-comfyui     # follow ComfyUI logs
-make logs-train       # follow lora-train logs
+# Stack lifecycle
+make setup              # one-time: .env + create named volumes
+make up                 # start proxy + Open WebUI
+make down               # stop everything (incl. spawned GPU service)
+make status             # show stack + GPU mode + active model
 
-# LoRA training (use MCP tools, API, or make targets):
-make train-status     # show training progress (step, loss, ETA)
-make train-logs       # show last 50 lines of training output
-make deploy-lora NAME=x  # copy trained LoRA to ComfyUI
+# Mode + model switching
+llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
+llmc mode <m>           # llm | comfyui | train
+llmc models             # list TOML presets
+llmc status / health
+
+# Training (proxies /train/*; needs train mode active)
+llmc train status / logs / cancel / list / cleanup / deploy <name>
+llmc dataset audit / filter / focus / caption / caption-status / ...
+
+# Volumes
+llmc volumes ls / create / shell
+
+# Images
+make build              # build any missing images
+make rebuild-proxy      # force rebuild a single image
+make pull / push        # registry sync
+
+# Tests
+make test               # unit + schema (~1s, no Docker)
+make test-docker        # + daemon integration (~30s)
+make test-integration   # + GPU end-to-end (~90s, stack up + GPU)
 ```
 
-## Architecture
+## Architecture (v2)
 
 ```
 OpenCode / Open WebUI
        |
-  model-proxy :11434
+  llmc-proxy :11434  ─── Python proxy, Docker SDK orchestrator
        |
-       ├── /v1/*         → llama-server :8080  (LLM, GPU exclusive)
-       ├── /comfyui/*    → comfyui :8188       (image/video, GPU exclusive)
-       └── /train/*      → lora-train :8787    (LoRA training, GPU exclusive)
+       ├── /v1/*         → llama-server :8080   (LLM, GPU exclusive)
+       ├── /comfyui/*    → comfyui :8188        (image/video, GPU exclusive)
+       └── /train/*      → lora-train :8787     (LoRA training, GPU exclusive)
 
-  whisper-transcribe :7860 (separate stack, GPU coexists with llama-server)
-       └── /api/*        → whisperX transcription + yt-dlp downloads
-
-  Only one of llama-server, comfyui, or lora-train runs at a time.
-  Proxy manages lifecycle via Docker socket + compose profiles.
-  whisper-transcribe is independent — turbo model (~6GB) fits alongside LLM.
-  ComfyUI web UI also exposed directly on :8188.
+  Only ONE of llama-server, comfyui, lora-train runs at a time.
+  Proxy spawns GPU services via Docker Engine API (no compose for them).
+  Containers labelled llmc.mode=<mode> so a proxy restart can recover.
+  Open WebUI also exposed directly on :3000. ComfyUI UI on :8188 when active.
 ```
 
-- **proxy.py** is stdlib-only Python (no pip deps). Single file at `proxy/proxy.py`.
-- Proxy has Docker socket access — orchestrates GPU services via `docker compose --profile <profile> up/stop`.
-- Services use compose profiles: `llm` for llama-server, `comfyui` for ComfyUI, `train` for lora-train. `docker compose up -d` only starts proxy + Open WebUI. GPU services start on first matching request.
-- `.env` is the central state for LLM config: both Makefile and proxy write to it. Generated by `make switch`, gitignored.
-- Model ID = GGUF filename minus `.gguf` (e.g., `Qwen3.5-27B-Q4_K_M`).
-- Asset filenames are auto-derived: `<preset>-mmproj.gguf`, `<preset>-template.jinja`. Never set `MMPROJ_FILE`/`TEMPLATE_FILE` in preset files — only set the URL.
-- Proxy merges multiple system messages into one (Qwen template rejects out-of-order/duplicate system messages).
-- `HOST_HOME` env passes host `$HOME` so `~` in compose volume paths resolves correctly inside the proxy container.
+Two services live in compose.yaml:
+- `model-proxy` (port 11434, static IP 172.29.0.4)
+- `open-webui` (port 3000)
+
+GPU services live OUTSIDE compose. The proxy spawns them via Docker SDK
+in `llmc/orchestrator.py` and labels them with `llmc.mode` so it can
+find them again after a restart.
+
+## Source of truth
+
+| Concern               | Lives in                                              |
+|-----------------------|-------------------------------------------------------|
+| Model presets         | `models/*.toml` (validated by `llmc.presets`)         |
+| Volume registry       | `volumes.toml` (created by `llmc volumes create`)     |
+| Active mode + model   | `/state/active.toml` (in `llmc-state` named volume)   |
+| WEBUI_SECRET_KEY      | `.env` (generated by `llmc setup`, never rewritten)   |
+
+The proxy never rewrites `.env` (which was a major source of v1 jank).
+Container env vars are passed directly to `docker run` via the SDK.
 
 ## Route-based GPU switching
 
-| Route | Target | Mode |
-|-------|--------|------|
-| `/v1/*` | llama-server:8080 | `llm` |
-| `/comfyui/*` | comfyui:8188 (prefix stripped) | `comfyui` |
-| `/train/*` | lora-train:8787 (prefix stripped) | `train` |
-| `/health` | proxy self | any |
-| `/v1/models` | proxy self | any |
-| `GET /mode` | current mode status | any |
-| `POST /mode` | explicit mode switch | triggers swap |
+| Route          | Target                       | Mode      | Notes                                                |
+|----------------|------------------------------|-----------|------------------------------------------------------|
+| `/v1/*`        | llama-server:8080            | `llm`     | POST auto-swaps                                      |
+| `/comfyui/*`   | comfyui:8188 (stripped)      | `comfyui` | POST auto-swaps                                      |
+| `/train/*`     | lora-train:8787 (stripped)   | `train`   | POST auto-swaps                                      |
+| `/health`      | proxy self                   | any       | 200 even mid-swap (status: switching)                |
+| `/v1/models`   | proxy self                   | any       | TOML presets live-reloaded each call                 |
+| `GET /mode`    | proxy self                   | any       | current mode + switching flag + active model         |
+| `POST /mode`   | proxy self                   | (action)  | switch mode; accepts `{mode, model}` for combined op |
 
-When a request arrives for a mode that isn't active, the proxy:
-1. Stops the current GPU service
-2. Starts the target GPU service
-3. Waits for health check
-4. Forwards the request
+**Read-only methods (GET/HEAD/OPTIONS) do NOT trigger auto-swap.** They
+503 cleanly if the target backend isn't active. This prevents status
+polls from accidentally stopping the running service.
+
+POST to a route in a different mode auto-swaps:
+1. Stop current GPU service (`stop_gpu_services` finds containers by label)
+2. Spawn target via Docker SDK (`spawn_llama` / `spawn_comfyui` / `spawn_train`)
+3. Wait for healthcheck (default 900s for LLM; 120s for ComfyUI/train)
+4. Update `/state/active.toml`
+5. Forward the original request
 
 ## Adding a model
 
-1. Create `models/<name>.env` following existing presets (see `models/qwen35.env`).
-2. `VRAM_ESTIMATE_GB` must be <= 26 (32 GB limit - 6 GB reserve). Both Makefile and proxy enforce this.
-3. `make switch MODEL=<name> && make up` — no image rebuild needed.
-4. OpenCode auto-discovers models from the proxy's `/v1/models` endpoint.
+1. Create `models/<name>.toml` (copy an existing preset)
+2. Required: `name`, `vram_gb`, `[model]` with `repo` + `file`
+3. Optional: `[mmproj]`, `[template]`, `[runtime]`
+4. Schema is strict — unknown keys / wrong types rejected at load time
+5. `llmc models` confirms it parses, `llmc switch <name>` loads it
+6. No image rebuild, no proxy restart (presets live-reload on `/v1/models`)
+
+`vram_gb` must be <= LIMIT - RESERVE (default 32 - 6 = 26 GB).
 
 ## Image builds
 
-- **llama-server** (`llama-server.Dockerfile`): Multi-stage CUDA build. ~10 min. Pinned via `LLAMA_CPP_VERSION=b8799`. Targets `CMAKE_CUDA_ARCHITECTURES=120` (RTX 5090 Blackwell). Change this for different GPUs (86=Ampere, 89=Ada, 100/120=Blackwell).
-- **ComfyUI** (`comfyui.Dockerfile`): PyTorch 2.11 + CUDA 12.8 for Blackwell. ~5 min. Pinned via `COMFYUI_VERSION=v0.19.5`. Includes ComfyUI-Manager for custom node installation.
-- **lora-train** (`lora-train.Dockerfile`): PyTorch 2.7 + CUDA 12.8 + kohya sd-scripts. ~5 min. Runs HTTP API server on :8787 by default. CMD override for one-shot training.
-- **model-proxy** (`proxy/Dockerfile`): Python 3.12 + Docker CLI. <30s build.
-- **Open WebUI**: Third-party, pulled from GHCR. Pinned to `v0.9.2`.
+| Image                                           | Source                       | Notes |
+|-------------------------------------------------|------------------------------|-------|
+| `erfianugrah/llmc-proxy:v2`                     | `images/proxy.Dockerfile`    | <30s build. Python 3.12 + docker SDK + llmc package. |
+| `erfianugrah/llama-server:cuda12.8-sm120`       | `llama-server.Dockerfile`    | ~10 min. Pinned via `LLAMA_CPP_VERSION=b8799`. sm_120 (Blackwell). |
+| `erfianugrah/comfyui:cuda12.8-sm120`            | `comfyui.Dockerfile`         | ~5 min. PyTorch 2.11 + CUDA 12.8. ComfyUI v0.19.5 + Manager. |
+| `erfianugrah/lora-train:latest`                 | `lora-train.Dockerfile`      | ~5 min. PyTorch 2.7 + kohya sd-scripts. HTTP API on :8787. |
+| Open WebUI                                      | `ghcr.io/open-webui/...`     | Pinned to `v0.9.2`. |
 
-## Volumes
+## Named volumes
 
-All under `~/docker-volumes/`:
-- `llama-server/` — HuggingFace model cache (GGUFs)
-- `llama-server/models/` — mmproj + jinja template assets
-- `webui/` — Open WebUI user data
-- `comfyui/models/` — diffusion checkpoints, LoRAs, VAE, etc.
-- `comfyui/output/` — generated images/videos
-- `comfyui/input/` — uploaded inputs
-- `comfyui/custom_nodes/` — ComfyUI extensions
-- `comfyui/user/` — saved workflows, user data
-- `training-data/` — LoRA training datasets, configs, and output (see below)
+All bind paths declared in `volumes.toml`. `llmc volumes create` uses
+`local` driver + `o=bind` so volume names map to host paths without
+`${VAR}` interpolation in compose. Existing data preserved across
+migrations.
 
-`make clean` removes Docker volumes but preserves downloaded models.
+| Volume                       | Default host path                                      | Purpose                          |
+|------------------------------|--------------------------------------------------------|----------------------------------|
+| `llmc-state`                 | `~/docker-volumes/state`                              | proxy state + secrets            |
+| `llmc-llama-cache`           | `~/docker-volumes/llama-server`                       | HuggingFace cache                |
+| `llmc-llama-models`          | `~/docker-volumes/llama-server/models`                | GGUFs + mmproj + templates       |
+| `llmc-comfyui-models`        | `~/docker-volumes/comfyui/models`                     | diffusion checkpoints            |
+| `llmc-comfyui-output`        | `~/docker-volumes/comfyui/output`                     | generated images/videos          |
+| `llmc-comfyui-input`         | `~/docker-volumes/comfyui/input`                      | uploaded inputs                  |
+| `llmc-comfyui-custom-nodes`  | `~/docker-volumes/comfyui/custom_nodes`               | ComfyUI extensions               |
+| `llmc-comfyui-user`          | `~/docker-volumes/comfyui/user`                       | saved workflows                  |
+| `llmc-comfyui-loras`         | `~/docker-volumes/comfyui/models/loras`               | LoRA destination (rw for train)  |
+| `llmc-training-data`         | `~/docker-volumes/training-data`                      | datasets/, configs/, output/     |
+| `llmc-webui-data`            | `~/docker-volumes/webui`                              | Open WebUI DB                    |
+| `llmc-bench-cache`           | `~/docker-volumes/bench-cache`                        | benchmark HF cache               |
+
+## llmc package layout
+
+```
+llmc/
+├── __init__.py
+├── __main__.py             # `python -m llmc` entry
+├── cli.py                  # argparse subcommands + HTTP/Docker client
+├── presets.py              # TOML loader + schema validation
+├── volumes.py              # named volume registry (subprocess to `docker`)
+├── state.py                # atomic state file r/w
+├── orchestrator.py         # Docker SDK lifecycle (lazy-imported docker dep)
+├── proxy.py                # HTTP server + mode swap logic
+└── tests/
+    ├── test_presets.py        # 17 tests
+    ├── test_volumes.py        # 13 tests (Docker integration gated)
+    ├── test_state.py          # 15 tests
+    ├── test_orchestrator.py   # 17 tests (mock + Docker integration)
+    ├── test_proxy.py          # 24 tests (HTTP + routing)
+    ├── test_cli.py            # 34 tests (stubbed proxy HTTP)
+    └── test_swap_integration.py  # 5 tests (LLMC_TEST_INTEGRATION=1)
+```
+
+The proxy is the only place that needs the `docker` Python SDK
+(installed in `images/proxy.Dockerfile`). Everything else is stdlib —
+the CLI uses subprocess + http.client.
 
 ## Evaluation workflow (LoRA testing)
 
-`eval/` holds the ComfyUI-based LoRA evaluation stack. Routes through the proxy on :11434 so GPU swap is automatic — no manual `make comfyui` needed.
+`eval/` holds the ComfyUI-based LoRA evaluation stack. Routes through
+the proxy on :11434 so GPU swap is automatic.
 
-**Layout:**
-- `eval/comfyui.py` — proxy-aware ComfyUI client (`submit`, `wait`, `generate`). Handles 503 retries during GPU mode swap.
-- `eval/workflows.py` — reusable workflow builders. `txt2img(prompt, loras, seed, ...)` and `img2img(prompt, input_image, loras, denoise, ...)`. LoRAs are applied as a chain of `LoraLoaderModelOnly` nodes so stacking is trivial.
-- `eval/presets.py` — `SUBJECT`, `NEG_*`, `PROMPTS` (id_lock / angle / photo / manhwa_stylized / manhwa_prompt), `STACKS` (named LoRA combinations), `STACK_PROMPT_PREFIX` (style trigger tokens), `SEEDS` (default 8-seed battery). User-specific prompt overrides can be added via a gitignored `eval/presets.local.py` that updates the `PROMPTS` dict at import time.
-- `eval/run.py` — CLI with sub-commands: `shot`, `stages`, `sweep`, `matrix`, `checkpoints`, `quicktest`, `weights`, `loras`, `seeds`, `i2i`.
-
-**Make targets:**
 ```bash
-make eval-quick       # 4-scenario sanity (plans from presets_local.py) — use before full training
-make eval-stages      # 3-stage: photo / stylized / prompt-only
-make eval-sweep       # All named stacks side-by-side for one prompt
-make eval-matrix      # Seeds × stacks grid
-make eval-ckpts       # Compare training checkpoints (ep2/4/6/...)
-make eval-weights     # Face × aux LoRA weight grid (e.g. face 0.7,0.85,1.0 × realism 0,0.5)
-make eval-loras       # Sweep a list of aux LoRAs head-to-head at fixed weights
-make eval-seeds       # Identity robustness — N seeds on one config
-make eval-i2i         # Img2img denoise sweep from an input image
+llmc eval quicktest        # 4-scenario sanity (~3 min, page-cache warm)
+llmc eval stages           # 3-stage: photo / stylized / prompt-only
+llmc eval sweep            # all named stacks side-by-side
+llmc eval matrix           # seeds × stacks grid
+llmc eval checkpoints      # compare training checkpoints (ep2/4/6/...)
+llmc eval weights          # face × aux LoRA weight grid
+llmc eval loras            # sweep a list of aux LoRAs
+llmc eval seeds            # identity robustness — N seeds, one config
+llmc eval i2i              # img2img denoise sweep
 ```
 
-Override via env vars: `SEED=222`, `FACE=<your-face-lora>`, `STYLE=flux-manwha-webtoon`, `STACK_B=face_manhwa_v5`, etc.
+Output lands in `~/docker-volumes/comfyui/output/eval/<run>/` with
+deterministic filenames encoding prompt/stack/seed/epoch.
 
-**Output:** all images land in `~/docker-volumes/comfyui/output/eval/<run>/` with deterministic filenames encoding prompt/stack/seed/epoch.
+Named stacks (see `eval/presets.py`): `face_only`, `face_realism`,
+`face_super`, `face_ultrareal`, `face_manhwa_v5`, `face_manwha_web`,
+`face_manhwa_a18`, `face_illust`, `face_anime`.
 
-**Named stacks** (see `eval/presets.py`):
-- `face_only` — face LoRA alone (placeholder name `face-lora`; override via presets.local.py)
-- `face_realism`/`face_super`/`face_ultrareal` — + anti-plastic realism LoRA
-- `face_manhwa_v5`/`face_manwha_web`/`face_manhwa_a18` — + CivitAI manhwa LoRA
-- `face_illust`/`face_anime` — + HuggingFace alvdansen style LoRA
+User-specific overrides live in `eval/presets_local.py` (gitignored).
 
-**Recommended before any full training run:** `make eval-quick` with existing checkpoints. Validates the 4-scenario pipeline in ~3 min before investing hours.
+## Training workflow
 
-## Training data layout
-
-```
-~/docker-volumes/training-data/
-├── datasets/                  # Curated image+caption sets for training
-│   └── <name>/                # Images (.png/.jpg) + captions (.txt), WD14-tagged
-├── configs/                   # TOML dataset configs for sd-scripts
-│   └── <name>.toml            # Dataset paths, batch_size, resolution, repeats
-├── output/                    # Trained LoRA checkpoints (.safetensors)
-│   └── archive/               # Old/experimental LoRAs
-└── raw/                       # Raw scraped data (not used by training directly)
-    ├── scraped-manhwa/        # Chapter images from scraper
-    ├── scraped-images/        # Reference photos from image search
-    └── sliced-panels/         # Auto-sliced webtoon panels
-```
-
-## LoRA training service
-
-`train/server.py` is the HTTP API server that runs inside the lora-train container. Stdlib-only Python.
-
-**Training API endpoints** (via proxy at `/train/*`):
-- `POST /train` — start a training job (JSON config: dataset, base model, hyperparams). Returns 202.
-- `GET /status` — current job state, step/total, loss, epoch, elapsed, ETA
-- `GET /logs?lines=N` — last N lines of training output
-- `POST /cancel` — kill current training job
-- `GET /jobs` — list trained LoRA files with sizes
-- `GET /datasets` — list available datasets with image/caption counts
-- `GET /configs` — list available training TOML configs
-- `GET /health` — health check
-
-**Captioning API endpoints** (same container, async like training):
-- `POST /caption` — start async caption job. Body: `{dataset, engine, trigger_word, overwrite, prompt?}`. Returns 202. Engines: `blip2` (default — natural language, aligns with Flux T5), `florence` (broken on current transformers), `wd14` (Danbooru tags, for SDXL/anime).
-- `GET /caption/status` — captions_written / images_total, elapsed
-- `GET /caption/logs?lines=N` — tail subprocess stdout
-- `POST /caption/cancel` — kill current caption job
-
-**Dataset prep workflow** (required before training on scraped data):
 ```bash
-# 1. Audit existing WD14 captions for wrong-person / conflict / low-quality issues
-make dataset-audit DATASET=my-scraped EXPECTED=freckles
-
-# 2. Copy to clean dataset excluding rejected files
-make dataset-filter SRC=my-scraped DST=my-clean
-
-# 3. Re-caption with BLIP-2 (natural language — Flux T5 understands properly)
-make dataset-caption DATASET=my-clean TRIGGER=subject
-make caption-status   # poll until done (~1 img/s on 32GB GPU)
-
-# 4. Create TOML training config pointing at the clean dataset, then train.
+llmc mode train                                 # swap to train mode
+llmc dataset audit <name>                       # WD14 audit
+llmc dataset filter <src> <dst>                 # exclude rejects
+llmc dataset focus <src> <dst> --n 40           # pick best N images
+llmc dataset caption <name> --engine blip2      # async captioning
+llmc dataset caption-status                     # poll captioning
+# (configure dataset TOML in ~/docker-volumes/training-data/configs/)
+curl -X POST http://localhost:11434/train/train \
+    -H 'Content-Type: application/json' \
+    -d '{"dataset":"<n>", "output_name":"my-lora", "epochs":4, ...}'
+llmc train status                               # poll
+llmc train deploy <name>                        # copy to ComfyUI loras volume
 ```
 
-**Supports two model types:**
+SDXL: `model_type=sdxl`, batch_size=10-16, dim=32, alpha=dim, lr=1e-4.
+Flux: `model_type=flux`, batch_size=2-4, dim=16, alpha=16, fp8_base=true.
 
-**SDXL** (Illustrious-XL, NoobAI, JuggernautXL): `model_type=sdxl`
-- UNet-only training, cached text encoder outputs
-- batch_size=10-16, gradient checkpointing, ~1-5s/step
-- dim=32, alpha=dim (LoRA scale=1.0), lr=1e-4, AdamW, cosine schedule
-- clip_skip=2 default (Illustrious/NoobAI/Pony/anime). Set `clip_skip=1` for JuggernautXL.
-- `--v_parameterization` flag for v-pred models (NoobAI v-pred)
+## MCP servers (OpenCode integration)
 
-**Flux** (Flux.1-dev): `model_type=flux`
-- 12B param DiT, fp8_base required for 32GB VRAM
-- batch_size=2-4, gradient checkpointing, ~10-30s/step
-- dim=16, alpha=16, lr=1e-4, AdamW8bit, cosine schedule
-- `--timestep_sampling=sigmoid`, `--guidance_scale=1.0`, `--model_prediction_type=raw`
-- `--apply_t5_attn_mask` on by default
-- Separate `--ae`, `--clip_l`, `--t5xxl` paths for Flux components
-- Bumps to dim=32 cost ~4x file size with no identity gain for single-subject LoRAs
-- Much better face likeness than SDXL for real-person LoRAs
+| Server                    | Tools                                                          |
+|---------------------------|----------------------------------------------------------------|
+| `mcp/whisper-server.py`   | `yt_transcribe`, `yt_transcribe_playlist`, `whisper_transcribe` |
+| `mcp/comfyui-server.py`   | `comfyui_generate`, `comfyui_status`, `comfyui_history`         |
+| `mcp/train-server.py`     | `train_start/status/logs/cancel/list/deploy`, `caption_*`       |
 
-**Common settings** (both model types):
-- SDPA attention (no xformers), bf16 mixed precision
-- cache_latents_to_disk + cache_text_encoder_outputs_to_disk
-- 0 data loader workers (avoids system RAM OOM from forked processes)
+Whisper is a separate stack (`whisper-transcribe`, port 7860). The
+turbo model (~6 GB) coexists with llama-server in 32 GB VRAM.
 
-## MCP Servers (OpenCode integration)
+ComfyUI + train MCP servers go through the proxy at :11434, which means
+calling them triggers a GPU mode swap.
 
-### Whisper MCP (`mcp/whisper-server.py`)
+## Sister stacks on the same machine
 
-**Tools:**
-- `whisper_status` — check whisper service status, GPU info, availability
-- `yt_download` — download audio from a YouTube URL to temp dir
-- `whisper_transcribe` — transcribe a local audio/video file, return full transcript
-- `yt_transcribe` — download + transcribe in one step (for summaries)
-- `yt_transcribe_playlist` — download and transcribe all videos in a playlist
+`whisper-transcribe` is a separate compose stack (different repo,
+~/whisper-transcribe) that needs to call the LLM for TL;DW
+summarization. It joins the llm-compose network as an external network
+in its own compose.yaml:
 
-**Usage:** ask "transcribe and summarize this YouTube video: <url>" and the LLM calls `yt_transcribe`. For playlists, "transcribe this playlist: <url>". Transcript returned to LLM for summarization.
+```yaml
+networks:
+  llmc:
+    external: true
+```
 
-**Architecture:** separate service, NOT GPU-exclusive with llama-server. whisperX turbo uses ~6GB VRAM, coexists with LLM models in 32GB. Models auto-unload after 5min idle.
+The bot service then sets `LLM_BASE_URL=http://model-proxy:11434/v1`
+and reaches the proxy by hostname over the shared network.
 
-**Config:** registered in `~/.config/opencode/opencode.json` (global) and `opencode.json` (project). Talks to whisper-transcribe at `localhost:7860`.
+After upgrading llm-compose to v2 (which renamed the network from
+`llm-compose_llm` to `llmc`), whisper-transcribe needs the same network
+rename in its compose. Until that's done, whisper runs on its own
+network and can't reach the LLM. To migrate:
 
-**Requires:** whisper-transcribe container running (`cd ~/whisper-transcribe && docker compose up -d`).
+```bash
+# In ~/whisper-transcribe/compose.yaml, update the network reference:
+#   networks:
+#     llmc:                        # was: llm-compose_llm
+#       external: true
+# Then:
+cd ~/whisper-transcribe
+docker compose down
+docker compose up -d
+```
 
-### ComfyUI MCP (`mcp/comfyui-server.py`)
+The legacy network (`llm-compose_llm`, 172.28.0.0/24) can be removed
+after whisper is migrated:
 
-**Tools:**
-- `comfyui_generate` — submit a txt2img workflow, wait for output, return file paths
-- `comfyui_status` — check GPU mode and ComfyUI queue
-- `comfyui_history` — list recent generations or get results by prompt ID
-
-**Usage:** ask the model to "generate an image" and it calls the MCP tool. Proxy auto-swaps GPU mode. LLM stops during generation (~20-60s), restarts on next chat.
-
-**Requires:** a diffusion checkpoint in `~/docker-volumes/comfyui/models/checkpoints/`.
-
-### Training MCP (`mcp/train-server.py`)
-
-**Tools:**
-- `train_start` — start a LoRA training job with configurable hyperparams
-- `train_status` — check training progress (step, loss, epoch, ETA)
-- `train_logs` — get recent training log output
-- `train_cancel` — cancel current training job
-- `train_list` — list trained LoRA files
-- `train_datasets` — list available training datasets
-- `train_deploy` — copy a trained LoRA to ComfyUI's loras dir
-- `caption_start` — start async captioning job (engines: blip2/florence/wd14)
-- `caption_status` — check caption progress (captions_written/images_total)
-- `caption_logs` — get recent caption log output
-- `caption_cancel` — cancel current caption job
-
-**Usage:** ask the model to "start training a LoRA" and it calls MCP tools. Proxy auto-swaps to train mode — **LLM backend stops for the entire training duration** (10-60+ min). LLM restarts on next chat request after training completes.
-
-**Config:** `opencode.json` defines both MCP servers.
-
-## Scraper
-
-`scraper/` contains web scraping tools for collecting training data. Node.js + Playwright.
-
-- `scrape.mjs` — generic image scraper with CSS selectors, pagination, lazy-load scrolling
-- `image-search.mjs` — Bing/Google image search downloader for reference photos
-- `curate.py` — image dedup/filter/resize for training datasets
-- `slice-panels.py` — splits tall vertical strips into individual panels
-- `filter-panels.py` — quality-filters sliced panels for LoRA training
-
-Custom site adapters can be loaded via `--adapter=./my-adapter.mjs` (exports `getChapters`, `getImages`). Adapters are gitignored — they're user-specific, not generic tooling.
-
-Data is scraped to `scraper/dataset/` (gitignored), then curated and moved to `~/docker-volumes/training-data/datasets/`.
-
-## No tests or CI
-
-No test suite, no linter, no CI workflows. Verification is Docker build + runtime behavior (`make status`, `make health`, `make logs`).
-
-## Flux prompt gotchas
-
-- **Rosacea / blotchy skin on pale subjects**: Flux.1-dev produces red-blotch patches on pale faces when prompted with `realistic skin texture`, `pores`, `subsurface scattering`, `film grain`, `candid amateur photograph`, `shot on iphone`. These tokens push Flux toward an over-textured aesthetic that the base model renders as rosacea on low-pigment skin. Happens with zero LoRA loaded — verified with a bare base-model generation. Fix is prompt engineering, not training:
-  - Drop those tokens from the positive prompt
-  - Add to negative: `rosacea, acne, red blotches, blotchy skin, skin blemishes, over-textured skin`
-  - Prefer `portrait photograph, soft natural lighting, clean skin` for cleaner results
-- **Flux distilled "plastic" default**: the opposite failure mode. Without any texture cues Flux produces airbrushed porcelain skin. Realism LoRAs (`flux-realism-xlabs`, `flux-ultrarealism-canopus` at 0.4-0.5) counter this without triggering rosacea.
-- **Face LoRA identity drift through style stacking**: dim=16 face LoRAs don't survive when stacked with a trained style LoRA (like `flux-manhwa-v5`). The style LoRA has encoded face geometry that overrides character identity. Only weak style LoRAs (`flux-manhwa-a-18` at 18MB, `flux-manwha-webtoon` at 165MB) leave identity intact but their stylization is subtle. Chaining 3 weak styles at ~0.4 each can deliver legitimate manhwa aesthetic while face LoRA at 1.0 holds identity.
-- **Training step count floor**: Flux LoRA face training needs ~400+ steps minimum for meaningful identity learning. 32 steps (30 images × 2 epochs) is only useful for pipeline validation; ep2-ep4 of a ~1600-step training (~400-800 steps) is where usable identity emerges.
+```bash
+docker network rm llm-compose_llm
+```
 
 ## Gotchas
 
-- First start without `make download-all` downloads a ~20 GB GGUF inside the container. Health check allows 12.5 min (`start_period: 600s`).
-- `.env` must exist before `make up`. Run `make setup` or `make switch MODEL=x` first.
-- Proxy returns `{"status": "switching"}` (HTTP 200) during mode/model swaps so Docker doesn't kill it.
-- Open WebUI runs as UID 1000. If Docker created volume dirs as root, `make dirs` fixes ownership.
-- `--reasoning-budget N` is broken for Gemma 4 (llama.cpp #21487). Do NOT set `--chat-template gemma` — breaks tool calling.
-- **GPU exclusivity**: llama-server, ComfyUI, and lora-train cannot run simultaneously. Switching from ComfyUI→LLM takes 35-95s (dominated by GGUF load). LLM→ComfyUI takes 20-35s. LLM→train takes 15-30s.
-- **ComfyUI web UI** on `:8188` only works when ComfyUI mode is active. When llama-server is running, port 8188 is unreachable.
-- **Open WebUI image gen** triggers a mode swap: clicking "generate image" in Open WebUI hits `COMFYUI_BASE_URL` → proxy swaps to ComfyUI → llama-server stops → chat temporarily unavailable until swap back.
-- **ComfyUI models** are managed through ComfyUI's own UI (ComfyUI-Manager) or by placing files in `~/docker-volumes/comfyui/models/checkpoints/`. No proxy integration for diffusion model selection.
-- **ComfyUI WebSocket** (live progress/previews) is NOT proxied. Use the direct `:8188` port for the full ComfyUI experience. Open WebUI uses HTTP polling (`/history/{prompt_id}`) which works through the proxy.
-- **Training is long-running**: unlike ComfyUI (20-60s), training takes 10-60+ minutes. The LLM backend is unavailable for the entire duration. Use `make train-status` or the MCP `train_status` tool to monitor.
-- **Training data is root-owned**: Docker creates files as root in `~/docker-volumes/training-data/`. Use `docker run --rm -v ~/docker-volumes/training-data:/data alpine ...` for file operations, or `make dirs` to fix ownership.
-- **LoRA compatibility**: LoRAs trained on one base model (e.g. JuggernautXL) only work on that same base. eps-pred LoRAs on v-pred models (NoobAI) = broken output.
-- **Overtraining signs**: loss < 0.15 at later epochs means the model memorized noise. Use earlier epoch checkpoints (save_every_n_epochs=1).
+- **POST /mode model swap**: routes through `_ensure_model`, not just
+  `_ensure_mode`. The latter short-circuits if already in target mode
+  and would silently not swap. Caught by the `test_swap_integration`
+  battery — verified by inspecting container env after every swap.
+- **Docker SDK command shlex split**: `containers.run(command=str)`
+  splits at whitespace, which mangles multi-line bash scripts. Always
+  pass as `[script]` (single-element list).
+- **GET requests do NOT auto-swap mode**. Status polls return 503 if
+  the backend isn't active. Use POST /mode or `llmc mode <m>` first.
+- **Mode swap latency**: 5-10s page-cache warm, 30-60s cold storage.
+  First-time GGUF load can take up to 12 min for a 22 GB model.
+- **ComfyUI WebSocket** (live preview) is NOT proxied. Use direct
+  `:8188` when in comfyui mode. Open WebUI uses HTTP polling which
+  works through the proxy.
+- **Open WebUI image gen** triggers a mode swap: clicking generate
+  image hits `COMFYUI_BASE_URL` → proxy swaps to ComfyUI → llama-server
+  stops → chat unavailable until swap back.
+- **Training takes 10-60+ min**. The LLM is unavailable that whole
+  time. Use `llmc train status` to monitor.
+- **LoRA compatibility**: LoRAs trained on one base only work on that
+  same base. eps-pred LoRAs on v-pred models = broken output.
+- **Flux face LoRA stacking**: dim=16 face LoRAs don't survive style
+  LoRA stacking. Use weak style LoRAs (a18, webtoon) at low weight
+  (~0.4) to preserve identity.
+- **Rosacea on pale Flux subjects**: tokens like `realistic skin
+  texture, pores, film grain` cause red blotches. Add to negatives:
+  `rosacea, acne, red blotches, blotchy skin`.
+
+## No tests for application code
+
+`llm-compose` itself has no application code beyond the llmc package.
+There's a test suite (`make test`) for the orchestration logic. There's
+no separate frontend / API / DB stack to lint or build. Verification is
+unit tests + Docker build + runtime behavior.

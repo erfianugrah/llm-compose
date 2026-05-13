@@ -1,0 +1,162 @@
+# llm-compose v2 stack — proxy + Open WebUI.
+#
+# GPU services (llama-server, comfyui, lora-train) are NOT in this file.
+# The proxy spawns them on-demand via the Docker Engine API and labels
+# them with llmc.mode so it can find them again after a restart.
+#
+# Volumes are declared `external: true` — they're created by
+# `llmc volumes create` (or `llmc setup`) ahead of time and persist across
+# stack restarts. Each one is backed by a host bind path defined in
+# volumes.toml; see that file for the path mapping.
+#
+# The only var compose needs at parse time is WEBUI_SECRET_KEY. It lives
+# in a generated .env file (see `llmc setup`) and is never rewritten by
+# model swaps — the proxy doesn't touch it.
+
+services:
+  # ── Mode-switching reverse proxy ───────────────────────────────────
+  # Routes /v1/* → llama-server, /comfyui/* → comfyui, /train/* → lora-train.
+  # Spawns each GPU service via Docker SDK when its route is hit; stops
+  # the previous one first (mutual exclusion on a single GPU).
+  model-proxy:
+    build:
+      context: .
+      dockerfile: images/proxy.Dockerfile
+    image: erfianugrah/llmc-proxy:v2
+    container_name: model_proxy
+    hostname: model-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      LLMC_NETWORK: llmc
+      # Other config keys (presets dir, state dir, vram budget) have
+      # sane defaults baked into the image. See images/proxy.Dockerfile.
+    volumes:
+      # Docker socket — orchestrator's only privileged dependency.
+      # `:ro` is theatre (Docker daemon doesn't enforce read-only on the
+      # socket; clients can still POST). Kept anyway for the defense-in-depth
+      # signal.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Repo's models/ dir mounted read-only as /presets so adding a new
+      # preset is just `git pull` (or editor save) — no image rebuild,
+      # no proxy restart (presets are live-reloaded on /v1/models).
+      - ./models:/presets:ro
+      # State volume (active.toml) and assets volume (mmproj/template
+      # downloads). Both are named volumes backed by host bind paths.
+      - llmc-state:/state
+      - llmc-llama-models:/assets
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - llmc
+    # Note: previously pinned to a static IP (172.29.0.4) so the WebUI's
+    # env-baked URL didn't depend on Docker's embedded DNS. With the v2
+    # network isolated from other stacks, DNS resolves consistently —
+    # the WebUI just uses http://model-proxy:11434 by hostname. If DNS
+    # ever flakes (e.g. external networks attached via overlay), reinstate
+    # the static IP and update OPENAI_API_BASE_URL / COMFYUI_BASE_URL.
+
+  # ── Chat UI ────────────────────────────────────────────────────────
+  # Open WebUI's image is built to run as UID 1000. We set user
+  # explicitly so files written to the data volume are owned by the
+  # host user, not root.
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.9.2
+    container_name: open_webui
+    hostname: open-webui
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      DATA_DIR: /app/backend/data
+      # Open WebUI → proxy → llama-server. Image gen also routes through
+      # the proxy at /comfyui/* so it triggers a GPU mode swap on demand.
+      OPENAI_API_BASE_URL: http://model-proxy:11434/v1
+      OPENAI_API_KEY: not-needed
+      OLLAMA_BASE_URL: ""
+      COMFYUI_BASE_URL: http://model-proxy:11434/comfyui/
+      ENABLE_IMAGE_GENERATION: "true"
+      IMAGE_GENERATION_ENGINE: comfyui
+      # Branding + behaviour
+      WEBUI_NAME: llama.cpp
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?run 'llmc setup' to generate .env first}
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+      ENABLE_PERSISTENT_CONFIG: "false"
+      ENABLE_SIGNUP: "false"
+      DEFAULT_MODEL_PARAMS: '{"function_calling":"native","temperature":0.6,"top_p":0.95,"top_k":20}'
+      # Initial selection in the WebUI dropdown. Just a hint — the proxy's
+      # /v1/models is the source of truth, users can switch to any preset
+      # at runtime. Override via .env (DEFAULT_MODELS).
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-gemma-4-31B-it-Q4_K_M}
+      # Optional headless admin bootstrap. Leave blank to use browser
+      # signup. If set, scripts/init-webui.sh / `llmc webui configure`
+      # uses these to sign in and import webui/models.json.
+      WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL:-}
+      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD:-}
+      WEBUI_ADMIN_NAME: ${WEBUI_ADMIN_NAME:-Admin}
+    ports:
+      - "127.0.0.1:${WEBUI_PORT:-3000}:8080"
+    volumes:
+      - llmc-webui-data:/app/backend/data
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    depends_on:
+      model-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    networks:
+      - llmc
+
+# ── Network ──────────────────────────────────────────────────────────
+# `name: llmc` overrides Docker compose's default project-prefixed name
+# (would otherwise be `llm-compose_llmc`). The proxy spawns GPU services
+# onto this network by name, so an unprefixed name keeps that simple.
+networks:
+  llmc:
+    name: llmc
+    driver: bridge
+    ipam:
+      config:
+        # 172.29.x to coexist with the legacy llm-compose_llm network
+        # (172.28.x) during cutover. whisper-transcribe still uses the
+        # old subnet; Phase 6 migrates it.
+        - subnet: 172.29.0.0/24
+          gateway: 172.29.0.1
+
+# ── Volumes ──────────────────────────────────────────────────────────
+# Declared external — created by `llmc volumes create` from volumes.toml.
+# Compose won't manage their lifecycle; it just looks them up by name.
+volumes:
+  llmc-state:
+    external: true
+  llmc-llama-models:
+    external: true
+  llmc-webui-data:
+    external: true

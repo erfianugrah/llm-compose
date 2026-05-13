@@ -1,0 +1,29 @@
+name = "Qwen3.6 27B Dense — coding, vision, thinking"
+description = """
+Qwen3.6 27B Dense — flagship coding, thinking mode, vision support.
+~16.4 GB model (UD-Q4_K_XL) + ~0.9 GB mmproj. 27B dense params.
+Best for: agentic coding (SWE-bench 77.2), frontend workflows, repo-level reasoning.
+Released 2026-04-22 — outperforms Qwen3.6-35B-A3B on coding benchmarks.
+
+Qwen3.6-27B Dense is more stable than the MoE variant — model card recommends
+presence_penalty=0.0 for thinking mode. If you see repetition loops, bump to 1.5
+(the card allows 0-2 range).
+"""
+vram_gb = 17.5
+
+[model]
+repo = "unsloth/Qwen3.6-27B-GGUF"
+file = "Qwen3.6-27B-UD-Q4_K_XL.gguf"
+
+[mmproj]
+url = "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/mmproj-BF16.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 163840
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0

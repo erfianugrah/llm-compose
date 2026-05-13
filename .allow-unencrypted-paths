@@ -1,3 +1,8 @@
 docker-compose.yml
+docker-compose.yml.v1-legacy
+compose.yaml
 models/*.env
+models/*.toml
+volumes.toml
 .env.example
+.env.local.example
