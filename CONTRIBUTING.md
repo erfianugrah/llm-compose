@@ -8,7 +8,7 @@ benchmarking, and operational improvements.
 ## What's in scope
 
 ✅ Welcome:
-- New model presets (`models/*.env`) — particularly for non-32GB VRAM
+- New model presets (`models/*.toml`) — particularly for non-32GB VRAM
   tiers (12, 16, 24, 48, 80 GB)
 - Bug fixes with a clear repro path
 - Better default proxy behaviour (mode swapping, GGUF caching, health checks)
@@ -48,76 +48,88 @@ are welcome — see the Dockerfiles for the targeting flags.
 ```bash
 git clone https://github.com/erfianugrah/llm-compose.git
 cd llm-compose
-make setup           # one-time: .env, volumes, image build, default model
-make up              # start the stack
+make setup           # generate .env, create named volumes
+make build           # build all images locally (or `make pull`)
+make up              # start proxy + Open WebUI
 ```
 
-For changes to `proxy/proxy.py`:
+For changes to the proxy / orchestrator / CLI (Python code under `llmc/`):
 
 ```bash
-make rebuild-proxy && docker compose up -d --no-deps model-proxy
+make rebuild-proxy && docker compose up -d --force-recreate model-proxy
 ```
 
-For changes to a Dockerfile (heavy):
+For changes to a GPU service Dockerfile (heavy):
 
 ```bash
-make rebuild           # llama-server (~10 min)
-make rebuild-comfyui   # ComfyUI (~5 min)
-make rebuild-train     # lora-train (~5 min)
+make rebuild-llama     # ~10 min
+make rebuild-comfyui   # ~5 min
+make rebuild-train     # ~5 min
 ```
+
+## Tests
+
+```bash
+make test               # unit + schema (~1s, no Docker)
+make test-docker        # + docker daemon integration (~30s)
+make test-integration   # + end-to-end GPU swap (~90s, stack up + GPU)
+```
+
+Add tests for any new behaviour. Mock the Docker SDK for orchestrator
+logic, stub the proxy HTTP for CLI commands. Real-daemon and real-GPU
+tests live behind `LLMC_TEST_DOCKER=1` and `LLMC_TEST_INTEGRATION=1`
+respectively.
 
 ## Validation
 
-Smoke-test the proxy after changes:
+Smoke-test the live stack after changes:
 
 ```bash
-make status                                 # current GPU mode + health
-curl http://localhost:11434/v1/models       # list available models
-curl -X POST http://localhost:11434/mode \
-    -H 'Content-Type: application/json' \
-    -d '{"mode":"llm"}'                     # explicit mode switch
+llmc status                              # health + active mode
+llmc switch qwen3-vl                     # cheap model swap (~5GB, fastest)
+curl http://localhost:11434/v1/models    # list presets via the proxy
 ```
 
 For benchmark changes:
 
 ```bash
-make bench-perf MODEL=qwen35       # latency + throughput sweep
-make bench-quants                  # quantization comparison
+llmc bench perf                          # latency + throughput
+llmc bench quants                        # quantization comparison
 ```
 
 ## Code style
 
-- **Python**: stdlib-first; the proxy is intentionally minimal. New
-  deps need clear justification.
-- **Bash**: shellcheck-clean; entrypoints assume non-root where
-  possible.
-- **Comments** explain *why*, not *what* — match the existing density
-  for non-obvious logic (GPU coordination, mode swapping, network
-  configuration).
+- **Python**: stdlib-first. The proxy + CLI are intentionally minimal.
+  The `docker` SDK is the only third-party dep, and only in the proxy
+  image — the host CLI uses subprocess + http.client.
+- **Bash**: shellcheck-clean.
+- **Comments**: explain *why*, not *what*. Match the existing density
+  for non-obvious logic (GPU coordination, mode swapping, swap-time
+  edge cases).
 - **No AI attribution** in commit messages, comments, or PR bodies.
-- **Compose**: prefer env-var defaults (`${VAR:-default}`) over
-  hardcoded values; new top-level vars get documented in `.env.example`.
+- **Schemas are strict**: TOML loaders reject unknown keys and wrong
+  types. Catch config typos at load time, not at container startup.
 
 ## Adding a new model preset
 
-1. Create `models/<id>.env` based on an existing preset:
+1. Create `models/<id>.toml` based on an existing preset:
 
    ```bash
-   cp models/qwen35.env models/my-model.env
-   $EDITOR models/my-model.env
+   cp models/qwen36.toml models/my-model.toml
+   $EDITOR models/my-model.toml
    ```
 
-2. Required fields: `MODEL_REPO`, `MODEL_FILE`, `MODEL_NAME`,
-   `VRAM_ESTIMATE_GB`, `CONTEXT_SIZE`, sampler params.
+2. Required: `name`, `vram_gb`, `[model]` with `repo` + `file`.
 
-3. Optional: `MMPROJ_URL` (vision models), `TEMPLATE_URL` (custom
-   chat templates).
+3. Optional: `[mmproj]` (vision), `[template]` (custom chat template),
+   `[runtime]` (context_size, reasoning, sampler params).
 
-4. Validate the URLs resolve and the model fits VRAM:
+4. Validate it parses and the URLs resolve:
 
    ```bash
-   make switch MODEL=my-model
-   make status
+   make test                # schema validation runs on every preset
+   llmc models              # confirms it shows up
+   llmc switch my-model     # actually loads it
    ```
 
 5. Add to the `Available models` table in README.md if you intend
@@ -125,26 +137,27 @@ make bench-quants                  # quantization comparison
 
 ## Commit messages
 
-Match the existing style — run `git log --oneline -20`. Lead with
-the most affected component (`Proxy:`, `ComfyUI:`, `Train:`,
-`Compose:`, `Docs:`, `Bench:`). Body explains *why* over *what*.
+Match the existing style — `git log --oneline -20`. Lead with the most
+affected component (`proxy:`, `cli:`, `comfyui:`, `train:`, `docs:`,
+`bench:`). Body explains *why* over *what*.
 
 ## Pull request workflow
 
 1. Fork, create a feature branch off `main`.
-2. Validate with `docker compose config -q` before pushing.
+2. `make test-docker` (and `make test-integration` if the change
+   affects mode swapping or container lifecycle).
 3. Open a PR with the same shape as existing commit messages.
 4. Expect review focused on: does it preserve single-GPU
    exclusive-mode discipline, does it match the codebase's existing
-   patterns, does it ship with appropriate validation steps.
+   patterns, does it ship with appropriate test coverage.
 
 ## Reporting bugs
 
 Useful issue includes:
-- Output of `make status`
+- `llmc status` output
 - GPU model + driver version (`nvidia-smi`)
-- Relevant log excerpts (`docker compose logs --tail 100 model-proxy`)
-- The active model preset (`grep MODEL_NAME .env`)
+- Relevant log excerpts (`docker logs model_proxy --tail 100`)
+- The active preset (visible in `llmc status`)
 - Reproduction steps
 
 ## License
