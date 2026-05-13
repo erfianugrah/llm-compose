@@ -1,0 +1,69 @@
+# Named Docker volume registry — single source of truth for volume paths.
+#
+# Each entry creates a named volume backed by a host directory using the
+# `local` driver with `o=bind`. This gives us:
+#
+#   1. Compose YAML refers only to volume *names* — no ${HOST_PATH} interpolation
+#   2. Volumes are portable: same compose.yaml on different machines just
+#      requires creating the volumes against that machine's paths
+#   3. Existing data at the host paths is preserved — no copying or symlinks
+#   4. `ls ~/docker-volumes/...` still works on the host
+#
+# `root` is the default parent for every volume's bind path. Each volume's
+# `path` is relative to `root` unless it starts with `/` (absolute).
+# `${HOME}` and other env vars are expanded at registry load time.
+#
+# Create / refresh all volumes:
+#     python3 -m llmc volumes create
+#
+# Inspect:
+#     python3 -m llmc volumes ls
+#
+# All bind-mount paths must exist on the host before the volume is used;
+# `python3 -m llmc volumes create` creates missing directories.
+
+root = "${HOME}/docker-volumes"
+
+[volumes.llmc-state]
+# Proxy state: active.toml, webui secret, swap locks
+path = "state"
+
+[volumes.llmc-llama-cache]
+# HuggingFace cache (model downloads land here under .cache/huggingface)
+path = "llama-server"
+
+[volumes.llmc-llama-models]
+# GGUFs, mmproj projections, jinja chat templates
+path = "llama-server/models"
+
+[volumes.llmc-comfyui-models]
+# Diffusion checkpoints, LoRAs, VAE, upscalers
+path = "comfyui/models"
+
+[volumes.llmc-comfyui-output]
+# Generated images and videos
+path = "comfyui/output"
+
+[volumes.llmc-comfyui-input]
+# User-supplied inputs for img2img / video workflows
+path = "comfyui/input"
+
+[volumes.llmc-comfyui-custom-nodes]
+# ComfyUI-Manager-installed nodes (survives container rebuild)
+path = "comfyui/custom_nodes"
+
+[volumes.llmc-comfyui-user]
+# ComfyUI user data: saved workflows, settings
+path = "comfyui/user"
+
+[volumes.llmc-training-data]
+# LoRA training: datasets/, configs/, output/, raw/
+path = "training-data"
+
+[volumes.llmc-webui-data]
+# Open WebUI: SQLite DB, accounts, chat history
+path = "webui"
+
+[volumes.llmc-bench-cache]
+# bench-eval HuggingFace cache + datasets
+path = "bench-cache"
