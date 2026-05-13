@@ -95,6 +95,16 @@ services:
       ENABLE_PERSISTENT_CONFIG: "false"
       ENABLE_SIGNUP: "false"
       DEFAULT_MODEL_PARAMS: '{"function_calling":"native","temperature":0.6,"top_p":0.95,"top_k":20}'
+      # Initial selection in the WebUI dropdown. Just a hint — the proxy's
+      # /v1/models is the source of truth, users can switch to any preset
+      # at runtime. Override via .env (DEFAULT_MODELS).
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-gemma-4-31B-it-Q4_K_M}
+      # Optional headless admin bootstrap. Leave blank to use browser
+      # signup. If set, scripts/init-webui.sh / `llmc webui configure`
+      # uses these to sign in and import webui/models.json.
+      WEBUI_ADMIN_EMAIL: ${WEBUI_ADMIN_EMAIL:-}
+      WEBUI_ADMIN_PASSWORD: ${WEBUI_ADMIN_PASSWORD:-}
+      WEBUI_ADMIN_NAME: ${WEBUI_ADMIN_NAME:-Admin}
     ports:
       - "127.0.0.1:${WEBUI_PORT:-3000}:8080"
     volumes:

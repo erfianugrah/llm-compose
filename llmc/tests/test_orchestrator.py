@@ -18,6 +18,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+try:
+    import docker  # noqa: F401
+    HAS_DOCKER = True
+except ImportError:
+    HAS_DOCKER = False
+
 from llmc.orchestrator import (
     COMFYUI_SERVICE,
     GPU_LABEL,
@@ -64,8 +70,12 @@ class TestLlamaCommand(unittest.TestCase):
             self.assertIn(flag, cmd, f"missing {flag!r} in llama command")
 
 
+@unittest.skipUnless(HAS_DOCKER, "docker SDK not installed; pip install docker")
 class TestOrchestratorMockedSDK(unittest.TestCase):
-    """Verify the orchestrator's logic with a mock Docker client."""
+    """Verify the orchestrator's logic with a mock Docker client.
+
+    Even with a mocked client these tests need the docker package importable
+    because the orchestrator imports docker.errors / docker.types lazily."""
 
     def _orchestrator(self, containers=None):
         client = MagicMock()

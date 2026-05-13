@@ -34,12 +34,15 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-import docker
-from docker.errors import APIError, ImageNotFound, NotFound
-from docker.models.containers import Container
-from docker.types import DeviceRequest
+# The `docker` package is the proxy's only runtime dep, but the rest of
+# the llmc package (CLI, presets, volumes, state) is stdlib-only. Import
+# docker lazily so test modules that don't construct an Orchestrator can
+# still be imported on a host without the SDK installed.
+if TYPE_CHECKING:
+    import docker
+    from docker.models.containers import Container
 
 from llmc.presets import Preset, preset_to_env
 
@@ -153,10 +156,13 @@ class Orchestrator:
 
     def __init__(
         self,
-        client: Optional[docker.DockerClient] = None,
+        client=None,
         network: str = DEFAULT_NETWORK,
     ):
-        self.client = client or docker.from_env()
+        if client is None:
+            import docker
+            client = docker.from_env()
+        self.client = client
         self.network = network
 
     # ── Mode introspection ─────────────────────────────────────────────
@@ -172,7 +178,7 @@ class Orchestrator:
                 return mode
         return "idle"
 
-    def _labelled_containers(self) -> list[Container]:
+    def _labelled_containers(self) -> list:
         return self.client.containers.list(
             all=True,
             filters={"label": GPU_LABEL},
@@ -183,6 +189,7 @@ class Orchestrator:
     def stop_gpu_services(self, *, timeout: int = 10) -> list[str]:
         """Stop and remove every container with the llmc.mode label.
         Returns the names of containers that were stopped."""
+        from docker.errors import NotFound
         stopped = []
         for container in self._labelled_containers():
             try:
@@ -201,10 +208,10 @@ class Orchestrator:
         environment: Optional[dict] = None,
         volumes: Optional[dict] = None,
         ports: Optional[dict] = None,
-        command: Optional[list[str] | str] = None,
+        command=None,
         entrypoint: Optional[list[str]] = None,
         shm_size: str = "2g",
-    ) -> Container:
+    ):
         """Generic container spawn for a GPU service. Stops any other GPU
         service first (mutual exclusion). Returns the created container.
         Caller should call `wait_healthy()` before forwarding requests.
@@ -213,6 +220,9 @@ class Orchestrator:
         Docker SDK shlex-splits string commands at whitespace, which mangles
         any non-trivial shell script (sees `if [` as three tokens, etc.).
         Use `["the script"]` to keep it as one Cmd entry."""
+        from docker.errors import APIError, ImageNotFound
+        from docker.types import DeviceRequest
+
         self.stop_gpu_services()
 
         run_kwargs = dict(
@@ -247,7 +257,7 @@ class Orchestrator:
                 f"docker API error starting {service.name}: {exc.explanation or exc}"
             ) from exc
 
-    def spawn_llama(self, preset: Preset) -> Container:
+    def spawn_llama(self, preset: Preset):
         """Start llama-server with the given preset. Existing GPU services
         are stopped first.
 
@@ -267,7 +277,7 @@ class Orchestrator:
             },
         )
 
-    def spawn_comfyui(self) -> Container:
+    def spawn_comfyui(self):
         return self.spawn(
             COMFYUI_SERVICE,
             shm_size="4g",
@@ -287,7 +297,7 @@ class Orchestrator:
             },
         )
 
-    def spawn_train(self) -> Container:
+    def spawn_train(self):
         return self.spawn(
             TRAIN_SERVICE,
             shm_size="4g",

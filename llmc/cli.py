@@ -825,6 +825,67 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return _passthrough(mapping[sub], rest)
 
 
+# ── Open WebUI helpers ────────────────────────────────────────────────
+
+
+def cmd_webui_configure(args: argparse.Namespace) -> int:
+    """Import workspace models from webui/models.json into Open WebUI.
+
+    Thin wrapper around scripts/init-webui.sh. Reads WEBUI_ADMIN_EMAIL /
+    WEBUI_ADMIN_PASSWORD from .env for headless auth; falls back to an
+    interactive prompt if not set. Idempotent."""
+    script = REPO_ROOT / "scripts" / "init-webui.sh"
+    if not script.exists():
+        _err(f"init-webui.sh not found at {script}")
+        return EXIT_USER_ERROR
+    result = subprocess.run([str(script)], capture_output=False)
+    return EXIT_OK if result.returncode == 0 else EXIT_BACKEND_ERROR
+
+
+def cmd_webui_reset(args: argparse.Namespace) -> int:
+    """Nuke Open WebUI's data volume (accounts, chat history, settings).
+    Stops the container first, wipes the volume contents, restarts.
+    Bind-mount data at the device path is wiped too — this is destructive."""
+    if not args.yes:
+        _err("This will permanently delete all Open WebUI accounts, chats, and settings.")
+        _err("Re-run with --yes to confirm.")
+        return EXIT_USER_ERROR
+    print("Stopping open-webui...")
+    subprocess.run(["docker", "compose", "stop", "open-webui"], capture_output=True)
+    print("Wiping llmc-webui-data contents...")
+    subprocess.run([
+        "docker", "run", "--rm", "-v", "llmc-webui-data:/data",
+        "alpine", "sh", "-c", "rm -rf /data/*",
+    ], capture_output=False)
+    print("Done. Run `llmc up` to restart with a clean WebUI.")
+    return EXIT_OK
+
+
+# ── ComfyUI helpers ───────────────────────────────────────────────────
+
+
+def cmd_comfyui_open(args: argparse.Namespace) -> int:
+    """Print the ComfyUI URL (auto-spawning the service if needed)."""
+    client = ProxyClient()
+    if not client.reachable():
+        _err(f"Proxy not reachable at {client.host}:{client.port}")
+        return EXIT_TRANSIENT
+    current = client._request("GET", "/mode")[1].get("mode")
+    if current != "comfyui":
+        if args.no_swap:
+            _err(f"Current mode is {current!r}, not comfyui.")
+            _err("Run `llmc mode comfyui` first or omit --no-swap.")
+            return EXIT_TRANSIENT
+        print(f"Switching mode {current} -> comfyui...")
+        status, payload = client.set_mode("comfyui")
+        if status != 200:
+            _err(f"Mode switch failed: {payload}")
+            return EXIT_BACKEND_ERROR
+    print("ComfyUI:  http://127.0.0.1:8188  (direct, supports websocket previews)")
+    print("Through proxy:  http://127.0.0.1:11434/comfyui/  (HTTP-only)")
+    return EXIT_OK
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """First-time setup: generate .env if missing, create volumes."""
     print("Generating .env (if missing)...")
@@ -925,6 +986,26 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("setup", help="first-time setup: create volumes")
     sp.set_defaults(func=cmd_setup)
 
+    # Open WebUI helpers
+    webui = sub.add_parser("webui", help="Open WebUI: configure, reset")
+    webui_sub = webui.add_subparsers(dest="webui_command", metavar="<subcommand>")
+    wp = webui_sub.add_parser("configure",
+                              help="import workspace models from webui/models.json")
+    wp.set_defaults(func=cmd_webui_configure)
+    wp = webui_sub.add_parser("reset",
+                              help="DESTRUCTIVE: nuke webui data volume (accounts, chats)")
+    wp.add_argument("--yes", action="store_true", help="skip confirmation")
+    wp.set_defaults(func=cmd_webui_reset)
+
+    # ComfyUI helpers
+    comfy = sub.add_parser("comfyui", help="ComfyUI helpers")
+    comfy_sub = comfy.add_subparsers(dest="comfyui_command", metavar="<subcommand>")
+    cp = comfy_sub.add_parser("open",
+                              help="print ComfyUI URL (auto-switching to comfyui mode)")
+    cp.add_argument("--no-swap", action="store_true",
+                    help="fail if not already in comfyui mode")
+    cp.set_defaults(func=cmd_comfyui_open)
+
     # Training (proxies to /train/* on the proxy — needs train mode active)
     train = sub.add_parser("train", help="LoRA training: status, logs, deploy, ...")
     train_sub = train.add_subparsers(dest="train_command", metavar="<subcommand>")
@@ -1022,6 +1103,8 @@ _SUB_GROUPS = {
     "volumes": "volumes_command",
     "train": "train_command",
     "dataset": "dataset_command",
+    "webui": "webui_command",
+    "comfyui": "comfyui_command",
 }
 
 
