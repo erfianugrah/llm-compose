@@ -60,11 +60,13 @@ services:
         max-size: "10m"
         max-file: "3"
     networks:
-      llmc:
-        # Static IP so Open WebUI can use it directly via env var
-        # without depending on Docker's embedded DNS (which sometimes
-        # flakes during stack restart).
-        ipv4_address: 172.29.0.4
+      - llmc
+    # Note: previously pinned to a static IP (172.29.0.4) so the WebUI's
+    # env-baked URL didn't depend on Docker's embedded DNS. With the v2
+    # network isolated from other stacks, DNS resolves consistently —
+    # the WebUI just uses http://model-proxy:11434 by hostname. If DNS
+    # ever flakes (e.g. external networks attached via overlay), reinstate
+    # the static IP and update OPENAI_API_BASE_URL / COMFYUI_BASE_URL.
 
   # ── Chat UI ────────────────────────────────────────────────────────
   # Open WebUI's image is built to run as UID 1000. We set user
@@ -80,10 +82,10 @@ services:
       DATA_DIR: /app/backend/data
       # Open WebUI → proxy → llama-server. Image gen also routes through
       # the proxy at /comfyui/* so it triggers a GPU mode swap on demand.
-      OPENAI_API_BASE_URL: http://172.29.0.4:11434/v1
+      OPENAI_API_BASE_URL: http://model-proxy:11434/v1
       OPENAI_API_KEY: not-needed
       OLLAMA_BASE_URL: ""
-      COMFYUI_BASE_URL: http://172.29.0.4:11434/comfyui/
+      COMFYUI_BASE_URL: http://model-proxy:11434/comfyui/
       ENABLE_IMAGE_GENERATION: "true"
       IMAGE_GENERATION_ENGINE: comfyui
       # Branding + behaviour

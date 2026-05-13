@@ -106,10 +106,12 @@ class OrchestratorError(RuntimeError):
 def _llama_command() -> str:
     """The shell command that the llama-server container runs.
 
-    This is identical to the long inline command in the legacy compose.yaml.
-    Kept here so the orchestrator can pass it without modifying the image.
-    Once Phase 7 bakes this into the image's ENTRYPOINT, this can be deleted
-    and `command=None` will use the image default.
+    Same logic as llama-server-entrypoint.sh which lives in the image.
+    Kept as a fallback for backwards compatibility with images built
+    before that script was added (pre-Phase 7). Once every machine in
+    your fleet has rebuilt llama-server, this function and spawn_llama's
+    entrypoint+command overrides can be removed, since the image's
+    ENTRYPOINT script does the same thing from env vars alone.
     """
     return r"""
 if [ -f "/models/${MODEL_FILE}" ]; then
@@ -261,11 +263,12 @@ class Orchestrator:
         """Start llama-server with the given preset. Existing GPU services
         are stopped first.
 
-        Note: command is passed as a single-element list, not a bare string.
-        Docker SDK shlex-splits string commands at whitespace, which mangles
-        the multi-line bash script. Wrapping in [] yields Cmd=[<script>]
-        on the engine, which is what `entrypoint=["/bin/sh", "-c"]` consumes.
-        """
+        Currently passes the command inline (entrypoint=/bin/sh -c + command
+        = the script string) for backwards compatibility with llama-server
+        images built before Phase 7's entrypoint script. Once the image at
+        ``cuda12.8-sm120`` is rebuilt with llama-server-entrypoint.sh baked
+        in, the entrypoint+command overrides can be dropped — the image
+        handles it. See _llama_command's docstring."""
         return self.spawn(
             LLAMA_SERVICE,
             environment=preset_to_env(preset),

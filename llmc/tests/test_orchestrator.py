@@ -56,6 +56,13 @@ class TestServiceDefinitions(unittest.TestCase):
 
 
 class TestLlamaCommand(unittest.TestCase):
+    """The orchestrator's inline llama-server command builder.
+
+    Backwards-compatible fallback until every llama-server image in the
+    fleet is rebuilt with llama-server-entrypoint.sh baked in. Phase 7
+    introduced the baked-in script; this inline command duplicates the
+    same logic so old images still work."""
+
     def test_command_uses_model_args(self):
         cmd = _llama_command()
         self.assertIn("MODEL_FILE", cmd)
@@ -68,6 +75,49 @@ class TestLlamaCommand(unittest.TestCase):
         for flag in ("--port 8080", "--host 0.0.0.0", "-ngl 99", "--flash-attn on",
                      "-ctk q8_0", "-ctv q8_0", "--metrics"):
             self.assertIn(flag, cmd, f"missing {flag!r} in llama command")
+
+
+class TestLlamaEntrypointScript(unittest.TestCase):
+    """The llama-server image's ENTRYPOINT script (Phase 7). Lives at
+    repo root so we can validate its contents without building the image.
+
+    When this script is baked into the image, the orchestrator's inline
+    _llama_command can be removed (env vars alone suffice)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = (Path(__file__).resolve().parent.parent.parent
+                      / "llama-server-entrypoint.sh").read_text()
+
+    def test_script_handles_local_vs_hf_model(self):
+        self.assertIn("/models/${MODEL_FILE}", self.script)
+        self.assertIn("--hf-repo", self.script)
+        self.assertIn("--hf-file", self.script)
+
+    def test_script_has_required_flags(self):
+        for flag in ("--port 8080", "--host 0.0.0.0", "-ngl 99", "--flash-attn on",
+                     "-ctk q8_0", "-ctv q8_0", "--metrics", "--jinja"):
+            self.assertIn(flag, self.script, f"missing {flag!r} in entrypoint script")
+
+    def test_script_uses_optional_flag_syntax_for_overrides(self):
+        # ${VAR:+--flag $VAR} pattern — flag only included if VAR is set
+        for var in ("MMPROJ_FILE", "TEMPLATE_FILE", "REASONING",
+                    "MIN_P", "PRESENCE_PENALTY", "REPEAT_PENALTY"):
+            self.assertIn(f"${{{var}:+", self.script,
+                          f"missing optional-flag handling for {var}")
+
+    def test_script_and_inline_command_agree_on_flags(self):
+        """The inline _llama_command (orchestrator fallback) and the baked
+        script must use the same llama-server flags. If you change one,
+        change the other or they'll drift."""
+        cmd = _llama_command()
+        # Both should have the same fixed flags. Optional flag syntax
+        # differs slightly (script uses quoted vars) so we only check
+        # the parts that must match.
+        for flag in ("-ngl 99", "--flash-attn on", "-ctk q8_0",
+                     "-ctv q8_0", "--metrics", "--jinja"):
+            self.assertIn(flag, cmd)
+            self.assertIn(flag, self.script)
 
 
 @unittest.skipUnless(HAS_DOCKER, "docker SDK not installed; pip install docker")
