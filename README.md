@@ -35,6 +35,17 @@ make build    # build / pull all images (or `make pull` to use the registry)
 make up       # start proxy + Open WebUI
 ```
 
+Add the `bin/` wrapper to your PATH so the `llmc` CLI is usable from
+anywhere:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export PATH="$HOME/llm-compose/bin:$PATH"
+```
+
+Without it, every `llmc <command>` in these docs reads as
+`python3 -m llmc <command>` from the repo root.
+
 Chat UI: <http://localhost:3000>
 LLM API: <http://localhost:11434/v1>
 ComfyUI: <http://localhost:8188> (when ComfyUI mode is active)
@@ -47,9 +58,8 @@ llmc models                # list available presets
 llmc status                # show what's running
 ```
 
-All commands live behind `python3 -m llmc <subcommand>`. Run
-`python3 -m llmc --help` for the full surface, or `make help` for the
-operational shortcuts that go through `make`.
+`make help` lists the operational shortcuts that go through `make`.
+`llmc --help` lists the full CLI surface.
 
 ## Concepts
 

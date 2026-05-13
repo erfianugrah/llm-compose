@@ -8,8 +8,10 @@ container lifecycle via the Docker SDK.
 ## Commands
 
 ```bash
-# Operator UX: `llmc <cmd>` for everything dynamic, `make <target>` for shortcuts
-python3 -m llmc --help
+# Operator UX: `llmc <cmd>` for everything dynamic, `make <target>` for shortcuts.
+# bin/llmc is a wrapper that sets PYTHONPATH so the CLI works from any cwd.
+# Add to PATH:  export PATH="$HOME/llm-compose/bin:$PATH"
+llmc --help                # or: python3 -m llmc --help
 
 # Stack lifecycle
 make setup              # one-time: .env + create named volumes

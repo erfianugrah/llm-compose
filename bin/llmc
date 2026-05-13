@@ -1,0 +1,16 @@
+#!/bin/sh
+# llmc — operator CLI launcher.
+#
+# Add this directory to PATH so `llmc <command>` works from anywhere:
+#
+#     export PATH="$HOME/llm-compose/bin:$PATH"
+#
+# (Drop into ~/.zshrc or ~/.bashrc.)
+#
+# The wrapper sets PYTHONPATH so `python3 -m llmc` finds the package
+# regardless of where you cd'd to. The llmc.cli module itself resolves
+# paths (volumes.toml, models/*.toml) relative to the package location,
+# not the cwd, so commands work from any directory.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec env PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m llmc "$@"
