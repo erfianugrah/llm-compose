@@ -1,0 +1,27 @@
+name = "Qwen3.6 35B MoE — coding, vision, thinking, fast"
+description = """
+Qwen3.6 35B-A3B MoE — agentic coding, thinking mode, vision support.
+~22.1 GB model (UD-Q4_K_M). ~3B active params per token.
+Best for: agentic coding, frontend workflows, repo-level reasoning, tool use.
+
+presence_penalty=1.5 is Qwen3.6 recommended value for general thinking mode —
+required to prevent degenerate repetition loops (see model card).
+"""
+vram_gb = 22.0
+
+[model]
+repo = "unsloth/Qwen3.6-35B-A3B-GGUF"
+file = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+
+[mmproj]
+url = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/mmproj-BF16.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 163840
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+repeat_penalty = 1.0
