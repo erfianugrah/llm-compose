@@ -231,7 +231,12 @@ def load_preset(path: Path) -> Preset:
 
 def load_all(presets_dir: Path) -> dict[str, Preset]:
     """Load all *.toml files from `presets_dir`. Indexed by model_id
-    (GGUF filename minus .gguf) for OpenAI-API compatibility."""
+    (GGUF filename minus .gguf) for OpenAI-API compatibility.
+
+    Raises PresetError if `presets_dir` doesn't exist — silently returning
+    an empty dict from a missing directory was a footgun in early v2."""
+    if not presets_dir.is_dir():
+        raise PresetError(f"presets directory not found: {presets_dir}")
     presets: dict[str, Preset] = {}
     for path in sorted(presets_dir.glob("*.toml")):
         preset = load_preset(path)
