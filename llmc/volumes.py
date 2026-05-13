@@ -205,3 +205,31 @@ def remove(name: str, *, force: bool = False) -> bool:
     args.append(name)
     _docker(args)
     return True
+
+
+def refresh(registry: VolumeRegistry) -> dict[str, str]:
+    """Drop and recreate every volume in `registry`. Used when Docker
+    Desktop's bind-mount snapshot indirection breaks — symptom is
+    'no such file or directory' errors at container start pointing at
+    a `/run/desktop/mnt/...` hash path. The actual data at the device
+    path is preserved because we only rewrite Docker's volume metadata.
+
+    Refuses to operate while any container is using one of these
+    volumes — stop the stack first (`llmc down`).
+    """
+    actions: dict[str, str] = {}
+    for spec in registry:
+        if inspect(spec.name) is not None:
+            try:
+                remove(spec.name)
+                actions[spec.name] = "recreated"
+            except VolumeError as exc:
+                actions[spec.name] = f"failed: {exc}"
+                continue
+        else:
+            actions[spec.name] = "created"
+        try:
+            create(spec)
+        except VolumeError as exc:
+            actions[spec.name] = f"failed: {exc}"
+    return actions

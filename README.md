@@ -297,6 +297,7 @@ backed by the same bind paths, no copying needed.
 | `VRAM exceeded` error | Preset's vram_gb > LIMIT−RESERVE budget |
 | Open WebUI port 3000 in use | `WEBUI_PORT=3001` in `.env`, restart |
 | ComfyUI UI not reachable on :8188 | Only bound when comfyui mode is active |
+| Container start fails with `no such file or directory` for a path under `/run/desktop/mnt/.../docker-desktop-bind-mounts/` | Docker Desktop's bind-mount snapshot is stale (volumes were created against a path that's since been reorganised). `llmc down && llmc volumes refresh && llmc up`. Data is preserved — only Docker's volume metadata is rewritten. |
 
 `docker logs model_proxy --tail 50` is the first thing to check on any
 weirdness — the proxy logs every mode swap and error.

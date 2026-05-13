@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from llmc.presets import PresetError, load_all
-from llmc.volumes import VolumeError, create_all, inspect, load as load_volumes
+from llmc.volumes import VolumeError, create_all, inspect, load as load_volumes, refresh as refresh_volumes
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -379,6 +379,43 @@ def cmd_volumes_create(args: argparse.Namespace) -> int:
         for name in sorted(actions):
             print(f"  {actions[name]:<8} {name}")
     return EXIT_OK
+
+
+def cmd_volumes_refresh(args: argparse.Namespace) -> int:
+    """Drop and recreate every named volume. Use this when Docker Desktop's
+    bind-mount snapshot indirection goes stale (symptom: 'no such file or
+    directory' for paths under /run/desktop/mnt/.../docker-desktop-bind-mounts/).
+
+    Container data is preserved — only Docker's volume metadata is rewritten.
+    The stack must be down first."""
+    if not _docker_available():
+        _err("`docker` CLI not found in PATH")
+        return EXIT_USER_ERROR
+    # Refuse to clobber while containers are using the volumes
+    in_use = subprocess.run(
+        ["docker", "ps", "-q", "--filter", "label=llmc.mode"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    proxy_running = subprocess.run(
+        ["docker", "ps", "-q", "--filter", "name=model_proxy", "--filter", "name=open_webui"],
+        capture_output=True, text=True,
+    ).stdout.split()
+    if in_use or proxy_running:
+        _err("stack is up — stop it first: llmc down")
+        return EXIT_USER_ERROR
+    try:
+        registry = load_volumes(DEFAULT_VOLUMES_TOML)
+        actions = refresh_volumes(registry)
+    except VolumeError as exc:
+        _err(f"Volume operation failed: {exc}")
+        return EXIT_BACKEND_ERROR
+    if args.json:
+        _print_json(actions)
+    else:
+        for name in sorted(actions):
+            print(f"  {actions[name]:<10} {name}")
+    failed = [n for n, a in actions.items() if a.startswith("failed")]
+    return EXIT_OK if not failed else EXIT_BACKEND_ERROR
 
 
 def cmd_volumes_shell(args: argparse.Namespace) -> int:
@@ -969,6 +1006,9 @@ def _build_parser() -> argparse.ArgumentParser:
     vp.set_defaults(func=cmd_volumes_ls)
     vp = vol_sub.add_parser("create", help="create all volumes (idempotent)")
     vp.set_defaults(func=cmd_volumes_create)
+    vp = vol_sub.add_parser("refresh",
+                            help="drop+recreate all volumes (Docker Desktop snapshot fix)")
+    vp.set_defaults(func=cmd_volumes_refresh)
     vp = vol_sub.add_parser("shell", help="open busybox with all volumes mounted at /vol/*")
     vp.set_defaults(func=cmd_volumes_shell)
 
