@@ -1,4 +1,4 @@
-"""Proxy state — persisted to the llmc-state named volume.
+"""Proxy state — persisted to the llmc-state bind path.
 
 The proxy keeps a small amount of mutable state on disk so that:
     1. A proxy restart recovers the active mode + model without an
@@ -7,8 +7,8 @@ The proxy keeps a small amount of mutable state on disk so that:
        hitting the proxy HTTP endpoint
     3. Operators can inspect / reset state with `cat` / `rm`
 
-State lives at /state/active.toml inside the proxy container, which is
-the llmc-state named volume on the host. Schema:
+State lives at /state/active.toml inside the proxy container — bind-mounted
+from $HOME/docker-volumes/state on the host (see volumes.toml). Schema:
 
     mode = "llm"            # "llm" | "comfyui" | "train" | "idle"
     model = "qwen36"        # Active preset name (only set when mode = "llm")

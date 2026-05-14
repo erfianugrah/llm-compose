@@ -131,7 +131,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(ns.preset, "qwen36")
 
     def test_volumes_subcommands(self):
-        for sub in ("ls", "create", "shell"):
+        for sub in ("ls", "ensure", "shell"):
             ns = self.parser.parse_args(["volumes", sub])
             self.assertEqual(ns.command, "volumes")
             self.assertEqual(ns.volumes_command, sub)
@@ -279,23 +279,20 @@ class TestModeCommand(unittest.TestCase):
 
 class TestVolumesCommand(unittest.TestCase):
     def test_volumes_ls_no_json(self):
-        # Falls back gracefully even without docker because we just inspect
-        # one at a time; the load of volumes.toml is the main work
+        # `volumes ls` walks the host paths from volumes.toml — no Docker
+        # required after the migration to direct binds.
         with _capture() as (out, _):
             rc = main(["volumes", "ls"])
         self.assertEqual(rc, EXIT_OK)
-        # Should show the 12 volumes from volumes.toml
+        # Should show the volumes declared in volumes.toml
         for name in ("llmc-state", "llmc-llama-models", "llmc-comfyui-models"):
             self.assertIn(name, out.getvalue())
 
-    def test_volumes_refresh_refuses_when_stack_up(self):
-        """Refresh would clobber volumes in use — must refuse cleanly."""
-        # Mock docker ps to claim the proxy is running. We can't easily mock
-        # subprocess.run inside the cmd, so just verify the command exists
-        # and parses (argparse coverage). Real behaviour is tested manually.
+    def test_volumes_ensure_parses(self):
+        """`volumes ensure` replaces the old `create`/`refresh` pair."""
         parser = _build_parser()
-        ns = parser.parse_args(["volumes", "refresh"])
-        self.assertEqual(ns.volumes_command, "refresh")
+        ns = parser.parse_args(["volumes", "ensure"])
+        self.assertEqual(ns.volumes_command, "ensure")
 
 
 class TestTrainCommands(unittest.TestCase):

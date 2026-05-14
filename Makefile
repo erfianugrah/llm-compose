@@ -36,14 +36,14 @@ TRAIN_IMAGE   := erfianugrah/lora-train:latest
 setup:
 	@$(LLMC) setup
 
-## Start proxy + Open WebUI. Pre-flights .env and volumes existence so the
+## Start proxy + Open WebUI. Pre-flights .env and bind directories so the
 ## error message points at `make setup` instead of compose's cryptic
-## "external volume not found" / "${WEBUI_SECRET_KEY:?...}".
+## "${WEBUI_SECRET_KEY:?...}" or a daemon-side "source path not found".
 up:
 	@if [ ! -f .env ]; then \
 		echo "Missing .env. Run: make setup"; exit 1; fi
-	@if ! docker volume inspect llmc-state >/dev/null 2>&1; then \
-		echo "Named volumes not created. Run: make setup"; exit 1; fi
+	@if [ ! -d $$HOME/docker-volumes/state ]; then \
+		echo "Bind directories not created. Run: make setup"; exit 1; fi
 	docker compose up -d
 	@echo "Stack ready. Proxy at http://localhost:11434"
 
@@ -70,11 +70,12 @@ status:
 shell:
 	@$(LLMC) volumes shell
 
-## Stop the stack and remove named volumes (preserves bind-mount data
-## at the device path — your GGUFs / LoRAs / WebUI DB stay on disk)
+## Stop the stack. The bind directories at $HOME/docker-volumes/* keep
+## your GGUFs / LoRAs / WebUI DB on disk — `make down` doesn't touch them.
+## To wipe a specific subdir (e.g. WebUI accounts): `llmc webui reset --yes`.
 clean: down
-	@echo "Removing llmc-* named volumes (bind-mount data preserved)..."
-	@docker volume ls -q --filter "name=llmc-" | xargs -r docker volume rm
+	@echo "Stack stopped. Bind data at $$HOME/docker-volumes/ preserved."
+	@echo "To wipe specific data: rm -rf $$HOME/docker-volumes/<name>"
 
 # ── Logs (pure docker, no Python startup) ───────────────────────────
 

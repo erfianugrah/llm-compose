@@ -1,8 +1,8 @@
 """Tests for llmc.volumes.
 
-Pure-schema tests run without Docker. Integration tests that actually call
-`docker volume create` are gated behind LLMC_TEST_DOCKER=1 so CI without
-Docker can still validate the schema.
+Pure-schema tests run without Docker. Filesystem integration tests use a
+tempdir — no Docker daemon required (the migration to direct binds means
+this module no longer talks to Docker at all).
 """
 
 from __future__ import annotations
@@ -17,11 +17,9 @@ from llmc.volumes import (
     VolumeError,
     VolumeRegistry,
     VolumeSpec,
-    create,
-    create_all,
-    inspect,
+    ensure,
+    ensure_all,
     load,
-    remove,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -29,12 +27,12 @@ VOLUMES_TOML = REPO_ROOT / "volumes.toml"
 
 
 class TestVolumeLoading(unittest.TestCase):
-    """Schema validation. Doesn't touch Docker."""
+    """Schema validation. Doesn't touch the filesystem (beyond reading TOML)."""
 
     def test_load_repo_volumes_toml(self):
         registry = load(VOLUMES_TOML)
         self.assertGreater(len(registry.volumes), 0)
-        # Sanity-check well-known volume names that the proxy depends on
+        # Sanity-check well-known names that the proxy + compose depend on
         for required in (
             "llmc-state",
             "llmc-llama-models",
@@ -59,6 +57,15 @@ class TestVolumeLoading(unittest.TestCase):
             str(state.device).startswith(str(home)),
             f"expected llmc-state under {home}, got {state.device}",
         )
+
+    def test_device_for_lookup(self):
+        """Registry.device_for() returns the host path for a known name
+        and raises VolumeError on unknown names."""
+        registry = load(VOLUMES_TOML)
+        path = registry.device_for("llmc-state")
+        self.assertEqual(path, registry.volumes["llmc-state"].device)
+        with self.assertRaises(VolumeError):
+            registry.device_for("does-not-exist")
 
     def _check_rejected(self, content: str, expect_substring: str) -> None:
         with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
@@ -127,50 +134,53 @@ class TestVolumeLoading(unittest.TestCase):
             path.unlink()
 
 
-@unittest.skipUnless(
-    os.environ.get("LLMC_TEST_DOCKER") == "1",
-    "Set LLMC_TEST_DOCKER=1 to run Docker integration tests",
-)
-class TestDockerIntegration(unittest.TestCase):
-    """End-to-end with real Docker volume create/remove. Idempotent."""
-
-    TEST_VOLUME = "llmc-test-volume-pleasedelete"
+class TestEnsure(unittest.TestCase):
+    """Host directory creation. Filesystem only, no Docker."""
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp(prefix="llmc-vol-test-"))
-        self.spec = VolumeSpec(name=self.TEST_VOLUME, device=self.tmpdir)
-        # Always start clean
-        remove(self.TEST_VOLUME, force=True)
 
     def tearDown(self):
-        remove(self.TEST_VOLUME, force=True)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_create_inspect_remove_roundtrip(self):
-        action = create(self.spec)
-        self.assertEqual(action, "created")
-        info = inspect(self.TEST_VOLUME)
-        self.assertIsNotNone(info)
-        self.assertEqual(
-            info["Options"]["device"],
-            str(self.tmpdir),
-        )
-        # Idempotent — same spec returns "exists"
-        action2 = create(self.spec)
-        self.assertEqual(action2, "exists")
-        self.assertTrue(remove(self.TEST_VOLUME))
-        self.assertIsNone(inspect(self.TEST_VOLUME))
+    def test_ensure_creates_missing_directory(self):
+        target = self.tmpdir / "fresh"
+        spec = VolumeSpec(name="test-fresh", device=target)
+        self.assertFalse(target.exists())
+        self.assertEqual(ensure(spec), "created")
+        self.assertTrue(target.is_dir())
 
-    def test_conflict_on_different_device(self):
-        create(self.spec)
-        other = tempfile.mkdtemp(prefix="llmc-vol-other-")
-        try:
-            conflicting = VolumeSpec(name=self.TEST_VOLUME, device=Path(other))
-            with self.assertRaises(VolumeError) as ctx:
-                create(conflicting)
-            self.assertIn("already exists but points to", str(ctx.exception))
-        finally:
-            shutil.rmtree(other, ignore_errors=True)
+    def test_ensure_idempotent_on_existing(self):
+        target = self.tmpdir / "exists"
+        target.mkdir()
+        spec = VolumeSpec(name="test-exists", device=target)
+        self.assertEqual(ensure(spec), "exists")
+
+    def test_ensure_creates_nested_path(self):
+        target = self.tmpdir / "a" / "b" / "c"
+        spec = VolumeSpec(name="test-nested", device=target)
+        self.assertEqual(ensure(spec), "created")
+        self.assertTrue(target.is_dir())
+
+    def test_ensure_refuses_when_path_is_a_file(self):
+        target = self.tmpdir / "is-a-file"
+        target.write_text("hi")
+        spec = VolumeSpec(name="test-conflict", device=target)
+        with self.assertRaises(VolumeError) as ctx:
+            ensure(spec)
+        self.assertIn("not a directory", str(ctx.exception))
+
+    def test_ensure_all_returns_per_volume_actions(self):
+        a = self.tmpdir / "a"
+        b = self.tmpdir / "b"
+        a.mkdir()
+        registry = VolumeRegistry(volumes={
+            "test-a": VolumeSpec(name="test-a", device=a),
+            "test-b": VolumeSpec(name="test-b", device=b),
+        })
+        actions = ensure_all(registry)
+        self.assertEqual(actions, {"test-a": "exists", "test-b": "created"})
+        self.assertTrue(b.is_dir())
 
 
 if __name__ == "__main__":

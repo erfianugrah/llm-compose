@@ -3,8 +3,9 @@
 Requires:
     1. The v2 stack running (proxy at localhost:11434, network 'llmc')
     2. GPU available
-    3. gemma4 and qwen36 GGUFs already cached in llmc-llama-models volume
-       (or fast download bandwidth — these are 17-20 GB each)
+    3. gemma4 and qwen36 GGUFs already on disk under the llama-models
+       bind path (default: $HOME/docker-volumes/llama-server/models) —
+       these are 17-20 GB each.
 
 Gated behind LLMC_TEST_INTEGRATION=1 because each swap costs 30-60 s of
 real GPU + model-load time. Run manually:

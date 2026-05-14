@@ -1,26 +1,25 @@
-# Named Docker volume registry — single source of truth for volume paths.
+# Bind-mount path registry — single source of truth for the host directories
+# that compose + the orchestrator bind into containers.
 #
-# Each entry creates a named volume backed by a host directory using the
-# `local` driver with `o=bind`. This gives us:
+# This file replaces the old "named Docker volume" model. Previously each
+# entry created a Docker volume with `local` driver + `o=bind` indirection.
+# On Docker Desktop / WSL2 that indirection rots after every Docker Desktop
+# or WSL2 restart (Docker caches the bind through a hash path under
+# `/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/<distro>/<hash>`
+# which goes stale → "no such file or directory" at container start).
 #
-#   1. Compose YAML refers only to volume *names* — no ${HOST_PATH} interpolation
-#   2. Volumes are portable: same compose.yaml on different machines just
-#      requires creating the volumes against that machine's paths
-#   3. Existing data at the host paths is preserved — no copying or symlinks
-#   4. `ls ~/docker-volumes/...` still works on the host
+# Direct bind mounts have none of that fragility — the daemon resolves
+# host paths every time a container starts, no metadata, no cache.
 #
-# `root` is the default parent for every volume's bind path. Each volume's
-# `path` is relative to `root` unless it starts with `/` (absolute).
-# `${HOME}` and other env vars are expanded at registry load time.
+# `root` is the default parent. Each entry's `path` is relative to `root`
+# unless it starts with `/`. `${HOME}` and other env vars are expanded
+# at registry load time.
 #
-# Create / refresh all volumes:
-#     python3 -m llmc volumes create
+# Ensure all paths exist on disk:
+#     python3 -m llmc volumes ensure
 #
-# Inspect:
+# List paths + disk usage:
 #     python3 -m llmc volumes ls
-#
-# All bind-mount paths must exist on the host before the volume is used;
-# `python3 -m llmc volumes create` creates missing directories.
 
 root = "${HOME}/docker-volumes"
 
@@ -60,17 +59,17 @@ path = "comfyui/input"
 path = "comfyui/custom_nodes"
 
 [volumes.llmc-comfyui-user]
-# ComfyUI user data: saved workflows, settings
+# ComfyUI user data: workflows, settings, server state.
 path = "comfyui/user"
 
 [volumes.llmc-training-data]
-# LoRA training: datasets/, configs/, output/, raw/
+# LoRA-training: datasets, configs, captions, raw images, output adapters.
 path = "training-data"
 
 [volumes.llmc-webui-data]
-# Open WebUI: SQLite DB, accounts, chat history
+# Open WebUI state: SQLite DB, user accounts, chat history.
 path = "webui"
 
 [volumes.llmc-bench-cache]
-# bench-eval HuggingFace cache + datasets
-path = "bench-cache"
+# Benchmark eval outputs / cached runs.
+path = "bench/cache"

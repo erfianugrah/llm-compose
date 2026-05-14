@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from docker.models.containers import Container
 
 from llmc.presets import Preset, preset_to_env
+from llmc.volumes import VolumeRegistry
 
 
 # ── Service definitions ────────────────────────────────────────────────
@@ -110,18 +111,53 @@ class OrchestratorError(RuntimeError):
 
 
 class Orchestrator:
-    """High-level Docker operations for GPU service lifecycle."""
+    """High-level Docker operations for GPU service lifecycle.
+
+    `volumes` is the host-path registry loaded from volumes.toml. Spawn
+    methods reference volumes by logical name (e.g. `llmc-llama-models`);
+    the orchestrator resolves each name → host directory before passing
+    the bind dict to the Docker SDK. The Docker daemon binds host paths
+    directly into the new container (no Docker named-volume indirection).
+    """
 
     def __init__(
         self,
         client=None,
         network: str = DEFAULT_NETWORK,
+        volumes: Optional[VolumeRegistry] = None,
     ):
         if client is None:
             import docker
             client = docker.from_env()
         self.client = client
         self.network = network
+        self.volumes = volumes  # May be None for legacy callers / tests
+
+    # ── Volume name → host path resolution ─────────────────────────────
+
+    def _resolve_volumes(
+        self, mounts: dict[str, dict]
+    ) -> dict[str, dict]:
+        """Rewrite a `{logical_name: {bind, mode}}` dict into the host-path
+        form Docker expects for direct bind mounts: `{/host/path: {bind, mode}}`.
+
+        Without a registry the input is passed through unchanged so existing
+        tests that mock the SDK and inspect volume names keep working.
+        """
+        if self.volumes is None:
+            return mounts
+        resolved: dict[str, dict] = {}
+        for name, spec in mounts.items():
+            # Already a host path (starts with /) — pass through.
+            if name.startswith("/"):
+                resolved[name] = spec
+                continue
+            host = self.volumes.device_for(name)
+            # Daemon doesn't auto-create bind sources for safety; ensure
+            # the directory is on disk before the container references it.
+            host.mkdir(parents=True, exist_ok=True)
+            resolved[str(host)] = spec
+        return resolved
 
     # ── Mode introspection ─────────────────────────────────────────────
 
@@ -190,7 +226,7 @@ class Orchestrator:
             detach=True,
             network=self.network,
             environment=environment or {},
-            volumes=volumes or {},
+            volumes=self._resolve_volumes(volumes or {}),
             device_requests=[DeviceRequest(count=-1, capabilities=[["gpu"]])],
             shm_size=shm_size,
             restart_policy={"Name": "unless-stopped"},

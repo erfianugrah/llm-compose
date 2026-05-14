@@ -352,9 +352,12 @@ class TestBuildContext(unittest.TestCase):
             (state_dir / "active.toml").write_text(
                 'mode = "llm"\nmodel = "qwen36"\nupdated_at = 1000\n'
             )
+            # build_context loads volumes.toml — point at the repo's copy
+            # so the proxy can resolve logical volume names to host paths.
             config = ProxyConfig(
                 presets_dir=REPO_ROOT / "models",
                 state_dir=state_dir,
+                volumes_toml=REPO_ROOT / "volumes.toml",
             )
             # Patch the Orchestrator to avoid Docker
             with patch("llmc.proxy.Orchestrator") as MockOrch:
@@ -375,6 +378,7 @@ class TestBuildContext(unittest.TestCase):
             config = ProxyConfig(
                 presets_dir=REPO_ROOT / "models",
                 state_dir=state_dir,
+                volumes_toml=REPO_ROOT / "volumes.toml",
             )
             with patch("llmc.proxy.Orchestrator") as MockOrch:
                 MockOrch.return_value.current_mode.return_value = "idle"

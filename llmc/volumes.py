@@ -1,34 +1,40 @@
-"""Named Docker volume registry.
+"""Bind-mount path registry.
 
 Reads volumes.toml at repo root, validates the schema, and provides helpers
-to create/inspect named volumes backed by host bind mounts.
+to look up host paths and ensure their backing directories exist.
 
-Architecture note: this is the host-side admin layer. The proxy doesn't
-need to read volumes.toml at runtime — it just refers to volumes by name
-when spawning containers via the Docker SDK. The registry exists to:
+History: this module used to create Docker named volumes with `local` driver
++ `o=bind` indirection. That indirection rots on Docker Desktop / WSL2
+restart (the snapshot hash under `/run/desktop/mnt/host/wsl/docker-desktop-
+bind-mounts/<distro>/<hash>` goes stale). Direct bind mounts have no such
+fragility. The CLI surface (`llmc volumes ls`/`ensure`/`shell`) is preserved
+for muscle memory; `refresh` was a workaround for the rot bug and is gone.
 
-    1. Declaratively document which volumes the stack expects
-    2. Provide a `create-all` operation for first-time setup or new machines
-    3. Allow the same compose.yaml to work on any machine that's run
-       `llmc volumes create` against this file
+Architecture: this is the host-side admin layer. The proxy reads the same
+file at runtime (mounted at /volumes.toml) so it can pass host paths to
+the Docker SDK when spawning GPU service containers.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 
 class VolumeError(ValueError):
-    """Raised when volumes.toml fails validation or a docker command fails."""
+    """Raised when volumes.toml fails validation."""
 
 
 @dataclass(frozen=True)
 class VolumeSpec:
+    """Named bind-mount host path.
+
+    `name` is the logical handle used in code (and in `llmc volumes shell`
+    paths). `device` is the absolute host directory the name maps to.
+    """
+
     name: str
     device: Path  # Absolute host path (env-expanded)
 
@@ -39,7 +45,7 @@ class VolumeSpec:
 
 @dataclass(frozen=True)
 class VolumeRegistry:
-    """Parsed volumes.toml. Maps volume name → spec."""
+    """Parsed volumes.toml. Maps logical name → spec."""
 
     volumes: dict[str, VolumeSpec]
 
@@ -49,6 +55,16 @@ class VolumeRegistry:
     def __iter__(self):
         for name in self.names():
             yield self.volumes[name]
+
+    def get(self, name: str) -> VolumeSpec | None:
+        return self.volumes.get(name)
+
+    def device_for(self, name: str) -> Path:
+        """Look up a host path by logical name. Raises if unknown."""
+        spec = self.volumes.get(name)
+        if spec is None:
+            raise VolumeError(f"unknown volume {name!r}")
+        return spec.device
 
 
 _TOP_LEVEL_KEYS = {"root", "volumes"}
@@ -112,7 +128,12 @@ def load(path: Path) -> VolumeRegistry:
 
 
 def _is_valid_volume_name(name: str) -> bool:
-    """Docker volume names: [a-zA-Z0-9][a-zA-Z0-9_.-]*"""
+    """Valid logical names: [a-zA-Z0-9][a-zA-Z0-9_.-]*
+
+    We keep Docker's volume-name grammar for back-compat — these names are
+    still used in `llmc volumes shell` mount paths and elsewhere where
+    a stable, filesystem-safe identifier is needed.
+    """
     if not name:
         return False
     if not (name[0].isalnum()):
@@ -120,116 +141,25 @@ def _is_valid_volume_name(name: str) -> bool:
     return all(c.isalnum() or c in "_.-" for c in name)
 
 
-# ── Docker CLI integration ───────────────────────────────────────────
+# ── Host directory ensure ────────────────────────────────────────────
 
 
-def _docker(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
-    """Run `docker <args>`. Raises VolumeError on non-zero exit if check=True."""
-    try:
-        result = subprocess.run(
-            ["docker", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise VolumeError("`docker` CLI not found in PATH") from exc
-    if check and result.returncode != 0:
-        raise VolumeError(
-            f"docker {' '.join(args)} failed:\n{result.stderr.strip()}"
-        )
-    return result
-
-
-def inspect(name: str) -> dict | None:
-    """Return docker volume metadata or None if the volume doesn't exist."""
-    result = _docker(["volume", "inspect", name], check=False)
-    if result.returncode != 0:
-        return None
-    payload = json.loads(result.stdout)
-    return payload[0] if payload else None
-
-
-def create(spec: VolumeSpec, *, ensure_dir: bool = True) -> str:
-    """Create a named volume backed by `spec.device`. Idempotent: if a volume
-    with this name already exists and points to the same device, returns
-    'exists'. If it exists with a different device, raises VolumeError so
-    the operator can decide whether to migrate.
-
-    `ensure_dir=True` creates the host directory if missing.
-    """
-    if ensure_dir:
-        spec.device.mkdir(parents=True, exist_ok=True)
-
-    existing = inspect(spec.name)
-    if existing is not None:
-        existing_device = (existing.get("Options") or {}).get("device", "")
-        if existing_device == spec.device_str:
-            return "exists"
-        raise VolumeError(
-            f"volume {spec.name!r} already exists but points to "
-            f"{existing_device!r}, not {spec.device_str!r}. "
-            f"Run `docker volume rm {spec.name}` to recreate "
-            f"(no data lost — bind-mount data lives at the device path)."
-        )
-
-    _docker([
-        "volume", "create",
-        "--driver", "local",
-        "--opt", "type=none",
-        "--opt", "o=bind",
-        "--opt", f"device={spec.device_str}",
-        spec.name,
-    ])
+def ensure(spec: VolumeSpec) -> str:
+    """Create the host directory if missing. Returns 'created' or 'exists'."""
+    if spec.device.exists():
+        if not spec.device.is_dir():
+            raise VolumeError(
+                f"{spec.name}: {spec.device} exists but is not a directory"
+            )
+        return "exists"
+    spec.device.mkdir(parents=True, exist_ok=True)
     return "created"
 
 
-def create_all(registry: VolumeRegistry, *, ensure_dir: bool = True) -> dict[str, str]:
-    """Create every volume in the registry. Returns {name: action} where
-    action is 'created' or 'exists'. Raises on first conflict."""
+def ensure_all(registry: VolumeRegistry) -> dict[str, str]:
+    """Ensure every host directory in the registry exists. Returns
+    {name: 'created' | 'exists'}. Raises VolumeError on first conflict."""
     actions: dict[str, str] = {}
     for spec in registry:
-        actions[spec.name] = create(spec, ensure_dir=ensure_dir)
-    return actions
-
-
-def remove(name: str, *, force: bool = False) -> bool:
-    """Remove a named volume. Returns True if it existed and was removed.
-    Bind-mount data is NOT deleted — the volume is just unregistered from
-    Docker; files at the device path remain."""
-    if inspect(name) is None:
-        return False
-    args = ["volume", "rm"]
-    if force:
-        args.append("--force")
-    args.append(name)
-    _docker(args)
-    return True
-
-
-def refresh(registry: VolumeRegistry) -> dict[str, str]:
-    """Drop and recreate every volume in `registry`. Used when Docker
-    Desktop's bind-mount snapshot indirection breaks — symptom is
-    'no such file or directory' errors at container start pointing at
-    a `/run/desktop/mnt/...` hash path. The actual data at the device
-    path is preserved because we only rewrite Docker's volume metadata.
-
-    Refuses to operate while any container is using one of these
-    volumes — stop the stack first (`llmc down`).
-    """
-    actions: dict[str, str] = {}
-    for spec in registry:
-        if inspect(spec.name) is not None:
-            try:
-                remove(spec.name)
-                actions[spec.name] = "recreated"
-            except VolumeError as exc:
-                actions[spec.name] = f"failed: {exc}"
-                continue
-        else:
-            actions[spec.name] = "created"
-        try:
-            create(spec)
-        except VolumeError as exc:
-            actions[spec.name] = f"failed: {exc}"
+        actions[spec.name] = ensure(spec)
     return actions

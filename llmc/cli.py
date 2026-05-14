@@ -10,7 +10,7 @@ is only required inside the proxy container.
 
 Subcommand groups:
     Core orchestration  status, health, mode, switch, models
-    Volumes             volumes ls, volumes create, volumes shell
+    Volumes             volumes ls, volumes ensure, volumes shell
     Stack lifecycle     up, down, logs, setup
     Training            train status, train logs, train cancel,
                         train list, train deploy, train cleanup
@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from llmc.presets import PresetError, load_all
-from llmc.volumes import VolumeError, create_all, inspect, load as load_volumes, refresh as refresh_volumes
+from llmc.volumes import VolumeError, ensure_all, load as load_volumes
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -336,10 +336,15 @@ def cmd_models(args: argparse.Namespace) -> int:
 
 
 # ── Volumes subcommands ─────────────────────────────────────────────────
+#
+# After the Docker-volume-to-direct-bind migration these commands operate
+# on host directories from volumes.toml, not on Docker named volumes.
+# The CLI noun ("volumes") is retained for muscle memory — each named
+# entry is still the logical handle for a container <-> host bind.
 
 
 def cmd_volumes_ls(args: argparse.Namespace) -> int:
-    """List named volumes from volumes.toml + their actual Docker state."""
+    """List bind-mount paths from volumes.toml + their on-disk state."""
     try:
         registry = load_volumes(DEFAULT_VOLUMES_TOML)
     except VolumeError as exc:
@@ -348,28 +353,48 @@ def cmd_volumes_ls(args: argparse.Namespace) -> int:
 
     rows = []
     for spec in registry:
-        info = inspect(spec.name) if _docker_available() else None
-        exists = "yes" if info is not None else "no"
-        actual = (info.get("Options") or {}).get("device", "") if info else ""
-        match = "✓" if actual == spec.device_str else ("✗" if actual else "-")
-        rows.append([spec.name, exists, match, spec.device_str])
+        if spec.device.exists() and spec.device.is_dir():
+            exists = "yes"
+            try:
+                size_bytes = sum(
+                    f.stat().st_size
+                    for f in spec.device.rglob("*")
+                    if f.is_file()
+                )
+                size_str = _fmt_bytes(size_bytes)
+            except (OSError, PermissionError):
+                size_str = "?"
+        else:
+            exists = "no"
+            size_str = "-"
+        rows.append([spec.name, exists, size_str, spec.device_str])
 
     if args.json:
         _print_json([{"name": r[0], "exists": r[1] == "yes",
-                      "device": r[3]} for r in rows])
+                      "size": r[2], "path": r[3]} for r in rows])
     else:
-        _print_table(["volume", "exists", "match", "device"], rows)
+        _print_table(["volume", "exists", "size", "path"], rows)
     return EXIT_OK
 
 
-def cmd_volumes_create(args: argparse.Namespace) -> int:
-    """Create all named volumes (idempotent)."""
-    if not _docker_available():
-        _err("`docker` CLI not found in PATH")
-        return EXIT_USER_ERROR
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size. K/M/G/T base-1024 like `ls -h`."""
+    for unit in ("B", "K", "M", "G", "T"):
+        if n < 1024:
+            return f"{n:.1f}{unit}" if unit != "B" else f"{n}{unit}"
+        n /= 1024
+    return f"{n:.1f}P"
+
+
+def cmd_volumes_ensure(args: argparse.Namespace) -> int:
+    """Create any missing host directories from volumes.toml. Idempotent.
+
+    Replaces the old `volumes create` (which created Docker named volumes
+    with bind indirection) — direct binds have no metadata, just need the
+    host directory to exist before a container references it."""
     try:
         registry = load_volumes(DEFAULT_VOLUMES_TOML)
-        actions = create_all(registry)
+        actions = ensure_all(registry)
     except VolumeError as exc:
         _err(f"Volume operation failed: {exc}")
         return EXIT_BACKEND_ERROR
@@ -381,45 +406,8 @@ def cmd_volumes_create(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_volumes_refresh(args: argparse.Namespace) -> int:
-    """Drop and recreate every named volume. Use this when Docker Desktop's
-    bind-mount snapshot indirection goes stale (symptom: 'no such file or
-    directory' for paths under /run/desktop/mnt/.../docker-desktop-bind-mounts/).
-
-    Container data is preserved — only Docker's volume metadata is rewritten.
-    The stack must be down first."""
-    if not _docker_available():
-        _err("`docker` CLI not found in PATH")
-        return EXIT_USER_ERROR
-    # Refuse to clobber while containers are using the volumes
-    in_use = subprocess.run(
-        ["docker", "ps", "-q", "--filter", "label=llmc.mode"],
-        capture_output=True, text=True,
-    ).stdout.split()
-    proxy_running = subprocess.run(
-        ["docker", "ps", "-q", "--filter", "name=model_proxy", "--filter", "name=open_webui"],
-        capture_output=True, text=True,
-    ).stdout.split()
-    if in_use or proxy_running:
-        _err("stack is up — stop it first: llmc down")
-        return EXIT_USER_ERROR
-    try:
-        registry = load_volumes(DEFAULT_VOLUMES_TOML)
-        actions = refresh_volumes(registry)
-    except VolumeError as exc:
-        _err(f"Volume operation failed: {exc}")
-        return EXIT_BACKEND_ERROR
-    if args.json:
-        _print_json(actions)
-    else:
-        for name in sorted(actions):
-            print(f"  {actions[name]:<10} {name}")
-    failed = [n for n, a in actions.items() if a.startswith("failed")]
-    return EXIT_OK if not failed else EXIT_BACKEND_ERROR
-
-
 def cmd_volumes_shell(args: argparse.Namespace) -> int:
-    """Open a busybox shell with every named volume mounted at /vol/<name>.
+    """Open a busybox shell with every bind-mount path mounted at /vol/<name>.
     Useful for poking around volume contents without spinning up a service."""
     if not _docker_available():
         _err("`docker` CLI not found in PATH")
@@ -432,7 +420,9 @@ def cmd_volumes_shell(args: argparse.Namespace) -> int:
 
     mount_args = []
     for spec in registry:
-        mount_args.extend(["-v", f"{spec.name}:/vol/{spec.name}"])
+        # Direct host-path bind: docker resolves -v /host:/container as a
+        # bind mount (vs. a named volume) because the source starts with /.
+        mount_args.extend(["-v", f"{spec.device_str}:/vol/{spec.name}"])
 
     cmd = [
         "docker", "run", "--rm", "-it",
@@ -442,7 +432,7 @@ def cmd_volumes_shell(args: argparse.Namespace) -> int:
         "alpine:latest",
         "/bin/sh",
     ]
-    print(f"# Mounting {len(registry.volumes)} volumes under /vol/")
+    print(f"# Mounting {len(registry.volumes)} bind paths under /vol/")
     # exec into docker — pass control to the user's tty
     os.execvp("docker", cmd)
     return EXIT_OK  # unreachable
@@ -452,11 +442,11 @@ def cmd_volumes_shell(args: argparse.Namespace) -> int:
 
 
 def cmd_up(args: argparse.Namespace) -> int:
-    """Start the stack: ensure .env + volumes, then `docker compose up -d`."""
+    """Start the stack: ensure .env + bind paths exist, then `docker compose up -d`."""
     rc = _ensure_env_file()
     if rc != EXIT_OK:
         return rc
-    rc = cmd_volumes_create(argparse.Namespace(json=False))
+    rc = cmd_volumes_ensure(argparse.Namespace(json=False))
     if rc != EXIT_OK:
         return rc
     result = _run_docker(["compose", "up", "-d"], capture=False)
@@ -653,17 +643,27 @@ def cmd_train_cleanup(args: argparse.Namespace) -> int:
 
 
 def cmd_train_deploy(args: argparse.Namespace) -> int:
-    """Copy a trained LoRA from llmc-training-data:output → llmc-comfyui-loras."""
+    """Copy a trained LoRA from training-data/output → comfyui/models/loras.
+
+    Uses direct host-path binds resolved from volumes.toml — no Docker
+    named volume indirection."""
     if not _docker_available():
         _err("`docker` CLI not found in PATH")
+        return EXIT_USER_ERROR
+    try:
+        registry = load_volumes(DEFAULT_VOLUMES_TOML)
+        src_path = registry.device_for("llmc-training-data")
+        dst_path = registry.device_for("llmc-comfyui-loras")
+    except VolumeError as exc:
+        _err(f"Failed to resolve bind paths: {exc}")
         return EXIT_USER_ERROR
     name = args.lora
     if not name.endswith(".safetensors"):
         name = f"{name}.safetensors"
     result = subprocess.run([
         "docker", "run", "--rm",
-        "-v", "llmc-training-data:/src:ro",
-        "-v", "llmc-comfyui-loras:/dst",
+        "-v", f"{src_path}:/src:ro",
+        "-v", f"{dst_path}:/dst",
         "alpine", "sh", "-c",
         f"if [ -f /src/output/{name} ]; then cp /src/output/{name} /dst/ && echo copied; "
         f"else echo 'not found: {name}'; ls /src/output/*.safetensors 2>/dev/null || true; exit 1; fi",
@@ -673,7 +673,7 @@ def cmd_train_deploy(args: argparse.Namespace) -> int:
         if result.stderr:
             _err(result.stderr.strip())
         return EXIT_BACKEND_ERROR
-    print(f"Deployed {name} to llmc-comfyui-loras")
+    print(f"Deployed {name} to {dst_path}")
     return EXIT_OK
 
 
@@ -880,18 +880,25 @@ def cmd_webui_configure(args: argparse.Namespace) -> int:
 
 
 def cmd_webui_reset(args: argparse.Namespace) -> int:
-    """Nuke Open WebUI's data volume (accounts, chat history, settings).
-    Stops the container first, wipes the volume contents, restarts.
-    Bind-mount data at the device path is wiped too — this is destructive."""
+    """Nuke Open WebUI's data directory (accounts, chat history, settings).
+    Stops the container first, wipes the host bind path, restarts.
+    This is destructive — bind-mount data is permanently deleted."""
     if not args.yes:
         _err("This will permanently delete all Open WebUI accounts, chats, and settings.")
         _err("Re-run with --yes to confirm.")
         return EXIT_USER_ERROR
+    try:
+        registry = load_volumes(DEFAULT_VOLUMES_TOML)
+        webui_path = registry.device_for("llmc-webui-data")
+    except VolumeError as exc:
+        _err(f"Failed to resolve webui bind path: {exc}")
+        return EXIT_USER_ERROR
     print("Stopping open-webui...")
     subprocess.run(["docker", "compose", "stop", "open-webui"], capture_output=True)
-    print("Wiping llmc-webui-data contents...")
+    print(f"Wiping {webui_path} contents...")
+    # Run inside a container so we can rm root-owned files without sudo.
     subprocess.run([
-        "docker", "run", "--rm", "-v", "llmc-webui-data:/data",
+        "docker", "run", "--rm", "-v", f"{webui_path}:/data",
         "alpine", "sh", "-c", "rm -rf /data/*",
     ], capture_output=False)
     print("Done. Run `llmc up` to restart with a clean WebUI.")
@@ -924,13 +931,13 @@ def cmd_comfyui_open(args: argparse.Namespace) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """First-time setup: generate .env if missing, create volumes."""
+    """First-time setup: generate .env if missing, create bind directories."""
     print("Generating .env (if missing)...")
     rc = _ensure_env_file()
     if rc != EXIT_OK:
         return rc
-    print("Creating named volumes from volumes.toml...")
-    rc = cmd_volumes_create(argparse.Namespace(json=False))
+    print("Ensuring host directories from volumes.toml exist...")
+    rc = cmd_volumes_ensure(argparse.Namespace(json=False))
     if rc != EXIT_OK:
         return rc
     print()
@@ -999,17 +1006,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("models", help="list available LLM presets")
     sp.set_defaults(func=cmd_models)
 
-    # Volumes
-    vol = sub.add_parser("volumes", help="manage named Docker volumes")
+    # Volumes (= bind-mount host paths from volumes.toml)
+    vol = sub.add_parser("volumes", help="manage bind-mount paths")
     vol_sub = vol.add_subparsers(dest="volumes_command", metavar="<subcommand>")
-    vp = vol_sub.add_parser("ls", help="list volumes from volumes.toml + their docker state")
+    vp = vol_sub.add_parser("ls", help="list bind paths from volumes.toml + disk usage")
     vp.set_defaults(func=cmd_volumes_ls)
-    vp = vol_sub.add_parser("create", help="create all volumes (idempotent)")
-    vp.set_defaults(func=cmd_volumes_create)
-    vp = vol_sub.add_parser("refresh",
-                            help="drop+recreate all volumes (Docker Desktop snapshot fix)")
-    vp.set_defaults(func=cmd_volumes_refresh)
-    vp = vol_sub.add_parser("shell", help="open busybox with all volumes mounted at /vol/*")
+    vp = vol_sub.add_parser("ensure", help="create any missing host directories (idempotent)")
+    vp.set_defaults(func=cmd_volumes_ensure)
+    vp = vol_sub.add_parser("shell", help="open busybox with all bind paths mounted at /vol/*")
     vp.set_defaults(func=cmd_volumes_shell)
 
     # Stack lifecycle
@@ -1023,7 +1027,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("services", nargs="*", help="service names (default: model-proxy)")
     sp.set_defaults(func=cmd_logs)
 
-    sp = sub.add_parser("setup", help="first-time setup: create volumes")
+    sp = sub.add_parser("setup", help="first-time setup: create .env + bind directories")
     sp.set_defaults(func=cmd_setup)
 
     # Open WebUI helpers

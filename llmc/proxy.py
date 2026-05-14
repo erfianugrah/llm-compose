@@ -21,7 +21,8 @@ Differences from v1:
     2. No `docker compose` shellout. Orchestrator uses the Engine API.
     3. Presets are TOML, schema-validated at load time.
     4. State (active mode + model) lives in /state/active.toml, not /project/.env.
-    5. Volumes are named (llmc-*), no host-path coupling.
+    5. Bind mounts use direct host paths from volumes.toml — no Docker
+       named-volume indirection (which rots on Docker Desktop/WSL2 restart).
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from llmc.orchestrator import (
 )
 from llmc.presets import Preset, load_all
 from llmc.state import State
+from llmc.volumes import VolumeRegistry, load as load_volumes
 
 
 # ── Configuration ──────────────────────────────────────────────────────
@@ -61,9 +63,12 @@ class ProxyConfig:
     presets_dir: Path = Path(os.environ.get("LLMC_PRESETS_DIR", "/presets"))
     state_dir: Path = Path(os.environ.get("LLMC_STATE_DIR", "/state"))
     # Assets dir: where mmproj/template files are downloaded. The proxy
-    # mounts the llmc-llama-models volume here so downloads land where
-    # llama-server will read them.
+    # bind-mounts the llama-server/models host path here so downloads land
+    # where llama-server will later read them.
     assets_dir: Path = Path(os.environ.get("LLMC_ASSETS_DIR", "/assets"))
+    # Bind-mount path registry — host paths for spawning GPU services.
+    # Mounted into the proxy container at /volumes.toml by compose.yaml.
+    volumes_toml: Path = Path(os.environ.get("LLMC_VOLUMES_TOML", "/volumes.toml"))
     vram_limit_gb: float = float(os.environ.get("LLMC_VRAM_LIMIT_GB", "32"))
     vram_reserve_gb: float = float(os.environ.get("LLMC_VRAM_RESERVE_GB", "6"))
     network: str = os.environ.get("LLMC_NETWORK", "llmc")
@@ -602,7 +607,11 @@ def build_context(config: Optional[ProxyConfig] = None) -> ProxyContext:
     view of the world (if the proxy crashed mid-swap, on-disk state may
     disagree with what Docker says is running)."""
     config = config or ProxyConfig()
-    orchestrator = Orchestrator(network=config.network)
+    # Load the bind-mount path registry. Required at runtime — the orchestrator
+    # needs host paths to spawn GPU services (Docker daemon binds host paths
+    # directly into the new container; there are no named volumes anymore).
+    volumes = load_volumes(config.volumes_toml)
+    orchestrator = Orchestrator(network=config.network, volumes=volumes)
     presets = load_all(config.presets_dir)
     state = state_mod.load(config.state_path)
 

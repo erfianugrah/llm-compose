@@ -188,6 +188,46 @@ class TestOrchestratorMockedSDK(unittest.TestCase):
         self.assertEqual(vols["llmc-comfyui-models"]["mode"], "ro")
         self.assertEqual(vols["llmc-comfyui-loras"]["mode"], "rw")
 
+    def test_volume_registry_resolves_logical_names_to_host_paths(self):
+        """When a VolumeRegistry is passed, the orchestrator rewrites
+        logical names into host bind paths before handing off to the SDK.
+
+        This is the post-migration default (proxy passes the registry
+        loaded from /volumes.toml). Existing tests without a registry
+        still see logical names — back-compat for the SDK-mock surface.
+        """
+        import tempfile
+        from llmc.volumes import VolumeRegistry, VolumeSpec
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry = VolumeRegistry(volumes={
+                "llmc-llama-cache": VolumeSpec(
+                    name="llmc-llama-cache", device=tmp_path / "llama-cache",
+                ),
+                "llmc-llama-models": VolumeSpec(
+                    name="llmc-llama-models", device=tmp_path / "llama-models",
+                ),
+            })
+            client = MagicMock()
+            client.containers.list.return_value = []
+            client.containers.run.return_value = MagicMock()
+            orch = Orchestrator(client=client, volumes=registry)
+            orch.spawn_llama(PRESET)
+            _, kwargs = client.containers.run.call_args
+            vols = kwargs["volumes"]
+            # Host paths are keys now, not logical names
+            self.assertIn(str(tmp_path / "llama-cache"), vols)
+            self.assertIn(str(tmp_path / "llama-models"), vols)
+            # Bind spec is preserved
+            self.assertEqual(vols[str(tmp_path / "llama-models")]["bind"], "/models")
+            # Logical names are NOT passed through (would be a bug — daemon
+            # would treat them as named-volume references)
+            self.assertNotIn("llmc-llama-cache", vols)
+            self.assertNotIn("llmc-llama-models", vols)
+            # Side effect: directories were ensured to exist on the host
+            self.assertTrue((tmp_path / "llama-cache").is_dir())
+            self.assertTrue((tmp_path / "llama-models").is_dir())
+
 
 @unittest.skipUnless(
     os.environ.get("LLMC_TEST_DOCKER") == "1",
