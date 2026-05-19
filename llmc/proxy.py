@@ -551,11 +551,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # LLM-mode requests: hot-swap model if `model` field is set, and
         # normalize messages for Qwen template quirks.
+        #
+        # _ensure_model mutates state + spawns containers, so it must run
+        # under swap_lock — matches _handle_mode_post and _ensure_and_forward.
+        # Without the lock two concurrent POSTs to /v1/chat/completions race:
+        # both pass the same-model guard (current_mode briefly reports 'idle'
+        # mid-spawn) and both call spawn_llama, the second blowing up with
+        # 'container name "/llama_server" is already in use'.
         if mode == "llm" and body:
             try:
                 payload = json.loads(body)
                 requested_model = payload.get("model", "")
-                ok, msg = _ensure_model(self.ctx, requested_model)
+                with self.ctx.swap_lock:
+                    ok, msg = _ensure_model(self.ctx, requested_model)
                 if not ok:
                     _json_response(self, 422, {
                         "error": {"message": msg, "type": "vram_exceeded", "code": 422}

@@ -214,10 +214,26 @@ class Orchestrator:
         Docker SDK shlex-splits string commands at whitespace, which mangles
         any non-trivial shell script (sees `if [` as three tokens, etc.).
         Use `["the script"]` to keep it as one Cmd entry."""
-        from docker.errors import APIError, ImageNotFound
+        from docker.errors import APIError, ImageNotFound, NotFound
         from docker.types import DeviceRequest
 
         self.stop_gpu_services()
+
+        # Defense in depth: stop_gpu_services finds containers by the
+        # llmc.mode label, but if a container with our target name exists
+        # without the label (e.g. created by an older proxy version, or
+        # left behind by a crashed/aborted run), `containers.run` below
+        # would 409 with "container name already in use". Remove any
+        # name-conflict before spawning so swap stays idempotent.
+        try:
+            existing = self.client.containers.get(service.name)
+            existing.remove(force=True)
+        except NotFound:
+            pass
+        except APIError:
+            # If we can't remove it, let the real run() call surface the
+            # error with full context rather than masking it here.
+            pass
 
         run_kwargs = dict(
             image=service.image,
