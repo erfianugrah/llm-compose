@@ -258,40 +258,26 @@ calling them triggers a GPU mode swap.
 
 `whisper-transcribe` is a separate compose stack (different repo,
 ~/whisper-transcribe) that needs to call the LLM for TL;DW
-summarization. It joins the llm-compose network as an external network
-in its own compose.yaml:
+summarization. It joins the `llmc` network as an external network in
+its own compose.yaml:
 
 ```yaml
 networks:
   llmc:
     external: true
+    name: llmc
 ```
 
-The bot service then sets `LLM_BASE_URL=http://model-proxy:11434/v1`
-and reaches the proxy by hostname over the shared network.
+The bot service then sets `LLM_API_URL=http://model-proxy:11434/v1`
+and reaches the proxy by hostname over the shared network. (The
+container is named `model_proxy` but the compose service + hostname
+are `model-proxy`; both resolve via Docker DNS.)
 
-After upgrading llm-compose to v2 (which renamed the network from
-`llm-compose_llm` to `llmc`), whisper-transcribe needs the same network
-rename in its compose. Until that's done, whisper runs on its own
-network and can't reach the LLM. To migrate:
-
-```bash
-# In ~/whisper-transcribe/compose.yaml, update the network reference:
-#   networks:
-#     llmc:                        # was: llm-compose_llm
-#       external: true
-# Then:
-cd ~/whisper-transcribe
-docker compose down
-docker compose up -d
-```
-
-The legacy network (`llm-compose_llm`, 172.28.0.0/24) can be removed
-after whisper is migrated:
-
-```bash
-docker network rm llm-compose_llm
-```
+If you ever rename the network here, every external compose stack
+that declares it as external needs the same rename in its own
+compose.yaml — otherwise `docker compose up` errors with "network not
+found". Run `docker network ls` to confirm both repos see the same
+name.
 
 ## Gotchas
 
