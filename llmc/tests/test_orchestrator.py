@@ -142,6 +142,62 @@ class TestOrchestratorMockedSDK(unittest.TestCase):
         existing.remove.assert_called_once()
         client.containers.run.assert_called_once()
 
+    def test_spawn_force_removes_stale_name_conflict(self):
+        """Defense-in-depth from commit b1f33de: stop_gpu_services finds
+        containers by GPU_LABEL, but a stale container with our target
+        name but no label (older proxy version, crashed run, manual
+        `docker run`) would 409 on the next containers.run. spawn() must
+        remove any name-conflict before calling run().
+        """
+        orch, client = self._orchestrator(containers=[])
+        stale = MagicMock()
+        # stop_gpu_services found nothing (label-less stale container);
+        # containers.get(name) is the second-line probe.
+        client.containers.get.return_value = stale
+        client.containers.run.return_value = MagicMock()
+
+        orch.spawn_llama(PRESET)
+
+        client.containers.get.assert_called_once_with("llama_server")
+        stale.remove.assert_called_once_with(force=True)
+        client.containers.run.assert_called_once()
+
+    def test_spawn_proceeds_when_no_name_conflict(self):
+        """Common path: containers.get raises NotFound → we move on to run().
+        Verifies the NotFound branch is hit (not the bare except: pass).
+        """
+        from docker.errors import NotFound
+
+        orch, client = self._orchestrator(containers=[])
+        client.containers.get.side_effect = NotFound("no such container")
+        client.containers.run.return_value = MagicMock()
+
+        # Should not raise
+        orch.spawn_llama(PRESET)
+
+        client.containers.get.assert_called_once_with("llama_server")
+        client.containers.run.assert_called_once()
+
+    def test_spawn_swallows_apierror_during_stale_removal(self):
+        """If the daemon refuses the pre-emptive remove (e.g. permission,
+        race with another caller), spawn() must NOT raise here — it lets
+        the subsequent containers.run() surface the real error with full
+        context. Comment in orchestrator.py:230 documents this intent.
+        """
+        from docker.errors import APIError
+
+        orch, client = self._orchestrator(containers=[])
+        client.containers.get.side_effect = APIError("boom")
+        client.containers.run.return_value = MagicMock()
+
+        # APIError on .get must be swallowed; .run still called
+        orch.spawn_llama(PRESET)
+
+        # Pin both: get() was probed, AND run() was still reached
+        # (without the try/except, APIError would bubble out of spawn).
+        client.containers.get.assert_called_once_with("llama_server")
+        client.containers.run.assert_called_once()
+
     def test_spawn_passes_correct_env_and_labels(self):
         orch, client = self._orchestrator(containers=[])
         client.containers.run.return_value = MagicMock()

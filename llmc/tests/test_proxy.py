@@ -343,6 +343,120 @@ class TestProxyEndpoints(unittest.TestCase):
         ctx.orchestrator.spawn_comfyui.assert_not_called()
 
 
+class TestSwapLockSerializesEnsureModel(unittest.TestCase):
+    """Regression for commit b1f33de.
+
+    Pre-fix, do_POST called _ensure_model without ctx.swap_lock. Two
+    concurrent POSTs to /v1/chat/completions could both enter the
+    function, both fall through the same-model guard during the spawn
+    window where current_mode() briefly reports 'idle', and both call
+    spawn_llama — the second one 409’d on the container name.
+
+    We can’t reproduce the docker 409 in a unit test, but we can pin the
+    contract: _ensure_model must run with at most one caller inside it
+    at a time, regardless of how many requests arrive in parallel."""
+
+    def _make_ctx(self):
+        from llmc.presets import load_all
+        orch = MagicMock()
+        orch.current_mode.return_value = "idle"
+        return ProxyContext(
+            config=ProxyConfig(port=0, presets_dir=REPO_ROOT / "models"),
+            orchestrator=orch,
+            presets=load_all(REPO_ROOT / "models"),
+            state=State(),
+        )
+
+    def test_concurrent_v1_posts_serialize_through_swap_lock(self):
+        ctx = self._make_ctx()
+
+        live = 0
+        max_live = 0
+        gate = threading.Lock()
+
+        def fake_ensure_model(ctx, requested_model):
+            nonlocal live, max_live
+            with gate:
+                live += 1
+                max_live = max(max_live, live)
+            # Hold the slot long enough that any unsynchronized caller
+            # would overlap. 80ms is comfortably above scheduler jitter.
+            time.sleep(0.08)
+            with gate:
+                live -= 1
+            # Return (False, ...) so the handler short-circuits to 422
+            # and does not try to forward to a (nonexistent) llama-server.
+            return False, "stub: not really swapping"
+
+        with patch("llmc.proxy._ensure_model", side_effect=fake_ensure_model) as spy:
+            with _ProxyServer(ctx) as srv:
+                results: list[int] = []
+                results_lock = threading.Lock()
+
+                def fire():
+                    status, _, _ = _http_post(
+                        srv.port,
+                        "/v1/chat/completions",
+                        {"model": "qwen36", "messages": [{"role": "user", "content": "hi"}]},
+                        timeout=10.0,
+                    )
+                    with results_lock:
+                        results.append(status)
+
+                threads = [threading.Thread(target=fire) for _ in range(4)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=10.0)
+                    self.assertFalse(t.is_alive(), "request thread hung")
+
+        # All four requests must have made it to _ensure_model
+        self.assertEqual(spy.call_count, 4)
+        # And been served
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(s == 422 for s in results), results)
+        # Lock contract: never more than one caller inside _ensure_model
+        self.assertEqual(max_live, 1, f"swap_lock failed to serialize: max_live={max_live}")
+
+    def test_concurrent_mode_post_also_serializes(self):
+        """Sibling check: _handle_mode_post has held the lock since v2.
+        Pin it so a future refactor can’t silently regress that path too."""
+        ctx = self._make_ctx()
+
+        live = 0
+        max_live = 0
+        gate = threading.Lock()
+
+        def fake_ensure_model(ctx, requested_model):
+            nonlocal live, max_live
+            with gate:
+                live += 1
+                max_live = max(max_live, live)
+            time.sleep(0.05)
+            with gate:
+                live -= 1
+            return True, ""
+
+        with patch("llmc.proxy._ensure_model", side_effect=fake_ensure_model):
+            with _ProxyServer(ctx) as srv:
+                def fire():
+                    _http_post(
+                        srv.port,
+                        "/mode",
+                        {"mode": "llm", "model": "qwen36"},
+                        timeout=10.0,
+                    )
+
+                threads = [threading.Thread(target=fire) for _ in range(3)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=10.0)
+                    self.assertFalse(t.is_alive())
+
+        self.assertEqual(max_live, 1, f"swap_lock failed to serialize: max_live={max_live}")
+
+
 class TestBuildContext(unittest.TestCase):
     """build_context() reconciles state.toml vs running containers."""
 

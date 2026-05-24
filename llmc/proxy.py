@@ -238,8 +238,11 @@ def _ensure_mode(ctx: ProxyContext, target: str) -> tuple[bool, str]:
 
 def _ensure_model(ctx: ProxyContext, requested_model: str) -> tuple[bool, str]:
     """Hot-swap LLM preset if the requested model differs from current.
-    Returns (ready, error_message). Caller must hold swap_lock for
-    transitions; we acquire it ourselves for the model swap subsection."""
+
+    Returns (ready, error_message). Caller MUST hold ctx.swap_lock — this
+    function mutates ctx.state, calls stop_gpu_services, and spawns a new
+    container. Concurrent invocations would race on the spawn (see commit
+    b1f33de)."""
     if not requested_model:
         # No model specified — current model is fine
         return True, ""
