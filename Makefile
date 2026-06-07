@@ -18,13 +18,16 @@ LLMC := python3 -m llmc
 # Image tags — keep in sync with images/*.Dockerfile and orchestrator.py
 PROXY_IMAGE   := erfianugrah/llmc-proxy:v2
 LLAMA_IMAGE   := erfianugrah/llama-server:cuda12.8-sm120
+# Pascal / GTX 1070 (sm_61) variant — same Dockerfile, CUDA_ARCH build-arg.
+# Built here on the 5090, pulled on servarr (always-on, Jellyfin-coexist).
+LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
 .PHONY: help setup up down restart status shell test test-docker test-integration \
-        build build-proxy build-llama build-comfyui build-train \
-        rebuild-proxy rebuild-llama rebuild-comfyui rebuild-train \
-        pull push push-proxy push-llama push-comfyui push-train \
+        build build-proxy build-llama build-llama-pascal build-comfyui build-train \
+        rebuild-proxy rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
+        pull push push-proxy push-llama push-llama-pascal push-comfyui push-train \
         release ship ship-proxy deploy clean \
         logs-proxy logs-webui logs-llama logs-comfyui logs-train \
         gpu health metrics
@@ -151,6 +154,10 @@ build-proxy:
 build-llama:
 	docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
 
+## Pascal/sm_61 build for servarr's GTX 1070 (cross-compiled on the 5090).
+build-llama-pascal:
+	docker build --build-arg CUDA_ARCH=61 -t $(LLAMA_PASCAL_IMAGE) -f llama-server.Dockerfile .
+
 build-comfyui:
 	docker build -t $(COMFYUI_IMAGE) -f comfyui.Dockerfile .
 
@@ -165,6 +172,9 @@ rebuild-proxy:
 
 rebuild-llama:
 	docker build --no-cache -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
+
+rebuild-llama-pascal:
+	docker build --no-cache --build-arg CUDA_ARCH=61 -t $(LLAMA_PASCAL_IMAGE) -f llama-server.Dockerfile .
 
 rebuild-comfyui:
 	docker build --no-cache -t $(COMFYUI_IMAGE) -f comfyui.Dockerfile .
@@ -189,6 +199,9 @@ push-proxy:
 
 push-llama:
 	docker push $(LLAMA_IMAGE)
+
+push-llama-pascal:
+	docker push $(LLAMA_PASCAL_IMAGE)
 
 push-comfyui:
 	docker push $(COMFYUI_IMAGE)

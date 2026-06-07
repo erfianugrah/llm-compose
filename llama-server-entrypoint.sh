@@ -8,6 +8,8 @@
 #   MMPROJ_FILE      Optional. Multimodal projection weights filename.
 #   TEMPLATE_FILE    Optional. Jinja chat template filename.
 #   REASONING        Optional. "on" | "off" — sets --reasoning flag.
+#   FLASH_ATTN       Default "on". "on" | "off" | "auto". Pascal (sm_61)
+#                    has weak FP16, so the servarr deploy may set "off".
 #   CONTEXT_SIZE     Default 65536. Sets both -c and --fit-ctx.
 #   PARALLEL_SLOTS   Default 1. -np value.
 #   TEMPERATURE      Default 1.0.
@@ -22,6 +24,8 @@
 # by per-preset config. They tune for a single RTX 5090 (32 GB VRAM, sm_120).
 
 set -e
+
+FLASH_ATTN="${FLASH_ATTN:-on}"
 
 if [ -f "/models/${MODEL_FILE}" ]; then
   MODEL_ARGS="-m /models/${MODEL_FILE}"
@@ -38,7 +42,7 @@ exec llama-server \
   --port 8080 \
   --host 0.0.0.0 \
   -ngl 99 \
-  --flash-attn on \
+  --flash-attn "${FLASH_ATTN}" \
   -ctk q8_0 \
   -ctv q8_0 \
   -c "${CONTEXT_SIZE:-65536}" \

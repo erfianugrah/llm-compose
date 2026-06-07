@@ -1,10 +1,14 @@
-# Blackwell-optimized llama.cpp build
-# CUDA 12.8 + sm_120 native kernels for RTX 5090
+# CUDA 12.8 llama.cpp build, parametrized by GPU arch.
+#   CUDA_ARCH=120 → Blackwell / RTX 5090 (default, dev-box mode-swap stack)
+#   CUDA_ARCH=61  → Pascal / GTX 1070 (servarr, always-on single workload)
+# Cross-compiles: the target GPU need not be present at build time, so the
+# sm_61 image is built on the dev box (5090) and pulled on servarr.
 # See: https://github.com/ggml-org/llama.cpp/pull/13360
 
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS build
 
 ARG LLAMA_CPP_VERSION=b8799
+ARG CUDA_ARCH=120
 
 # Build dependencies
 # - libssl-dev: TLS backend for cpp-httplib (used by -hf HuggingFace downloader)
@@ -29,7 +33,7 @@ WORKDIR /build/llama.cpp
 # This is the same approach used by the official llama.cpp .devops/cuda.Dockerfile.
 RUN cmake -B build \
       -DGGML_CUDA=ON \
-      -DCMAKE_CUDA_ARCHITECTURES="120" \
+      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
       -DGGML_CUDA_FORCE_CUBLAS=OFF \
       -DCMAKE_BUILD_TYPE=Release \
       -DGGML_NATIVE=OFF \
