@@ -157,9 +157,9 @@ networks:
     driver: bridge
     ipam:
       config:
-        # 172.29.x to coexist with the legacy llm-compose_llm network
-        # (172.28.x) during cutover. whisper-transcribe still uses the
-        # old subnet; Phase 6 migrates it.
+        # 172.29.x subnet. whisper-transcribe (sister stack) joins this
+        # same network by name via `external: true, name: llmc` — do not
+        # renumber without updating that repo's compose.yaml too.
         - subnet: 172.29.0.0/24
           gateway: 172.29.0.1
 

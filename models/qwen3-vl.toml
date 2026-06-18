@@ -7,8 +7,13 @@ Best for: frame-level video description (whisper-transcribe /api/describe),
 image captioning, simple OCR. Tiny VRAM footprint coexists with the LLM
 hot-swap and leaves headroom for ComfyUI / training jobs.
 
-Used by the whisper-transcribe bot's VLM fallback for silent / sparse-speech
-videos (set LLM_VISION_MODEL=Qwen3-VL-2B-Instruct-Q8_0 in bot/.env).
+Lightweight alternative for the whisper-transcribe bot's VLM fallback on
+silent / sparse-speech videos. NOTE: whisper-transcribe currently defaults
+`LLM_VISION_MODEL=gemma-4-26B-A4B-it-Q4_K_M` (the `summarizer` preset) for
+both vision and synthesis. To run frame description on this tiny 2B model
+instead, set `LLM_VISION_MODEL=Qwen3-VL-2B-Instruct-Q8_0` in the bot env —
+that string is this preset's model_id (the GGUF filename minus `.gguf`),
+which is what the proxy advertises in `/v1/models`.
 Q8 quant on a 2B model is effectively lossless for description tasks; no
 need for Q4 here.
 

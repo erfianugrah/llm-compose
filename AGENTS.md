@@ -248,8 +248,25 @@ Flux: `model_type=flux`, batch_size=2-4, dim=16, alpha=16, fp8_base=true.
 | `mcp/comfyui-server.py`   | `comfyui_generate`, `comfyui_status`, `comfyui_history`         |
 | `mcp/train-server.py`     | `train_start/status/logs/cancel/list/deploy`, `caption_*`       |
 
-Whisper is a separate stack (`whisper-transcribe`, port 7860). The
-turbo model (~6 GB) coexists with llama-server in 32 GB VRAM.
+**Harness note (works for both OpenCode and pi):** these are registered in
+`~/.config/opencode/opencode.json` under `mcp` and load natively in OpenCode.
+The `pi` harness has no built-in MCP, so a bridge extension at
+`~/.pi/agent/extensions/mcp-bridge/` reads that SAME `mcp` block, registers
+every `type:"local"` enabled stdio server's tools as native pi tools, and
+spawns the `.py` server lazily on first call. One shared registry, one set of
+`.py` files — no duplication. pi commands: `/mcp-status` (list bridged
+servers + tools), `/mcp-refresh` (re-discover + rewrite the tools cache after
+editing a server). Tool names are namespaced already (`whisper_*`,
+`comfyui_*`, `train_*`); on a genuine cross-server collision the bridge
+prefixes with the server name (e.g. research's `wait_job` → `research_wait_job`
+since whisper claims `wait_job` first).
+
+Whisper is a separate stack (`whisper-transcribe`, port 7860). It now runs
+two GPU services: the batch `whisper` service (turbo/large-v3, idle-unloads
+after ~300s) and a separate `whisper-live` service (`LIVE_MODEL=large-v3`,
+port 7861) that powers Discord voice/live transcription. During a voice
+call large-v3 stays resident alongside llama-server, so the VRAM budget is
+tighter than the old single-turbo-model picture.
 
 ComfyUI + train MCP servers go through the proxy at :11434, which means
 calling them triggers a GPU mode swap.
@@ -268,10 +285,29 @@ networks:
     name: llmc
 ```
 
-The bot service then sets `LLM_API_URL=http://model-proxy:11434/v1`
-and reaches the proxy by hostname over the shared network. (The
-container is named `model_proxy` but the compose service + hostname
-are `model-proxy`; both resolve via Docker DNS.)
+The bot service then sets `LLM_API_URL=http://model_proxy:11434/v1`
+(plus `LLM_VISION_API_URL` / `LLM_TEXT_API_URL`) and reaches the proxy by
+hostname over the shared network. Whisper uses the `model_proxy` form (the
+`container_name`); the compose service name `model-proxy` also resolves via
+Docker DNS, so either works.
+
+**Cross-stack model-name contract.** Whisper's `LLM_VISION_MODEL` /
+`LLM_SYNTHESIS_MODEL` env values must match a preset's `model_id` — the
+GGUF filename minus `.gguf` (`presets.py:59`), which is what the proxy lists
+in `/v1/models`. `gemma-4-26B-A4B-it-Q4_K_M` is the stem of
+`summarizer.toml`'s `file = "gemma-4-26B-A4B-it-Q4_K_M.gguf"`, NOT the
+human `name` title. (The proxy's `preset_by_name` also accepts the `name`
+title as an alias, but whisper uses the stem.) Change that `file` and
+whisper's vision/synthesis calls silently 404 — nothing on the llm-compose
+side flags it. Confirm advertised IDs with `llmc models` after any edit.
+
+**Teardown footgun.** The `llmc` network is compose-owned *here* (no
+`external:` on this side; whisper marks it external). `make down` runs
+`docker compose down`, which tries to delete the network whisper is still
+attached to — the delete errors with "active endpoints" and the proxy
+container disappears regardless, so whisper loses `model_proxy` resolution.
+Stop whisper first, or expect its bot to throw connection errors until the
+proxy is back up.
 
 If you ever rename the network here, every external compose stack
 that declares it as external needs the same rename in its own
