@@ -9,7 +9,7 @@
 #   TEMPLATE_FILE    Optional. Jinja chat template filename.
 #   REASONING        Optional. "on" | "off" — sets --reasoning flag.
 #   FLASH_ATTN       Default "on". "on" | "off" | "auto". Pascal (sm_61)
-#                    has weak FP16, so the servarr deploy may set "off".
+#                    has weak FP16, so a Pascal deploy may set "off".
 #   CONTEXT_SIZE     Default 65536. Sets both -c and --fit-ctx.
 #   PARALLEL_SLOTS   Default 1. -np value.
 #   TEMPERATURE      Default 1.0.

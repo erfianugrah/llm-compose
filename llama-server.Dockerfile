@@ -1,8 +1,8 @@
 # CUDA 12.8 llama.cpp build, parametrized by GPU arch.
 #   CUDA_ARCH=120 → Blackwell / RTX 5090 (default, dev-box mode-swap stack)
-#   CUDA_ARCH=61  → Pascal / GTX 1070 (servarr, always-on single workload)
+#   CUDA_ARCH=61  → Pascal / GTX 1070 (always-on single-workload host)
 # Cross-compiles: the target GPU need not be present at build time, so the
-# sm_61 image is built on the dev box (5090) and pulled on servarr.
+# sm_61 image is built on the dev box (5090) and pulled on the Pascal host.
 # See: https://github.com/ggml-org/llama.cpp/pull/13360
 
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS build

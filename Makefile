@@ -19,7 +19,7 @@ LLMC := python3 -m llmc
 PROXY_IMAGE   := erfianugrah/llmc-proxy:v2
 LLAMA_IMAGE   := erfianugrah/llama-server:cuda12.8-sm120
 # Pascal / GTX 1070 (sm_61) variant — same Dockerfile, CUDA_ARCH build-arg.
-# Built here on the 5090, pulled on servarr (always-on, Jellyfin-coexist).
+# Built on the sm_120 dev box, pulled on an always-on Pascal host.
 LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
@@ -154,7 +154,7 @@ build-proxy:
 build-llama:
 	docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
 
-## Pascal/sm_61 build for servarr's GTX 1070 (cross-compiled on the 5090).
+## Pascal/sm_61 build for a GTX 1070 (cross-compiled on the sm_120 dev box).
 build-llama-pascal:
 	docker build --build-arg CUDA_ARCH=61 -t $(LLAMA_PASCAL_IMAGE) -f llama-server.Dockerfile .
 
