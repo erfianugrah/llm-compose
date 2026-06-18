@@ -71,9 +71,14 @@ class TestLlamaEntrypointScript(unittest.TestCase):
         self.assertIn("--hf-file", self.script)
 
     def test_script_has_required_flags(self):
-        for flag in ("--port 8080", "--host 0.0.0.0", "-ngl 99", "--flash-attn on",
+        for flag in ("--port 8080", "--host 0.0.0.0", "-ngl 99",
+                     '--flash-attn "${FLASH_ATTN}"',
                      "-ctk q8_0", "-ctv q8_0", "--metrics", "--jinja"):
             self.assertIn(flag, self.script, f"missing {flag!r} in entrypoint script")
+
+    def test_script_defaults_flash_attn_on(self):
+        # flash-attn is env-driven (commit 2e0b93e) but defaults to "on".
+        self.assertIn('FLASH_ATTN="${FLASH_ATTN:-on}"', self.script)
 
     def test_script_uses_optional_flag_syntax_for_overrides(self):
         # ${VAR:+--flag $VAR} pattern — flag only included if VAR is set
