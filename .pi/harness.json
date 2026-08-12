@@ -1,74 +1,30 @@
 {
-  "task": "Finish concurrent-loop support (the proxy core is DONE and committed: lock_owners set + owner payload handling + lock_owners in GET /mode). Remaining work, in four small pieces: (1) llmc/cli.py: `llmc lock` and `llmc unlock` gain an `--owner` flag that is passed through as \"owner\" in the /mode payload (ProxyClient.set_lock signature gains owner=None and includes it in the body only when set); `llmc status` prints the owners (e.g. 'Locked: loop (owners: a, b)' - read lock_owners from the /mode payload, fall back gracefully when absent). (2) llmc/tests/test_proxy.py: ADD unit tests for the owner semantics over HTTP, mirroring the existing TestModelLock helpers - cover: second owner shares the lock, owner release keeps the lock until the last owner, ownerless clear force-clears, lock_owners appears in GET /mode. ADD ONLY; do not modify existing tests. (3) proxy.py polish: the lock-CLEAR response currently returns {\"locked\": None} even when other owners still hold the lock - make it echo the actual current state ({\"locked\": self.ctx.lock_model} after the mutation). One line. (4) models/loop.toml: parallel_slots = 2 (context_size stays 196608 - llama.cpp splits total ctx across slots, so 2x98K; update the comment that currently says '1 slot'). (5) Docs: AGENTS.md model-lock section and README.md - add a short 'Concurrent loops' note: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.",
+  "task": "Make the llmc proxy model lock survive proxy restarts by persisting it through the state file. Today ctx.lock_model / ctx.lock_owners are in-memory only; a proxy restart silently clears the lock (observed live: the lock cleared on every make restart). The state layer is ALREADY plumbed: llmc/state.py's State dataclass has lock_owners (list[str]) with TOML round-trip and load() validation. THE CHANGE, four small pieces: (1) state.py: add an optional `locked: Optional[str] = None` field to State - to_toml() writes `locked = \"<preset>\"` only when set, load() parses/validates it (string or omitted) and adds \"locked\" to its allowed-keys set. (2) proxy.py restore path: when a ProxyContext is built, derive the lock from the loaded state - lock_model = state.locked, lock_owners = set(state.lock_owners). Cleanest is a ProxyContext.__post_init__ so EVERY construction (build_context, tests, probes) restores consistently. (3) proxy.py persist path: in _handle_mode_post's lock block, after every mutation (set, owner-release, force-clear), write through with ctx.state = state_mod.update(ctx.config.state_path, locked=<current lock_model or omit-when-None>, lock_owners=<sorted list>) - note state_mod.update uses dataclasses.replace, so pass locked=None explicitly to clear it. CRITICAL: the write must be wrapped so an OSError (unwritable state dir) logs a warning and the lock still works in-memory - the existing TestModelLock tests use the DEFAULT state_dir (/state, unwritable in dev) and must keep passing UNMODIFIED; a 500 on lock set is a failure. (4) ADD unit tests: state round-trip for locked+lock_owners (test_state.py), and a restart-restore test in test_proxy.py (lock over HTTP with a tmp state_dir, rebuild the context from the same state_dir, assert the lock is back). ADD ONLY - do not modify existing tests. THE CONTRACT IS PINNED by .pi/lock-persistence-probe.py (operator-owned, do NOT modify): it boots your proxy with a temp state dir, locks with two owners, simulates restarts by rebuilding the context from the same state file, and asserts the lock + owners + enforcement survive; also that an unwritable state dir degrades gracefully. python3 .pi/lock-persistence-probe.py must go green, and .pi/lock-owners-probe.py must STAY green.",
   "maxIterations": 8,
-  "models": [
-    "llama-server/loop"
-  ],
+  "agentTimeoutMs": 3600000,
+  "models": ["llama-server/loop"],
   "stallPatience": 3,
-  "tools": [
-    "read",
-    "edit",
-    "write",
-    "bash"
-  ],
-  "writeScope": [
-    "llmc/**",
-    "models/loop.toml",
-    "AGENTS.md",
-    "README.md"
-  ],
+  "tools": ["read", "edit", "write", "bash"],
+  "writeScope": ["llmc/**"],
   "rules": [
-    "EDIT DISCIPLINE (this is where previous attempts failed): never rewrite a whole file. Use the edit tool with oldText copied character-for-character from a fresh read of the exact lines you are changing - files use 4-space indentation (Python) and you must reproduce it exactly. Small hunks only.",
-    "After EVERY edit to a Python file, before doing anything else, run: python3 -c 'import llmc.proxy' (or import the module you edited) - a syntax/indentation error means your last edit was malformed; fix THAT line immediately instead of pressing on.",
-    "Do not modify existing tests; add new ones. The existing TestModelLock suite must pass byte-identical.",
-    "Only files matching the writeScope may change. Nothing under .pi/ - that is operator-owned.",
+    "Only files under llmc/ may change. Nothing under .pi/ - the probes are operator-owned.",
+    "EDIT DISCIPLINE (this is where previous attempts failed): never rewrite a whole file. Use the edit tool with oldText copied character-for-character from a fresh read of the exact lines you are changing - 4-space indentation, reproduced exactly. Small hunks only.",
+    "After EVERY edit, before doing anything else, run: python3 -c 'import llmc.proxy, llmc.state' - a syntax/indentation error means your last edit was malformed; fix THAT line immediately instead of pressing on.",
+    "Existing tests must pass unmodified - especially TestModelLock, which uses the default unwritable /state dir: your persistence write MUST tolerate OSError there (log + continue in-memory), never 500.",
     "Do not rebuild, restart, or docker-touch any container; this is a code-only change.",
-    "A check satisfied by weakening an existing test or special-casing sensor commands is a FAILED iteration."
+    "A check satisfied by editing tests, the probes, or special-casing probe requests is a FAILED iteration."
   ],
   "sensors": [
-    {
-      "name": "unit-tests",
-      "cmd": "make test",
-      "timeoutMs": 120000,
+    { "name": "unit-tests", "cmd": "make test", "timeoutMs": 120000,
       "hint": "the suite must stay green including all pre-existing tests, unmodified. A SyntaxError/IndentationError means your edit was malformed - the traceback names the file and line; fix that exact line.",
-      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py"
-    },
-    {
-      "name": "lock-owners-probe",
-      "cmd": "python3 .pi/lock-owners-probe.py",
-      "timeoutMs": 60000,
-      "hint": "the lock-owners contract probe must STAY green - if it regresses you broke the proxy core; run it and read which named check FAILs"
-    },
-    {
-      "name": "cli-owner-flag",
-      "expect": "fail",
-      "cmd": "rg -q -- '--owner' llmc/cli.py",
-      "hint": "llmc lock/unlock need an --owner flag wired through ProxyClient.set_lock into the /mode payload"
-    },
-    {
-      "name": "two-slots",
-      "expect": "fail",
-      "cmd": "rg -q 'parallel_slots = 2' models/loop.toml",
-      "hint": "models/loop.toml must declare parallel_slots = 2 (context_size unchanged at 196608)"
-    },
-    {
-      "name": "owner-tests-added",
-      "expect": "fail",
-      "cmd": "test $(rg -c 'def test_[a-z_]*owner' llmc/tests/test_proxy.py || echo 0) -ge 3",
-      "hint": "add new unit tests with 'owner' in the name covering the shared-lock semantics (at least 3); do not modify existing tests"
-    },
-    {
-      "name": "judge",
-      "after": [
-        "unit-tests",
-        "lock-owners-probe",
-        "cli-owner-flag",
-        "two-slots",
-        "owner-tests-added"
-      ],
-      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'Finishing concurrent-loop support. Acceptance criteria: (1) llmc lock/unlock have a working --owner flag wired through ProxyClient.set_lock into the POST /mode payload (not a parsed-but-dropped flag - trace it); (2) llmc status surfaces lock_owners with a graceful fallback; (3) NEW unit tests genuinely exercise owner semantics over HTTP against the real handler (add-only - existing tests unmodified); (4) the lock-clear response now echoes the actual lock state after the mutation instead of always null; (5) models/loop.toml has parallel_slots = 2 with context_size still 196608; (6) AGENTS.md + README.md document concurrent loops (shared preset, --owner per session, git worktree per same-repo loop, sensors must not restart the serving stack); (7) changes confined to the writeScope; (8) ignore .pi/** - operator scaffolding. Reject: vacuous or self-mocking tests, modified pre-existing tests, whole-file rewrites, scope creep, justifying essays in comments.'",
-      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names"
-    }
-  ],
-  "agentTimeoutMs": 3600000
+      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py" },
+    { "name": "lock-owners-probe", "cmd": "python3 .pi/lock-owners-probe.py", "timeoutMs": 60000,
+      "hint": "the shared-lock contract must STAY green - if it regresses you broke the proxy core; run it and read which named check FAILs" },
+    { "name": "lock-persistence-probe", "expect": "fail", "timeoutMs": 60000,
+      "cmd": "python3 .pi/lock-persistence-probe.py",
+      "hint": "the operator-owned persistence probe defines the contract; run it, read which named checks FAIL, and implement until all pass" },
+    { "name": "judge", "after": ["unit-tests", "lock-owners-probe", "lock-persistence-probe"],
+      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'Restart-safe model lock for the llmc proxy. Acceptance criteria: (1) State gains an optional locked field with TOML round-trip and load() validation (allowed-keys updated); (2) ProxyContext derives lock_model/lock_owners from the loaded state on construction so a proxy restart restores the lock; (3) every lock mutation in _handle_mode_post persists via state_mod.update, tolerating OSError (unwritable state dir) with a log line while the lock keeps working in-memory - the pre-existing TestModelLock tests use the default unwritable /state and must pass UNMODIFIED; (4) new add-only unit tests cover the state round-trip and restart restore; (5) enforcement semantics are unchanged; (6) changes confined to llmc/; (7) ignore .pi/** - operator scaffolding. Reject: weakened or modified existing tests, whole-file rewrites, persistence failures that 500 the lock API, scope creep, justifying essays in comments.'",
+      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names" }
+  ]
 }
