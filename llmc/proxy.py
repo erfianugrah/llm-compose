@@ -7,6 +7,7 @@ recovers cleanly.
 
 Route table:
     /v1/*           → llama-server  (auto-starts LLM mode, hot-swap on `model`)
+    /metrics        → llama-server  (Prometheus metrics, read-only, no swap)
     /comfyui/*      → ComfyUI       (auto-starts comfyui mode, prefix stripped)
     /train/*        → lora-train    (auto-starts train mode, prefix stripped)
     /v1/models      → proxy self    (preset list, OpenAI-API format)
@@ -338,6 +339,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         Returns (mode, stripped_path) where mode is None for self-handled."""
         if self.path.startswith("/v1/"):
             return "llm", self.path
+        if self.path == "/metrics":
+            return "llm", "/metrics"
         if self.path.startswith("/comfyui"):
             stripped = self.path[len("/comfyui"):] or "/"
             return "comfyui", stripped

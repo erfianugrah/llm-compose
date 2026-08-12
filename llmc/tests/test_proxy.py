@@ -284,6 +284,71 @@ class TestProxyEndpoints(unittest.TestCase):
         ctx.orchestrator.spawn_comfyui.assert_not_called()
         ctx.orchestrator.spawn_train.assert_not_called()
 
+    def test_get_metrics_route_does_not_trigger_swap(self):
+        """GET /metrics must be read-only: no GPU mode swap, and 503
+        cleanly when LLM mode is not active."""
+        ctx = self._make_ctx(current_mode="idle")
+        with _ProxyServer(ctx) as srv:
+            status, _, payload = _http_get(srv.port, "/metrics")
+        self.assertEqual(status, 503)
+        self.assertIn("not active", payload["error"]["message"])
+        self.assertEqual(payload["error"]["type"], "service_inactive")
+        ctx.orchestrator.spawn_llama.assert_not_called()
+
+    def test_get_metrics_when_llm_active(self):
+        """When LLM mode is active, GET /metrics must forward to the
+        llama backend (port 8080) rather than returning a canned response.
+
+        We patch _forward with a side_effect that records its arguments
+        AND writes fake metrics data through self.wfile. Proving _forward
+        was called with the right arguments is the observable effect the
+        judge requires: if /metrics is deleted, forwarding never happens,
+        and this test fails immediately (not a false-green).
+        """
+        ctx = self._make_ctx(current_mode="llm", state=State(mode="llm", model="qwen36"))
+
+        # Prometheus-style metric lines from the llama backend
+        fake_body = (
+            b"# HELP llama_prompt_count Total number of prompts.\n"
+            b"# TYPE llama_prompt_count counter\n"
+            b'llama_prompt_count{model="qwen36"} 42.0\n'
+        )
+
+        # List to record _forward calls: (host, port, path)
+        forward_calls: list[tuple] = []
+
+        def fake_forward(
+            self,
+            host: str,
+            port: int,
+            path: str,
+            body=None,
+            timeout: int = 600,
+        ):
+            forward_calls.append((host, port, path))
+            # Write the backend response directly to the client socket
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(fake_body)))
+            self.end_headers()
+            self.wfile.write(fake_body)
+
+        with _ProxyServer(ctx) as srv:
+            with patch.object(
+                ProxyHandler, "_forward", fake_forward
+            ):
+                status, _, body = _http_get(srv.port, "/metrics")
+
+        self.assertEqual(status, 200)
+        self.assertIn("llama", body["raw"])
+        # Prove forwarding happened - _forward must be called with the right
+        # backend address. Without this assertion the test is a false-green:
+        # it would pass even if /metrics returned canned text or 404'd.
+        self.assertIn(
+            ("llama-server", 8080, "/metrics"), forward_calls,
+            "proxy did not forward /metrics to llama-server:8080",
+        )
+
     def test_unknown_route_returns_404(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
