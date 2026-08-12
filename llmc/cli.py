@@ -209,13 +209,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     active_model = mode_payload.get("model") or "(none)"
+    locked = mode_payload.get("locked")
+    lock_info = "no"
+    if locked:
+        owners = mode_payload.get("lock_owners")
+        lock_info = f"{locked} (owners: {', '.join(owners)})" if owners else str(locked)
     _print_kv([
         ("Proxy:", f"{client.host}:{client.port}"),
         ("Health:", health_payload.get("status", "?")),
         ("Mode:", mode_payload.get("mode", "?")),
         ("Active model:", active_model),
         ("Switching:", str(mode_payload.get("switching", False))),
-        ("Locked:", str(mode_payload.get("locked") or "no")),
+        ("Locked:", lock_info),
         ("Presets:", str(len(models_payload.get("data", [])))),
     ])
     return EXIT_OK
@@ -292,7 +297,7 @@ def cmd_lock(args: argparse.Namespace) -> int:
     client = ProxyClient()
     lock_val = args.preset if args.preset else True
     try:
-        status, payload = client.set_lock(lock_val)
+        status, payload = client.set_lock(lock_val, owner=args.owner)
     except (OSError, http.client.HTTPException) as exc:
         _err(f"Proxy unreachable: {exc}")
         return EXIT_TRANSIENT
@@ -309,7 +314,7 @@ def cmd_lock(args: argparse.Namespace) -> int:
 def cmd_unlock(args: argparse.Namespace) -> int:
     client = ProxyClient()
     try:
-        status, payload = client.set_lock(False)
+        status, payload = client.set_lock(False, owner=args.owner)
     except (OSError, http.client.HTTPException) as exc:
         _err(f"Proxy unreachable: {exc}")
         return EXIT_TRANSIENT
@@ -1054,9 +1059,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("lock", help="lock a preset in place - refuse GPU-evicting swaps")
     sp.add_argument("preset", nargs="?", default=None,
                     help="preset to lock (omit to lock the currently-active model)")
+    sp.add_argument("--owner", help="identity of the owner (e.g. session ID)")
     sp.set_defaults(func=cmd_lock)
 
     sp = sub.add_parser("unlock", help="clear the model lock")
+    sp.add_argument("--owner", help="identity of the owner to unlock")
     sp.set_defaults(func=cmd_unlock)
 
     sp = sub.add_parser("models", help="list available LLM presets")

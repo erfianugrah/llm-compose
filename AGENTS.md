@@ -37,6 +37,7 @@ make metrics            # curl /metrics
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
 llmc lock [preset]      # pin a preset: refuse GPU-evicting swaps (loop runs)
 llmc unlock             # clear the model lock
+# Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
 

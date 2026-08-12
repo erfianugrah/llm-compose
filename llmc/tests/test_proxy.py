@@ -676,6 +676,62 @@ class TestBuildContext(unittest.TestCase):
         # /v1 request can resume)
         self.assertEqual(ctx.state.model, "qwen36")
 
+class TestOwnerSemantics(unittest.TestCase):
+    """Shared lock with named owners: concurrent loops holding one preset."""
+
+    def _make_ctx(self, *, current_mode="llm", model="qwen36"):
+        orch = MagicMock()
+        orch.current_mode.return_value = current_mode
+        from llmc.presets import load_all
+        presets_dir = REPO_ROOT / "models"
+        return ProxyContext(
+            config=ProxyConfig(port=0, presets_dir=presets_dir),
+            orchestrator=orch,
+            presets=load_all(presets_dir),
+            state=State(mode=current_mode, model=model),
+        )
+
+    def test_lock_with_owner_semantics(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            # Owner A locks qwen36
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            self.assertEqual(status, 200)
+            # Owner B locks qwen36
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "B"})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["lock_owners"], ["A", "B"])
+            # Owner A unlocks
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["lock_owners"], ["B"])
+            # Owner B unlocks
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": False, "owner": "B"})
+            self.assertEqual(status, 200)
+            self.assertIsNone(payload["locked"])
+
+    def test_lock_owner_release_echoes_current_state(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            # Lock with A and B
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "B"})
+            # Clear with A
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
+            self.assertEqual(status, 200)
+            # Still locked by B
+            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["lock_owners"], ["B"])
+
+    def test_lock_owners_appears_in_mode_payload(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(status, 200)
+            self.assertIn("lock_owners", payload)
+            self.assertEqual(payload["lock_owners"], ["A"])
+
 
 if __name__ == "__main__":
     unittest.main()

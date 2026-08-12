@@ -17,8 +17,7 @@ Tuning rationale:
   model won on tool-calling reliability + instruction following).
 - presence_penalty 0: penalising already-seen tokens breaks tool-call
   JSON keys and repeated syntax over long agentic transcripts.
-
-- 196608 ctx, 1 slot (2 once concurrent-loop support lands): KV q8_0
+- 196608 ctx, 2 slots (concurrent loops share the preset; 2x98K ctx): KV q8_0
   (entrypoint default). Measured footprint 21598 MiB at 131072 ctx
   (nvidia-smi, 2026-08-12); 196608 adds ~1 GB KV. The wide window is
   load-bearing: loop iterations read large files and the model emits
@@ -40,8 +39,7 @@ file = "loop-gemma-4-26B-A4B-it-Q4_K_M.gguf"
 reasoning = "on"
 
 context_size = 196608
-parallel_slots = 1
-
+parallel_slots = 2
 temperature = 1.0
 top_p = 0.95
 top_k = 64

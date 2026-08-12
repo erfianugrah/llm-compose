@@ -424,7 +424,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.ctx.lock_model = None
                         self.ctx.lock_owners.clear()
                 _log("model lock cleared")
-                _json_response(self, 200, {"locked": None})
+                resp = {"locked": self.ctx.lock_model, "lock_owners": sorted(list(self.ctx.lock_owners))}
+                _json_response(self, 200, resp)
                 return
             if lock_val is True:
                 lock_name = self.ctx.state.model
@@ -450,7 +451,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.ctx.lock_model = lock_name
                 self.ctx.lock_owners.add(owner or "default")
             _log(f"model lock set: {lock_name}")
-            _json_response(self, 200, {"locked": lock_name})
+            _json_response(self, 200, {
+                "locked": lock_name,
+                "lock_owners": sorted(list(self.ctx.lock_owners)),
+            })
             return
 
         target = payload.get("mode")

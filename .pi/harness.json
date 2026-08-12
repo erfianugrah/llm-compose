@@ -69,5 +69,6 @@
       "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'Finishing concurrent-loop support. Acceptance criteria: (1) llmc lock/unlock have a working --owner flag wired through ProxyClient.set_lock into the POST /mode payload (not a parsed-but-dropped flag - trace it); (2) llmc status surfaces lock_owners with a graceful fallback; (3) NEW unit tests genuinely exercise owner semantics over HTTP against the real handler (add-only - existing tests unmodified); (4) the lock-clear response now echoes the actual lock state after the mutation instead of always null; (5) models/loop.toml has parallel_slots = 2 with context_size still 196608; (6) AGENTS.md + README.md document concurrent loops (shared preset, --owner per session, git worktree per same-repo loop, sensors must not restart the serving stack); (7) changes confined to the writeScope; (8) ignore .pi/** - operator scaffolding. Reject: vacuous or self-mocking tests, modified pre-existing tests, whole-file rewrites, scope creep, justifying essays in comments.'",
       "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names"
     }
-  ]
+  ],
+  "agentTimeoutMs": 3600000
 }
