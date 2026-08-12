@@ -53,12 +53,19 @@ cleanup() {
 trap cleanup EXIT
 
 wait_health() {
+    # The deadline scales with model size: the container downloads the GGUF
+    # from HF BEFORE llama-server starts loading, and a 17-29 GB download
+    # does not fit in a fixed 900s window on a slow link (observed 2026-08-12:
+    # Q4_K_M and UD-Q4_K_XL both FAILed on timeout while still downloading).
+    # Budget: 900s floor + 120s per GB.
+    local size_int=${3:-0}; size_int=${size_int%.*}  # bash $(( )) is integer-only
+    local timeout_s=$(( HEALTH_TIMEOUT + size_int * 120 ))
     local elapsed=0
     while ! curl -sf "http://localhost:${PORT}/health" >/dev/null 2>&1; do
         elapsed=$((elapsed + 3))
-        [ "$elapsed" -ge "$HEALTH_TIMEOUT" ] && { echo "  TIMEOUT"; docker logs "$CONTAINER" 2>&1 | tail -10; return 1; }
+        [ "$elapsed" -ge "$timeout_s" ] && { echo "  TIMEOUT"; docker logs "$CONTAINER" 2>&1 | tail -10; return 1; }
         if [ $((elapsed % 30)) -eq 0 ]; then
-            echo "  ... loading (${elapsed}s)"
+            echo "  ... loading/downloading (${elapsed}s / ${timeout_s}s)"
         fi
         sleep 3
     done
@@ -146,14 +153,25 @@ run_quant() {
     cleanup
     sleep 2
 
-    # Start llama-server with this GGUF
+    # Start llama-server with this GGUF. Prefer the flat file in the preset
+    # models dir when it exists - the HF-hub cache layout is a different
+    # store, so --hf-file would re-download GGUFs we already have on disk
+    # (observed 2026-08-12: UD-Q4_K_XL re-downloaded 17.6 GB with the flat
+    # file sitting in models/).
+    local -a model_args
+    if [ -f "${CACHE_DIR}/models/$file" ]; then
+        echo "  using local /models/$file"
+        model_args=(-m "/models/$file")
+    else
+        model_args=(--hf-repo "$REPO" --hf-file "$file")
+    fi
     docker run -d --name "$CONTAINER" --gpus all \
         -v "${CACHE_DIR}:/root/.cache" \
         -v "${CACHE_DIR}/models:/models" \
         -p "${PORT}:8080" \
         --shm-size 2g \
         "$IMAGE" \
-        --hf-repo "$REPO" --hf-file "$file" \
+        "${model_args[@]}" \
         --port 8080 --host 0.0.0.0 \
         -ngl "$NGL" --flash-attn on \
         -ctk q8_0 -ctv q8_0 \
@@ -162,7 +180,7 @@ run_quant() {
         --threads 8 --threads-batch 8 \
         --jinja --no-warmup --metrics >/dev/null
 
-    if ! wait_health; then
+    if ! wait_health "$label" "$file" "$size_gb"; then
         echo "$label,$file,$size_gb,FAIL,FAIL,0,0,0,0,0" >> "$CSV"
         cleanup
         return
