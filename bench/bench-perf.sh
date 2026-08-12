@@ -225,8 +225,10 @@ run_quant() {
 }
 
 # Ensure no other GPU service is hogging the card
-echo "Stopping LLM/ComfyUI/train profiles to free GPU..."
-docker compose --project-directory "$ROOT" --profile llm --profile comfyui --profile train stop 2>/dev/null || true
+echo "Stopping llama_server, comfyui, lora_train to free GPU..."
+for container in llama_server comfyui lora_train; do
+    docker rm -f "$container" >/dev/null 2>&1 || true
+done
 
 echo ""
 echo "Quant sweep — repo=$REPO ctx=$CTX -> $CSV"

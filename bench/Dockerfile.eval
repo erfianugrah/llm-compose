@@ -36,6 +36,7 @@ RUN pip install "bfcl-eval==${BFCL_VERSION}" || \
     pip install "git+https://github.com/ShishirPatil/gorilla.git@main#subdirectory=berkeley-function-call-leaderboard"
 
 WORKDIR /work
+COPY run-evals.py /work/
 COPY run-evals.sh /usr/local/bin/run-evals
 RUN chmod +x /usr/local/bin/run-evals
 

@@ -247,8 +247,10 @@ PY
 }
 
 # Free GPU
-echo "Stopping LLM/ComfyUI/train profiles to free GPU..."
-docker compose --project-directory "$ROOT" --profile llm --profile comfyui --profile train stop 2>/dev/null || true
+echo "Stopping llama_server, comfyui, lora_train to free GPU..."
+for container in llama_server comfyui lora_train; do
+    docker rm -f "$container" >/dev/null 2>&1 || true
+done
 
 # Build eval image if needed
 if [ "$PERF_ONLY" -eq 0 ]; then

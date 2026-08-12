@@ -252,7 +252,7 @@ class Orchestrator:
             # Without this a multi-hour unattended run grows the container
             # log without bound.
             log_config=LogConfig(
-                type=LogConfig.Types.JSON,
+                type=LogConfig.types.JSON,
                 config={"max-size": "50m", "max-file": "3"},
             ),
         )
