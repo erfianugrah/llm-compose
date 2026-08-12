@@ -17,11 +17,17 @@ Tuning rationale:
   model won on tool-calling reliability + instruction following).
 - presence_penalty 0: penalising already-seen tokens breaks tool-call
   JSON keys and repeated syntax over long agentic transcripts.
-- 131072 ctx, 2 slots: 2x64K. KV q8_0 (entrypoint default)
-  keeps this inside ~26 GB on the 5090. Do NOT enable q4_1 KV on Gemma 4
-  (-19% gen speed).
+
+- 196608 ctx, 1 slot (2 once concurrent-loop support lands): KV q8_0
+  (entrypoint default). Measured footprint 21598 MiB at 131072 ctx
+  (nvidia-smi, 2026-08-12); 196608 adds ~1 GB KV. The wide window is
+  load-bearing: loop iterations read large files and the model emits
+  10K+ token thinking traces - at 131072 the 85% auto-compact threshold
+  (~111K) killed every iteration of the concurrency-build run.
+  Do NOT enable q4_1 KV on Gemma 4 (-19% gen speed).
+
 """
-vram_gb = 26.0
+vram_gb = 23.0
 
 [model]
 # Local symlink -> gemma-4-26B-A4B-it-Q4_K_M.gguf (see description).
@@ -32,8 +38,10 @@ file = "loop-gemma-4-26B-A4B-it-Q4_K_M.gguf"
 
 [runtime]
 reasoning = "on"
-context_size = 131072
-parallel_slots = 2
+
+context_size = 196608
+parallel_slots = 1
+
 temperature = 1.0
 top_p = 0.95
 top_k = 64
