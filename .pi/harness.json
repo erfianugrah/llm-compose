@@ -1,69 +1,28 @@
 {
-  "task": "Repair the bench/ harness so it is self-consistent and runnable again. Two known breakages: (1) bench/bench-perf.sh frees the GPU with 'docker compose --profile llm --profile comfyui --profile train stop' - that is a v1 leftover; since v2 the GPU services are plain proxy-spawned Docker containers named llama_server, comfyui and lora_train, so the compose line stops nothing and the bench container then fights the running llama_server for VRAM. Replace it with a docker rm -f (or stop+rm) of those three container names (tolerate absence). (2) bench/Dockerfile.eval line 39 does 'COPY run-evals.sh ...' but bench/run-evals.sh does not exist, so the eval image build fails. Create bench/run-evals.sh as a thin executable entrypoint wrapper that execs run-evals.py with its arguments (see how Dockerfile.eval installs it as /usr/local/bin/run-evals with ENTRYPOINT pointing there), and make the Dockerfile COPY references consistent. Do not refactor anything else.",
+  "task": "Make the llmc proxy route /metrics to llama-server. Context: llama-server is always started with --metrics and exposes Prometheus metrics on its internal port 8080. `make metrics` curls http://localhost:11434/metrics, but the proxy currently 404s it as an unknown route. Add the route so GET /metrics on the proxy forwards to the llama backend (llama_server:8080, same path). Constraints: it must behave like the other proxied GET routes - read-only, so it must NOT trigger a GPU mode swap; when llm mode is not active it must 503 cleanly with the service_inactive message instead of swapping. Add a unit test in llmc/tests/test_proxy.py covering the route (proxies to llama when active; does not trigger a swap when idle - mirror the existing test_get_train_route_does_not_trigger_swap pattern). Do not refactor anything else.",
   "maxIterations": 6,
-  "models": [
-    "llama-server/loop",
-    "openrouter/moonshotai/kimi-k3"
-  ],
+  "models": ["llama-server/loop"],
   "stallPatience": 3,
-  "tools": [
-    "read",
-    "edit",
-    "write",
-    "bash"
-  ],
-  "writeScope": [
-    "bench/**"
-  ],
+  "tools": ["read", "edit", "write", "bash"],
+  "writeScope": ["llmc/**"],
   "rules": [
-    "Only touch files under bench/ - the rest of the repo is out of scope.",
-    "No new dependencies: bash, docker CLI, python3 stdlib only.",
-    "The v2 architecture spawns GPU services as plain containers via the Docker SDK (orchestrator.py); there is no docker compose profile for them anymore.",
-    "A check satisfied by deleting the offending line without a working replacement is a FAILED iteration - the GPU-free step must actually free the GPU."
+    "Only touch files under llmc/ - everything else is out of scope.",
+    "GET routes must never trigger a GPU mode swap; reuse the existing _classify/_ensure_and_forward machinery rather than inventing a parallel path.",
+    "A check satisfied by a stub or a route that returns canned text is a FAILED iteration - /metrics must actually proxy the backend's response.",
+    "The proxy must keep booting and the full unit suite must stay green; the live sensor rebuilds and restarts the real proxy container with your code."
   ],
   "sensors": [
-    {
-      "name": "unit-tests",
-      "cmd": "make test",
-      "timeoutMs": 120000,
-      "hint": "the llmc unit + schema suite must stay green; you likely broke nothing - run it and read the failure",
-      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py"
-    },
-    {
-      "name": "bash-syntax",
-      "cmd": "for f in bench/*.sh; do bash -n \"$f\" || exit 1; done",
-      "hint": "a shell script under bench/ has a syntax error; bash -n names the file and line",
-      "canary": "printf 'if then\\n' >> bench/bench-quants.sh"
-    },
-    {
-      "name": "dockerfile-refs-exist",
-      "expect": "fail",
-      "cmd": "missing=0; while read -r f; do test -e \"bench/$f\" || { echo \"missing: bench/$f\"; missing=1; }; done < <(rg -o '^COPY (\\S+)' bench/Dockerfile.eval -r '$1'); test \"$missing\" -eq 0",
-      "hint": "bench/Dockerfile.eval COPYs a file that does not exist; create it or fix the reference"
-    },
-    {
-      "name": "no-v1-compose-gpu-free",
-      "expect": "fail",
-      "cmd": "test -z \"$(rg --no-messages 'docker compose.*--profile' bench/)\"",
-      "hint": "bench/ still frees the GPU via v1 compose profiles; use docker rm -f on the proxy-spawned containers (llama_server comfyui lora_train)"
-    },
-    {
-      "name": "frees-spawned-containers",
-      "expect": "fail",
-      "cmd": "rg -q 'llama_server' bench/bench-perf.sh && rg -q 'docker (rm|stop)' bench/bench-perf.sh",
-      "hint": "bench-perf.sh must stop/remove the proxy-spawned GPU containers by name (llama_server, comfyui, lora_train) before benching"
-    },
-    {
-      "name": "judge",
-      "after": [
-        "unit-tests",
-        "bash-syntax",
-        "dockerfile-refs-exist",
-        "no-v1-compose-gpu-free",
-        "frees-spawned-containers"
-      ],
-      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'The bench/ harness repair: (1) the GPU-free step in bench/bench-perf.sh must target the v2 proxy-spawned containers llama_server/comfyui/lora_train via docker rm/stop and tolerate them being absent, with no docker compose --profile remnants anywhere under bench/; (2) every COPY source in bench/Dockerfile.eval must exist and any new shell entrypoint must be a real, syntactically valid wrapper that actually runs run-evals.py with its args - not a stub, TODO, or no-op; (3) changes must be confined to bench/ and must not weaken or delete existing bench functionality. Reject stubs, placeholder scripts, and justifying essays in comments.'",
-      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names"
-    }
+    { "name": "unit-tests", "cmd": "make test", "timeoutMs": 120000,
+      "hint": "the llmc unit + schema suite must stay green; read the failure and fix your change, not the test",
+      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py" },
+    { "name": "route-registered", "expect": "fail",
+      "cmd": "rg -q 'metrics' llmc/proxy.py",
+      "hint": "proxy.py has no /metrics route; add it to the routing (_classify or an explicit handler)" },
+    { "name": "live-metrics", "expect": "fail", "after": ["unit-tests", "route-registered"], "timeoutMs": 300000,
+      "cmd": "make build-proxy restart >/dev/null 2>&1 && sleep 2 && curl -sf -m 10 http://localhost:11434/metrics | rg -q 'llama'",
+      "hint": "the running proxy must serve llama-server's Prometheus metrics through :11434/metrics; if the proxy fails to boot your code is broken - check make logs-proxy" },
+    { "name": "judge", "after": ["unit-tests", "route-registered", "live-metrics"],
+      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'The proxy must route GET /metrics to the llama backend (llama_server:8080) so `make metrics` works: (1) the route forwards the backend response, not canned text; (2) it is read-only - a GET must never trigger a GPU mode swap, and must 503 cleanly when llm mode is not active, consistent with the existing route discipline; (3) a unit test in llmc/tests/test_proxy.py covers the new route; (4) changes are confined to llmc/ and reuse the existing _classify/_ensure_and_forward machinery rather than a parallel code path; (5) ignore .pi/** entirely - it is operator scaffolding for the loop, not part of the change. Reject stubs, parallel routing hacks, and justifying essays in comments.'",
+      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names" }
   ]
 }
