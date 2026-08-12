@@ -1,0 +1,42 @@
+name = "Loop Engine - Gemma 4 26B-A4B MoE, agentic coding"
+description = """
+Loop-engine preset: Gemma 4 26B-A4B MoE tuned for unattended agentic
+coding (self-correcting-loop worker: fresh pi -p per iteration, heavy
+tool-calling, frontier model as judge).
+
+Same weights as summarizer.toml via a symlinked GGUF (loop-<name>.gguf)
+because preset model_id derives from the file stem and duplicate stems
+are rejected. Text-only: no mmproj (frees ~0.8 GB KV headroom; the loop
+worker never sees images - visual judging runs on the frontier judge).
+
+Tuning rationale:
+- reasoning on: thinking helps multi-step tool use; per-request clients
+  can still override via chat_template_kwargs when --jinja is on.
+- temp 1.0 / top_p 0.95 / top_k 64 / min_p 0.05: matches the published
+  Gemma 4 agentic config (pgi.dev RTX 5090 head-to-head, where this
+  model won on tool-calling reliability + instruction following).
+- presence_penalty 0: penalising already-seen tokens breaks tool-call
+  JSON keys and repeated syntax over long agentic transcripts.
+- 131072 ctx, 1 slot: single loop client; KV q8_0 (entrypoint default)
+  keeps this inside ~26 GB on the 5090. Do NOT enable q4_1 KV on Gemma 4
+  (-19% gen speed).
+"""
+vram_gb = 26.0
+
+[model]
+# Local symlink -> gemma-4-26B-A4B-it-Q4_K_M.gguf (see description).
+# repo is a placeholder to satisfy preset validation; entrypoint
+# prefers the local file.
+repo = "local/loop-engine"
+file = "loop-gemma-4-26B-A4B-it-Q4_K_M.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 131072
+parallel_slots = 1
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+min_p = 0.05
+presence_penalty = 0.0
+repeat_penalty = 1.0

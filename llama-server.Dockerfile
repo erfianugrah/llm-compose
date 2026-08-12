@@ -7,7 +7,7 @@
 
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS build
 
-ARG LLAMA_CPP_VERSION=b8799
+ARG LLAMA_CPP_VERSION=b10362
 ARG CUDA_ARCH=120
 
 # Build dependencies

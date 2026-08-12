@@ -92,6 +92,12 @@ class ProxyContext:
     state: State
     swap_lock: threading.Lock = field(default_factory=threading.Lock)
     switching: bool = False
+    # Model lock: when set (a preset name), the proxy refuses anything that
+    # would evict the locked model - model swaps, comfyui/train mode swaps,
+    # unknown-model passthrough. Protects unattended multi-hour runs (loop
+    # engine) from cross-client GPU eviction (whisper bot, Open WebUI).
+    # In-memory only: a proxy restart clears the lock.
+    lock_model: Optional[str] = None
 
     def reload_presets(self) -> None:
         """Re-scan the presets dir. Lets users add a TOML file without
@@ -191,6 +197,12 @@ def _ensure_mode(ctx: ProxyContext, target: str) -> tuple[bool, str]:
     if target not in SERVICES:
         return False, f"unknown mode {target!r}"
 
+    if ctx.lock_model and target != "llm":
+        return False, (
+            f"model lock active on {ctx.lock_model!r}: refusing to leave "
+            f"llm mode for {target!r} (POST /mode {{\"lock\": false}} to unlock)"
+        )
+
     current = ctx.orchestrator.current_mode()
     if current == target:
         return True, ""
@@ -247,13 +259,32 @@ def _ensure_model(ctx: ProxyContext, requested_model: str) -> tuple[bool, str]:
         # No model specified — current model is fine
         return True, ""
 
+    # Live-reload so a newly-added TOML is switchable without someone first
+    # hitting GET /v1/models (previously the only reload trigger).
+    try:
+        ctx.reload_presets()
+    except Exception as exc:
+        _log(f"preset reload failed: {exc}")
+
     preset = ctx.preset_by_name(requested_model)
     if preset is None:
+        if ctx.lock_model:
+            return False, (
+                f"model lock active on {ctx.lock_model!r}: rejecting unknown "
+                f"model {requested_model!r} (passthrough would silently run "
+                f"on the locked model)"
+            )
         # Unknown model — let llama-server handle it (might be a passthrough
         # to whatever GGUF it has loaded, or it'll 404 — either way, not
         # our problem)
         _log(f"unknown model {requested_model!r}, passing through")
         return True, ""
+
+    if ctx.lock_model and preset.name != ctx.lock_model:
+        return False, (
+            f"model lock active on {ctx.lock_model!r}: refusing to swap to "
+            f"{preset.name!r} (POST /mode {{\"lock\": false}} to unlock)"
+        )
 
     # VRAM budget gate — reject before stopping the current model
     ok, msg = _check_vram_budget(preset, ctx.config)
@@ -359,6 +390,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "mode": self.ctx.orchestrator.current_mode(),
             "switching": self.ctx.switching,
             "model": self.ctx.state.model,
+            "locked": self.ctx.lock_model,
         })
 
     def _handle_mode_post(self, body: bytes) -> None:
@@ -367,6 +399,37 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             _json_response(self, 400, {"error": "invalid JSON"})
             return
+
+        # Model lock management: {"lock": "<preset>"} / {"lock": true} (lock
+        # the currently-active model) / {"lock": false} or {"lock": null}
+        # (unlock). Always allowed, including while locked.
+        if "lock" in payload:
+            lock_val = payload.get("lock")
+            if lock_val in (None, False):
+                self.ctx.lock_model = None
+                _log("model lock cleared")
+                _json_response(self, 200, {"locked": None})
+                return
+            if lock_val is True:
+                lock_name = self.ctx.state.model
+                if not lock_name:
+                    _json_response(self, 400, {"error": "no active model to lock"})
+                    return
+            else:
+                try:
+                    self.ctx.reload_presets()
+                except Exception as exc:
+                    _log(f"preset reload failed: {exc}")
+                preset = self.ctx.preset_by_name(str(lock_val))
+                if preset is None:
+                    _json_response(self, 404, {"error": f"unknown preset {lock_val!r}"})
+                    return
+                lock_name = preset.name
+            self.ctx.lock_model = lock_name
+            _log(f"model lock set: {lock_name}")
+            _json_response(self, 200, {"locked": lock_name})
+            return
+
         target = payload.get("mode")
         if target not in SERVICES:
             _json_response(self, 400, {
@@ -461,12 +524,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         })
                         return
 
-        self._forward(service.hostname, service.internal_port, target_path, body=body)
+        # LLM generations can legitimately exceed 600s end-to-end (long
+        # thinking chains, non-streamed requests). Other backends keep the
+        # tighter default.
+        timeout = 3600 if target_mode == "llm" else 600
+        self._forward(service.hostname, service.internal_port, target_path, body=body, timeout=timeout)
 
-    def _forward(self, host: str, port: int, path: str, body: Optional[bytes] = None) -> None:
+    def _forward(self, host: str, port: int, path: str, body: Optional[bytes] = None, *, timeout: int = 600) -> None:
         """Generic reverse proxy. Streams SSE responses chunk-by-chunk."""
         try:
-            conn = http.client.HTTPConnection(host, port, timeout=600)
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
         except Exception as exc:
             _json_response(self, 502, {
                 "error": {"message": f"connection failed: {exc}", "type": "server_error", "code": 502}
@@ -509,15 +576,42 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             if is_stream:
-                # SSE: flush after each chunk so tokens appear in real time
+                # SSE: flush after each chunk so tokens appear in real time.
+                # Distinguish upstream death from client disconnect: an
+                # upstream reset must be surfaced, because a clean EOF is
+                # indistinguishable from a finished completion and an
+                # unattended agent would consume the truncated stream as a
+                # full answer.
                 while True:
-                    chunk = resp.read(4096)
+                    try:
+                        chunk = resp.read(4096)
+                    except (OSError, http.client.HTTPException) as exc:
+                        _log(f"upstream {host}:{port} died mid-stream: {exc}")
+                        try:
+                            self.wfile.write(
+                                b'data: {"error":{"message":"upstream terminated '
+                                b'mid-stream","type":"upstream_error"}}\n\n'
+                            )
+                            self.wfile.flush()
+                        except OSError:
+                            pass
+                        break
                     if not chunk:
                         break
                     self.wfile.write(chunk)
                     self.wfile.flush()
             else:
-                self.wfile.write(resp.read())
+                try:
+                    payload_bytes = resp.read()
+                except (OSError, http.client.HTTPException) as exc:
+                    # Upstream reset before the body completed. Response
+                    # headers (with upstream's Content-Length) are already
+                    # sent, so the honest signal is an abrupt close: the
+                    # client gets a truncated-body error instead of a clean
+                    # short response.
+                    _log(f"upstream {host}:{port} reset during body read: {exc}")
+                    return
+                self.wfile.write(payload_bytes)
         except (BrokenPipeError, ConnectionResetError):
             # Client disconnected mid-stream — not an error worth logging
             pass
@@ -569,7 +663,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     ok, msg = _ensure_model(self.ctx, requested_model)
                 if not ok:
                     _json_response(self, 422, {
-                        "error": {"message": msg, "type": "vram_exceeded", "code": 422}
+                        "error": {"message": msg, "type": "model_unavailable", "code": 422}
                     })
                     return
                 messages = payload.get("messages")

@@ -14,7 +14,7 @@ loops.
 
 ```bash
 # Add the llmc wrapper to PATH (one-time)
-export PATH="$HOME/llm-compose/bin:$PATH"   # then: llmc --help
+export PATH="\/infra/ai/llm-compose/bin:\"   # then: llmc --help
 
 # Stack lifecycle (pure shell)
 make setup              # generate .env + create named volumes
@@ -35,6 +35,8 @@ make metrics            # curl /metrics
 
 # Mode + model switching (CLI)
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
+llmc lock [preset]      # pin a preset: refuse GPU-evicting swaps (loop runs)
+llmc unlock             # clear the model lock
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
 

@@ -215,7 +215,7 @@ class Orchestrator:
         any non-trivial shell script (sees `if [` as three tokens, etc.).
         Use `["the script"]` to keep it as one Cmd entry."""
         from docker.errors import APIError, ImageNotFound, NotFound
-        from docker.types import DeviceRequest
+        from docker.types import DeviceRequest, LogConfig
 
         self.stop_gpu_services()
 
@@ -247,6 +247,14 @@ class Orchestrator:
             shm_size=shm_size,
             restart_policy={"Name": "unless-stopped"},
             labels={SERVICE_LABEL: service.hostname, GPU_LABEL: service.mode},
+            # Bound the json-file log: spawned GPU services don't inherit
+            # compose's logging limits, and llama-server logs every request.
+            # Without this a multi-hour unattended run grows the container
+            # log without bound.
+            log_config=LogConfig(
+                type=LogConfig.Types.JSON,
+                config={"max-size": "50m", "max-file": "3"},
+            ),
         )
         if ports is not None:
             run_kwargs["ports"] = ports

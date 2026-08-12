@@ -18,6 +18,9 @@
 #   MIN_P            Optional.
 #   PRESENCE_PENALTY Optional.
 #   REPEAT_PENALTY   Optional.
+#   LLAMA_VERBOSE    Optional. Set to pass -v (per-request verbose logging).
+#                    Default off: container logs are capped at 50m x 3 and
+#                    multi-hour agentic runs would churn through them.
 #
 # All other llama-server flags are hardcoded here (flash-attn, KV quant,
 # batch sizes, threads, ngl) — change them by rebuilding the image, not
@@ -59,5 +62,5 @@ exec llama-server \
   -ub 2048 \
   --threads 8 \
   --threads-batch 8 \
-  -v \
+  ${LLAMA_VERBOSE:+-v} \
   --metrics "$@"

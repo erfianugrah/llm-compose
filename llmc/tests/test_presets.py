@@ -41,7 +41,13 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
 class TestPresetLoading(unittest.TestCase):
     def test_load_all_presets(self):
         presets = load_all(MODELS_DIR)
-        self.assertEqual(len(presets), 8, f"expected 8 presets, got {sorted(presets)}")
+        # Don't hardcode a count - presets come and go. Assert the core set
+        # is present and everything parsed (load_all raises on bad TOML).
+        expected = {"qwen3", "qwen3-coder", "qwen36", "qwen36-moe", "gemma4",
+                    "summarizer", "loop", "erfi", "qwen3-vl"}
+        names = {p.name for p in presets.values()}
+        missing = expected - names
+        self.assertFalse(missing, f"missing presets: {missing}; got {sorted(names)}")
 
     def test_model_ids_unique(self):
         presets = load_all(MODELS_DIR)

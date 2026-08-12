@@ -262,9 +262,10 @@ class TestProxyEndpoints(unittest.TestCase):
             status, _, payload = _http_get(srv.port, "/v1/models")
         self.assertEqual(status, 200)
         self.assertEqual(payload["object"], "list")
-        # Should include all 8 model presets we migrated
+        # Core presets must be present (don't hardcode a count - presets
+        # come and go; load_all raises on malformed TOML anyway)
         ids = {m["id"] for m in payload["data"]}
-        self.assertEqual(len(ids), 8)
+        self.assertGreaterEqual(len(ids), 9)
         # Each entry has the metadata Open WebUI expects
         for entry in payload["data"]:
             self.assertIn("meta", entry)
@@ -341,6 +342,91 @@ class TestProxyEndpoints(unittest.TestCase):
             status, _, payload = _http_get(srv.port, "/comfyui/history/abc")
         self.assertEqual(status, 503)
         ctx.orchestrator.spawn_comfyui.assert_not_called()
+
+
+class TestModelLock(unittest.TestCase):
+    """Model lock: refuses anything that would evict the locked preset.
+    Protects unattended multi-hour runs (loop engine) from cross-client
+    GPU eviction."""
+
+    def _make_ctx(self, *, current_mode="llm", model="qwen36"):
+        orch = MagicMock()
+        orch.current_mode.return_value = current_mode
+        from llmc.presets import load_all
+        presets_dir = REPO_ROOT / "models"
+        return ProxyContext(
+            config=ProxyConfig(port=0, presets_dir=presets_dir),
+            orchestrator=orch,
+            presets=load_all(presets_dir),
+            state=State(mode=current_mode, model=model),
+        )
+
+    def test_lock_and_unlock_roundtrip(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["locked"], "qwen36")
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["locked"], "qwen36")
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": False})
+            self.assertEqual(status, 200)
+            self.assertIsNone(payload["locked"])
+
+    def test_lock_true_locks_current_model(self):
+        ctx = self._make_ctx(model="qwen36")
+        with _ProxyServer(ctx) as srv:
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["locked"], "qwen36")
+
+    def test_lock_unknown_preset_404s(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            status, _, _ = _http_post(srv.port, "/mode", {"lock": "nope"})
+        self.assertEqual(status, 404)
+
+    def test_locked_rejects_other_model_swap(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
+                "model": "summarizer", "messages": [{"role": "user", "content": "hi"}],
+            })
+        self.assertEqual(status, 422)
+        self.assertIn("lock", payload["error"]["message"])
+        ctx.orchestrator.spawn_llama.assert_not_called()
+
+    def test_locked_rejects_unknown_model_passthrough(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
+                "model": "no-such-model", "messages": [{"role": "user", "content": "hi"}],
+            })
+        self.assertEqual(status, 422)
+        self.assertIn("lock", payload["error"]["message"])
+
+    def test_locked_rejects_mode_swap(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            status, _, payload = _http_post(srv.port, "/mode", {"mode": "comfyui"})
+        self.assertEqual(status, 503)
+        self.assertIn("lock", payload["error"])  # /mode 503s use a plain-string error
+        ctx.orchestrator.spawn_comfyui.assert_not_called()
+
+    def test_locked_allows_locked_model_through(self):
+        """The locked model itself must keep working. With a mocked
+        orchestrator there is no upstream, so a 502 proves the request
+        passed the lock gate and forwarding was attempted."""
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            status, _, _ = _http_post(srv.port, "/v1/chat/completions", {
+                "model": "qwen36", "messages": [{"role": "user", "content": "hi"}],
+            })
+        self.assertEqual(status, 502)
 
 
 class TestSwapLockSerializesEnsureModel(unittest.TestCase):

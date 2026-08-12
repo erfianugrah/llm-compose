@@ -149,6 +149,10 @@ class ProxyClient:
         # Mode swaps can take 10+ minutes for first GGUF load.
         return self._request("POST", "/mode", body=body, timeout=900)
 
+    def set_lock(self, lock) -> tuple[int, dict]:
+        """lock: preset name, True (lock current model), or False/None (unlock)."""
+        return self._request("POST", "/mode", body={"lock": lock}, timeout=30)
+
 
 # ── Docker CLI wrappers (host-side, no SDK dep) ────────────────────────
 
@@ -204,6 +208,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         ("Mode:", mode_payload.get("mode", "?")),
         ("Active model:", active_model),
         ("Switching:", str(mode_payload.get("switching", False))),
+        ("Locked:", str(mode_payload.get("locked") or "no")),
         ("Presets:", str(len(models_payload.get("data", [])))),
     ])
     return EXIT_OK
@@ -272,6 +277,42 @@ def cmd_switch(args: argparse.Namespace) -> int:
             print(f"Loaded: {payload.get('model', args.preset)}")
         return EXIT_OK
     _err(f"Switch failed ({status}): {payload.get('error', payload)}")
+    return EXIT_BACKEND_ERROR
+
+
+def cmd_lock(args: argparse.Namespace) -> int:
+    """Lock a preset against GPU-evicting swaps (loop-engine protection)."""
+    client = ProxyClient()
+    lock_val = args.preset if args.preset else True
+    try:
+        status, payload = client.set_lock(lock_val)
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Proxy unreachable: {exc}")
+        return EXIT_TRANSIENT
+    if status == 200:
+        if args.json:
+            _print_json(payload)
+        else:
+            print(f"Locked: {payload.get('locked')}")
+        return EXIT_OK
+    _err(f"Lock failed ({status}): {payload.get('error', payload)}")
+    return EXIT_BACKEND_ERROR
+
+
+def cmd_unlock(args: argparse.Namespace) -> int:
+    client = ProxyClient()
+    try:
+        status, payload = client.set_lock(False)
+    except (OSError, http.client.HTTPException) as exc:
+        _err(f"Proxy unreachable: {exc}")
+        return EXIT_TRANSIENT
+    if status == 200:
+        if args.json:
+            _print_json(payload)
+        else:
+            print("Unlocked")
+        return EXIT_OK
+    _err(f"Unlock failed ({status}): {payload.get('error', payload)}")
     return EXIT_BACKEND_ERROR
 
 
@@ -1002,6 +1043,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("switch", help="switch LLM model (shortcut for mode llm --model X)")
     sp.add_argument("preset", help="preset name (see `llmc models`)")
     sp.set_defaults(func=cmd_switch)
+
+    sp = sub.add_parser("lock", help="lock a preset in place - refuse GPU-evicting swaps")
+    sp.add_argument("preset", nargs="?", default=None,
+                    help="preset to lock (omit to lock the currently-active model)")
+    sp.set_defaults(func=cmd_lock)
+
+    sp = sub.add_parser("unlock", help="clear the model lock")
+    sp.set_defaults(func=cmd_unlock)
 
     sp = sub.add_parser("models", help="list available LLM presets")
     sp.set_defaults(func=cmd_models)
