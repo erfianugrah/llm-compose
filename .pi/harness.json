@@ -1,66 +1,27 @@
 {
-  "task": "Add concurrent-loop support to the llmc stack. Today the model lock is single-owner (ctx.lock_model: one string), so two loops sharing the `loop` preset cannot both hold it - one loop's unlock would strip the other's protection mid-run. Change the lock to a shared lock with named owners, and give the loop preset a second slot. REQUIRED BEHAVIOR (pinned by .pi/lock-owners-probe.py, an operator-owned acceptance probe - run it, make it green, do NOT modify it): (1) POST /mode {\"lock\": \"<preset>\", \"owner\": \"a\"} pins the preset and records the owner; GET /mode exposes \"locked\" (preset name string, or null - MUST stay backward compatible) plus \"lock_owners\" (list of owner strings). (2) A second owner locking the same preset shares the lock. (3) {\"lock\": false, \"owner\": \"a\"} releases ONLY that owner; the preset stays locked while any owner remains. (4) Releasing the last owner unlocks. (5) Backward compat: {\"lock\": \"<preset>\"} with no owner still works (record a default owner); {\"lock\": false} with no owner force-clears ALL owners. (6) All existing lock enforcement is unchanged: while locked, /v1 with a different preset 422s, the locked preset forwards, mode swaps 503, and no spawn calls happen - the existing TestModelLock suite must keep passing unmodified. ALSO REQUIRED: (7) llmc lock/unlock gain an --owner flag; llmc status shows the owners. (8) models/loop.toml: parallel_slots = 2 (context_size stays 196608 - llama.cpp splits total ctx across slots, so 2x98K; comment this in the TOML). (9) Unit tests in llmc/tests/test_proxy.py covering the owner-refcount semantics. (10) Doc the concurrency model briefly in AGENTS.md (model lock section) and README.md: concurrent loops must share one preset, one git worktree per loop when looping the same repo, and loop sensors must never rebuild/restart the stack that serves them.",
+  "task": "In llmc/proxy.py ONLY, convert the single-owner model lock into a shared lock with named owners, so multiple loops can concurrently hold the same preset and one loop's unlock does not strip another's protection. THE CHANGE IS SMALL - three hunks, enforcement code does NOT change: (1) ProxyContext: keep `lock_model: Optional[str]` (the locked preset name) and ADD `lock_owners: set[str]` (default empty set). Every enforcement point (_ensure_model, _ensure_mode) keeps using `lock_model` exactly as today - do not touch them. (2) _handle_mode_post's lock block: on set, accept an optional \"owner\" string in the payload (default \"default\" when omitted), set lock_model AND add the owner to lock_owners. On clear ({\"lock\": false} or null): if the payload has an \"owner\", remove ONLY that owner and clear lock_model just when the set becomes empty; with NO owner in the payload, force-clear everything (lock_model = None, lock_owners.clear()) - that is the existing behavior and must be preserved. Keep the swap_lock around the mutation. (3) _handle_mode_get: keep \"locked\" as the preset name string or null (backward compatible) and ADD \"lock_owners\": sorted list of owner strings. THE CONTRACT IS PINNED by .pi/lock-owners-probe.py - an operator-owned acceptance probe you must NOT modify. Run it: python3 .pi/lock-owners-probe.py. It boots your modified proxy on an ephemeral port and checks 19 behaviors over HTTP (owner recording, shared hold, single-owner release keeps the lock, last-release unlocks, ownerless force-clear, and that all existing lock enforcement still refuses swaps). All 19 must pass while the existing TestModelLock suite keeps passing UNMODIFIED.",
   "maxIterations": 8,
-  "models": [
-    "llama-server/loop"
-  ],
+  "models": ["llama-server/loop"],
   "stallPatience": 3,
-  "tools": [
-    "read",
-    "edit",
-    "write",
-    "bash"
-  ],
-  "writeScope": [
-    "llmc/**",
-    "models/loop.toml",
-    "AGENTS.md",
-    "README.md"
-  ],
+  "tools": ["read", "edit", "write", "bash"],
+  "writeScope": ["llmc/proxy.py"],
   "rules": [
-    "The acceptance probe .pi/lock-owners-probe.py is operator-owned: never edit it, and never edit anything under .pi/. Make the code satisfy it.",
-    "Backward compatibility is a hard requirement: existing lock tests in llmc/tests/test_proxy.py must pass UNMODIFIED, and GET /mode's \"locked\" field stays a preset-name string or null.",
-    "Only touch files matching the writeScope: llmc/**, models/loop.toml, AGENTS.md, README.md.",
-    "Do not rebuild, restart, or docker-touch any container or the running stack; this is a code-only change.",
-    "A check satisfied by weakening an existing test, editing the probe, or special-casing the probe's exact requests is a FAILED iteration."
+    "Only llmc/proxy.py may change. No other file - not tests, not docs, not new files.",
+    "EDIT DISCIPLINE (this is where previous attempts failed): never rewrite the whole file. Use the edit tool with oldText copied character-for-character from a fresh read of the exact lines you are changing - the file uses 4-space indentation and you must reproduce it exactly. Small hunks only.",
+    "After EVERY edit, before doing anything else, run: python3 -c 'import llmc.proxy' - a syntax/indentation error means your last edit was malformed; fix THAT line immediately instead of pressing on.",
+    "The acceptance probe .pi/lock-owners-probe.py and everything under .pi/ is operator-owned: never edit it. Make the code satisfy it.",
+    "Existing tests must pass unmodified; a check satisfied by editing tests, the probe, or special-casing the probe's exact requests is a FAILED iteration.",
+    "Do not rebuild, restart, or docker-touch any container; this is a code-only change."
   ],
   "sensors": [
-    {
-      "name": "unit-tests",
-      "cmd": "make test",
-      "timeoutMs": 120000,
-      "hint": "the llmc unit + schema suite must stay green, including the existing single-owner lock tests; read the failure and fix your change, not the test",
-      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py"
-    },
-    {
-      "name": "lock-owners-probe",
-      "expect": "fail",
-      "timeoutMs": 60000,
+    { "name": "unit-tests", "cmd": "make test", "timeoutMs": 120000,
+      "hint": "the suite must stay green INCLUDING the existing single-owner lock tests, unmodified. A SyntaxError/IndentationError means your edit was malformed - the traceback names the file and line; fix that exact line.",
+      "canary": "printf '\\ninvalid python!!!\\n' >> llmc/state.py" },
+    { "name": "lock-owners-probe", "expect": "fail", "timeoutMs": 60000,
       "cmd": "python3 .pi/lock-owners-probe.py",
-      "hint": "the operator-owned acceptance probe defines the contract; run it, read which named checks FAIL, and implement until all pass"
-    },
-    {
-      "name": "two-slots",
-      "expect": "fail",
-      "cmd": "rg -q 'parallel_slots = 2' models/loop.toml",
-      "hint": "models/loop.toml must declare parallel_slots = 2 (context_size unchanged at 196608)"
-    },
-    {
-      "name": "cli-owner-flag",
-      "expect": "fail",
-      "cmd": "rg -q -- '--owner' llmc/cli.py",
-      "hint": "llmc lock/unlock need an --owner flag wired to the proxy lock payload"
-    },
-    {
-      "name": "judge",
-      "after": [
-        "unit-tests",
-        "lock-owners-probe",
-        "two-slots",
-        "cli-owner-flag"
-      ],
-      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'Concurrent-loop support for the llmc proxy. Acceptance criteria: (1) the model lock becomes a shared lock with named owners - GET /mode exposes backward-compatible \"locked\" (string|null) plus \"lock_owners\" (list); (2) lock/unlock with an owner adds/removes only that owner and the preset stays locked until the last owner releases; (3) ownerless lock/unlock keep working, with ownerless unlock force-clearing all owners; (4) all lock enforcement (preset swap 422, mode swap 503, unknown-model rejection) is preserved and the pre-existing TestModelLock tests are unmodified; (5) llmc lock/unlock have a working --owner flag wired through to the proxy payload (not a parsed-but-dropped flag); (6) models/loop.toml has parallel_slots = 2 with context_size still 196608; (7) new unit tests genuinely exercise owner-refcount behavior over HTTP (not vacuous, not self-mocking); (8) AGENTS.md and README.md document the concurrency model per the task; (9) ignore .pi/** entirely - operator scaffolding. Reject: vacuous tests, weakened existing tests, scope creep beyond the writeScope, and justifying essays in comments.'",
-      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names"
-    }
+      "hint": "the operator-owned acceptance probe defines the contract; run it, read which named checks FAIL, and implement until all pass" },
+    { "name": "judge", "after": ["unit-tests", "lock-owners-probe"],
+      "cmd": "judge --base HEAD --model openrouter/moonshotai/kimi-k3 --spec 'Shared model lock with named owners in llmc/proxy.py. Acceptance criteria: (1) ProxyContext gains a lock_owners set alongside the existing lock_model preset-name string; (2) POST /mode lock payloads accept an optional owner (default when omitted), set adds the owner, clear with an owner removes only that owner and unlocks only when the set empties, ownerless clear force-clears everything (backward compatible); (3) GET /mode keeps \"locked\" as string|null and adds \"lock_owners\" as a list; (4) ALL lock enforcement logic in _ensure_model/_ensure_mode is unchanged - this should be a small diff, roughly three hunks; (5) the existing TestModelLock tests are byte-identical (unmodified); (6) changes are confined to llmc/proxy.py; (7) ignore .pi/** entirely - operator scaffolding. Reject: whole-file rewrites, reformatted or reordered unrelated code, weakened tests, scope creep, and justifying essays in comments.'",
+      "hint": "the frontier judge rejected the diff; read its findings and address the specific defect it names" }
   ]
 }
