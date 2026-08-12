@@ -62,6 +62,21 @@ class TestStatePersistence(unittest.TestCase):
         self.assertEqual(loaded.model, "qwen36")
         self.assertEqual(loaded.updated_at, 1000)
 
+    def test_lock_roundtrip(self):
+        save(self.path, State(
+            mode="llm",
+            model="qwen36",
+            locked="loop",
+            lock_owners=["a", "b"],
+            updated_at=1000
+        ))
+        loaded = load(self.path)
+        self.assertEqual(loaded.mode, "llm")
+        self.assertEqual(loaded.model, "qwen36")
+        self.assertEqual(loaded.locked, "loop")
+        self.assertEqual(loaded.lock_owners, ["a", "b"])
+        self.assertEqual(loaded.updated_at, 1000)
+
     def test_save_is_atomic_no_temp_file_left(self):
         save(self.path, State(mode="comfyui"))
         # No .tmp file should exist after a successful save

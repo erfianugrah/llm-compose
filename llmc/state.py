@@ -40,6 +40,7 @@ class StateError(ValueError):
 class State:
     mode: str = "idle"
     model: Optional[str] = None
+    locked: Optional[str] = None
     lock_owners: list[str] = field(default_factory=list)
     updated_at: int = 0
 
@@ -55,6 +56,8 @@ class State:
         lines = [f'mode = "{self.mode}"']
         if self.model is not None:
             lines.append(f'model = "{self.model}"')
+        if self.locked is not None:
+            lines.append(f'locked = "{self.locked}"')
         if self.lock_owners:
             lines.append(f'lock_owners = {json.dumps(self.lock_owners)}')
         lines.append(f"updated_at = {self.updated_at}")
@@ -67,11 +70,11 @@ def load(path: Path) -> State:
     if not path.exists():
         return State()
     try:
-        data = tomllib.loads(param_name := path.read_text())
+        data = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as exc:
         raise StateError(f"{path}: invalid TOML: {exc}") from exc
 
-    allowed = {"mode", "model", "lock_owners", "updated_at"}
+    allowed = {"mode", "model", "lock_owners", "updated_at", "locked"}
     unknown = set(data) - allowed
     if unknown:
         raise StateError(f"{path}: unknown key(s) {sorted(unknown)}")
@@ -83,6 +86,10 @@ def load(path: Path) -> State:
     if model is not None and not isinstance(model, str):
         raise StateError(f"{path}: model must be a string or omitted")
     
+    locked = data.get("locked")
+    if locked is not None and not isinstance(locked, str):
+        raise StateError(f"{path}: locked must be a string or omitted")
+
     lock_owners = data.get("lock_owners", [])
     if not isinstance(lock_owners, list):
         raise StateError(f"{param_name := 'lock_owners'}: must be a list of strings")
@@ -93,7 +100,7 @@ def load(path: Path) -> State:
     if not isinstance(updated_at, int):
         raise StateError(f"{path}: updated_at must be an integer")
 
-    return State(mode=mode, model=model, lock_owners=lock_owners, updated_at=updated_at)
+    return State(mode=mode, model=model, locked=locked, lock_owners=lock_owners, updated_at=updated_at)
 
 
 def save(path: Path, state: State) -> None:

@@ -101,6 +101,10 @@ class ProxyContext:
     lock_model: Optional[str] = None
     lock_owners: set[str] = field(default_factory=set)
 
+    def __post_init__(self) -> None:
+        self.lock_model = self.state.locked
+        self.lock_owners = set(self.state.lock_owners)
+
     def reload_presets(self) -> None:
         """Re-scan the presets dir. Lets users add a TOML file without
         restarting the proxy."""
@@ -423,6 +427,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     else:
                         self.ctx.lock_model = None
                         self.ctx.lock_owners.clear()
+                    try:
+                        self.ctx.state = state_mod.update(
+                            self.ctx.config.state_path,
+                            locked=self.ctx.lock_model,
+                            lock_owners=sorted(list(self.ctx.lock_owners)),
+                        )
+                    except OSError:
+                        _log("failed to persist lock clear to state file")
                 _log("model lock cleared")
                 resp = {"locked": self.ctx.lock_model, "lock_owners": sorted(list(self.ctx.lock_owners))}
                 _json_response(self, 200, resp)
@@ -450,6 +462,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             with self.ctx.swap_lock:
                 self.ctx.lock_model = lock_name
                 self.ctx.lock_owners.add(owner or "default")
+                try:
+                    self.ctx.state = state_mod.update(
+                        self.ctx.config.state_path,
+                        locked=self.ctx.lock_model,
+                        lock_owners=sorted(list(self.ctx.lock_owners)),
+                    )
+                except OSError:
+                    _log("failed to persist lock set to state file")
             _log(f"model lock set: {lock_name}")
             _json_response(self, 200, {
                 "locked": lock_name,

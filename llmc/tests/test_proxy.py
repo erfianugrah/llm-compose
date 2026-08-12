@@ -517,6 +517,66 @@ class TestModelLock(unittest.TestCase):
             self.assertIn("lock", payload["error"]["message"])
 
 
+class TestLockPersistence(unittest.TestCase):
+    """Restart-safe lock: lock state round-trips through the state file."""
+
+    def _make_ctx(self, state_dir, *, model="qwen36"):
+        orch = MagicMock()
+        orch.current_mode.return_value = "llm"
+        from llmc.presets import load_all
+        presets_dir = REPO_ROOT / "models"
+        from llmc.state import load as load_state
+        return ProxyContext(
+            config=ProxyConfig(port=0, presets_dir=presets_dir, state_dir=Path(state_dir)),
+            orchestrator=orch,
+            presets=load_all(presets_dir),
+            state=load_state(Path(state_dir) / "active.toml"),
+        )
+
+    def test_lock_survives_context_rebuild(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._make_ctx(tmp)
+            with _ProxyServer(ctx) as srv:
+                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "a"})
+                self.assertEqual(status, 200)
+                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "b"})
+                self.assertEqual(status, 200)
+
+            # Simulate a proxy restart: fresh context from the same state dir
+            ctx2 = self._make_ctx(tmp)
+            with _ProxyServer(ctx2) as srv2:
+                status, _, payload = _http_get(srv2.port, "/mode")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["locked"], "qwen36")
+                self.assertEqual(payload["lock_owners"], ["a", "b"])
+                # Enforcement survives too
+                status, _, _ = _http_post(srv2.port, "/v1/chat/completions", {
+                    "model": "summarizer", "messages": [{"role": "user", "content": "hi"}],
+                })
+                self.assertEqual(status, 422)
+                # Releasing one owner persists through another rebuild
+                status, _, _ = _http_post(srv2.port, "/mode", {"lock": False, "owner": "a"})
+                self.assertEqual(status, 200)
+
+            ctx3 = self._make_ctx(tmp)
+            with _ProxyServer(ctx3) as srv3:
+                _, _, payload = _http_get(srv3.port, "/mode")
+                self.assertEqual(payload["locked"], "qwen36")
+                self.assertEqual(payload["lock_owners"], ["b"])
+
+    def test_lock_works_with_unwritable_state_dir(self):
+        """Default /state is unwritable in dev: lock must degrade to
+        in-memory with a log line, never 500."""
+        ctx = self._make_ctx("/state")
+        with _ProxyServer(ctx) as srv:
+            status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "x"})
+            self.assertEqual(status, 200)
+            _, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["locked"], "qwen36")
+            status, _, _ = _http_post(srv.port, "/mode", {"lock": False})
+            self.assertEqual(status, 200)
+
+
 class TestSwapLockSerializesEnsureModel(unittest.TestCase):
     """Regression for commit b1f33de.
 
