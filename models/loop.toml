@@ -7,7 +7,7 @@ tool-calling, frontier model as judge).
 Same weights as summarizer.toml via a symlinked GGUF (loop-<name>.gguf)
 because preset model_id derives from the file stem and duplicate stems
 are rejected. Text-only: no mmproj (frees ~0.8 GB KV headroom; the loop
-worker never sees images - visual judging runs on the frontier judge).
+worker never sees images - visual judging runs on the enough).
 
 Tuning rationale:
 - reasoning on: thinking helps multi-step tool use; per-request clients
@@ -17,7 +17,7 @@ Tuning rationale:
   model won on tool-calling reliability + instruction following).
 - presence_penalty 0: penalising already-seen tokens breaks tool-call
   JSON keys and repeated syntax over long agentic transcripts.
-- 131072 ctx, 1 slot: single loop client; KV q8_0 (entrypoint default)
+- 131072 ctx, 2 slots: 2x64K. KV q8_0 (entrypoint default)
   keeps this inside ~26 GB on the 5090. Do NOT enable q4_1 KV on Gemma 4
   (-19% gen speed).
 """
@@ -33,7 +33,7 @@ file = "loop-gemma-4-26B-A4B-it-Q4_K_M.gguf"
 [runtime]
 reasoning = "on"
 context_size = 131072
-parallel_slots = 1
+parallel_slots = 2
 temperature = 1.0
 top_p = 0.95
 top_k = 64

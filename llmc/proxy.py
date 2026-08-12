@@ -99,6 +99,7 @@ class ProxyContext:
     # engine) from cross-client GPU eviction (whisper bot, Open WebUI).
     # In-memory only: a proxy restart clears the lock.
     lock_model: Optional[str] = None
+    lock_owners: set[str] = field(default_factory=set)
 
     def reload_presets(self) -> None:
         """Re-scan the presets dir. Lets users add a TOML file without
@@ -397,6 +398,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "switching": self.ctx.switching,
             "model": self.ctx.state.model,
             "locked": self.ctx.lock_model,
+            "lock_owners": sorted(list(self.ctx.lock_owners)),
         })
 
     def _handle_mode_post(self, body: bytes) -> None:

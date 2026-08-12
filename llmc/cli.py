@@ -142,16 +142,23 @@ class ProxyClient:
     def health(self) -> tuple[int, dict]:
         return self._request("GET", "/health")
 
-    def set_mode(self, mode: str, *, model: Optional[str] = None) -> tuple[int, dict]:
+    def set_mode(self, mode: str, *, model: Optional[str] = None, owner: Optional[str] = None) -> tuple[int, dict]:
         body = {"mode": mode}
         if model:
             body["model"] = model
+        if owner:
+            body["owner"] = owner
         # Mode swaps can take 10+ minutes for first GGUF load.
         return self._request("POST", "/mode", body=body, timeout=900)
 
-    def set_lock(self, lock) -> tuple[int, dict]:
-        """lock: preset name, True (lock current model), or False/None (unlock)."""
-        return self._request("POST", "/mode", body={"lock": lock}, timeout=30)
+    def set_lock(self, lock, owner: Optional[str] = None) -> tuple[int, dict]:
+        """lock: preset name, True (lock current model), or False/None (unlock).
+        owner: name of the process/user holding the lock.
+        """
+        body = {"lock": lock}
+        if owner:
+            body["owner"] = owner
+        return self._request("POST", "/mode", body=body, timeout=30)
 
 
 # ── Docker CLI wrappers (host-side, no SDK dep) ────────────────────────
