@@ -1,0 +1,22 @@
+name = "erfi-bot - personality clone (Qwen3-4B)"
+description = """
+erfi-bot - Qwen3-4B-Instruct-2507 QLoRA fine-tune on erfi's chat + blog corpus.
+Terse, dry, lowercase; code-switches English/Indonesian/Singlish. Writer
+registers (technical/personal) shift to full sentences via the system prompt.
+Trained 2026-07-08. On-demand personal-voice model; not general-purpose.
+"""
+vram_gb = 3.5
+
+[model]
+# file exists locally in /models, so repo is unused (entrypoint prefers the
+# local file). Kept non-empty to satisfy preset validation.
+repo = "local/erfi-bot"
+file = "erfi-q4km.gguf"
+
+[runtime]
+reasoning = "off"          # suppress Qwen3 <think> scaffolding at serve time
+context_size = 8192        # practical chat envelope; plenty on the 5090
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+min_p = 0.0
