@@ -269,7 +269,10 @@ def _ensure_model(ctx: ProxyContext, requested_model: str) -> tuple[bool, str]:
 
     preset = ctx.preset_by_name(requested_model)
     if preset is None:
-        if ctx.lock_model:
+        # Name comparison, not preset-None rejection: if the locked preset's
+        # TOML was deleted mid-lock, the locked model is still what's running
+        # and a request naming it must keep working.
+        if ctx.lock_model and requested_model != ctx.lock_model:
             return False, (
                 f"model lock active on {ctx.lock_model!r}: rejecting unknown "
                 f"model {requested_model!r} (passthrough would silently run "
@@ -428,7 +431,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     _json_response(self, 404, {"error": f"unknown preset {lock_val!r}"})
                     return
                 lock_name = preset.name
-            self.ctx.lock_model = lock_name
+            if self.ctx.state.model != lock_name:
+                _log(f"warning: locking {lock_name!r} while active model is "
+                     f"{self.ctx.state.model!r} - lock pins a model that is not running")
+            # Under swap_lock so a concurrent swap can't interleave between
+            # another thread's lock check and this mutation.
+            with self.ctx.swap_lock:
+                self.ctx.lock_model = lock_name
             _log(f"model lock set: {lock_name}")
             _json_response(self, 200, {"locked": lock_name})
             return
@@ -556,7 +565,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         try:
             conn.request(self.command, path, body=body, headers=headers)
             resp = conn.getresponse()
-        except (ConnectionRefusedError, OSError, http.client.HTTPException) as exc:
+        except (OSError, http.client.HTTPException) as exc:
             _json_response(self, 502, {
                 "error": {"message": f"upstream error: {exc}", "type": "server_error", "code": 502}
             })
@@ -566,16 +575,22 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 pass
             return
 
-        self.send_response(resp.status)
-        is_stream = False
-        for key, value in resp.getheaders():
-            lower = key.lower()
-            if lower in ("transfer-encoding", "connection"):
-                continue
-            if lower == "content-type" and "text/event-stream" in value:
-                is_stream = True
-            self.send_header(key, value)
-        self.end_headers()
+        # Header send inside the try so a client disconnect here still
+        # reaches the finally's conn.close().
+        try:
+            self.send_response(resp.status)
+            is_stream = False
+            for key, value in resp.getheaders():
+                lower = key.lower()
+                if lower in ("transfer-encoding", "connection"):
+                    continue
+                if lower == "content-type" and "text/event-stream" in value:
+                    is_stream = True
+                self.send_header(key, value)
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            conn.close()
+            return
 
         try:
             if is_stream:

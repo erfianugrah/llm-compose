@@ -57,6 +57,8 @@ Switch model on the fly:
 llmc switch gemma4         # or any other preset
 llmc models                # list available presets
 llmc status                # show what's running
+llmc lock loop             # pin a preset against GPU-evicting swaps
+llmc unlock                # clear the lock
 ```
 
 ### Tool boundary
@@ -180,7 +182,7 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 
 ## Available models
 
-8 presets in `models/`:
+10 presets in `models/`:
 
 | Preset                  | Model                     | Active | VRAM   | Vision | Best for                                |
 |-------------------------|---------------------------|--------|--------|--------|-----------------------------------------|
@@ -191,7 +193,9 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 | `qwen3`                 | Qwen3 32B Dense           | 32B    | 20.0GB | no     | Research, reasoning, tools              |
 | `qwen3-coder`           | Qwen3 Coder 30B-A3B MoE   | 3.3B   | 18.6GB | no     | Fast code gen                           |
 | `qwen3-vl`              | Qwen3-VL 2B               | 2B     | 4.5GB  | yes    | Lightweight image/video description     |
-| `summarizer`            | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | TL;DW bot, 128K context summarization   |
+| `summarizer`            | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | TL;DW bot, 256K context summarization   |
+| `loop`                  | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | no     | Loop-engine worker (agentic coding, 131072 ctx, text-only; same weights as summarizer via symlink) |
+| `erfi`                  | Qwen3-4B fine-tune        | 4B     | 3.5GB  | no     | Personal-voice bot (local GGUF)         |
 
 All fit in 32GB VRAM at Q4 quantization. VRAM column includes mmproj.
 

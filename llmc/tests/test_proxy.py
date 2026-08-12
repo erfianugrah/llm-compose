@@ -494,6 +494,29 @@ class TestModelLock(unittest.TestCase):
         self.assertEqual(status, 502)
 
 
+    def test_locked_survives_toml_deletion(self):
+        """If the locked preset's TOML is deleted mid-lock, the locked model
+        is still what llama-server has loaded - a request naming it must
+        pass through (502 = forwarding attempted), not 422. Other models
+        stay rejected."""
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            # Simulate the TOML disappearing + live reload dropping it.
+            # reload_presets would undo the deletion from disk, so pin it.
+            ctx.presets = {k: p for k, p in ctx.presets.items() if p.name != "qwen36"}
+            ctx.reload_presets = lambda: None
+            status, _, _ = _http_post(srv.port, "/v1/chat/completions", {
+                "model": "qwen36", "messages": [{"role": "user", "content": "hi"}],
+            })
+            self.assertEqual(status, 502)  # forwarded, not rejected
+            status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
+                "model": "no-such-model", "messages": [{"role": "user", "content": "hi"}],
+            })
+            self.assertEqual(status, 422)
+            self.assertIn("lock", payload["error"]["message"])
+
+
 class TestSwapLockSerializesEnsureModel(unittest.TestCase):
     """Regression for commit b1f33de.
 

@@ -108,17 +108,28 @@ Container env vars are passed directly to `docker run` via the SDK.
 
 | Route          | Target                       | Mode      | Notes                                                |
 |----------------|------------------------------|-----------|------------------------------------------------------|
-| `/v1/*`        | llama-server:8080            | `llm`     | POST auto-swaps                                      |
+| `/v1/*`        | llama-server:8080            | `llm`     | POST auto-swaps; upstream read timeout 3600s         |
+| `/metrics`     | llama-server:8080            | `llm`     | read-only; 503 when llm mode not active              |
 | `/comfyui/*`   | comfyui:8188 (stripped)      | `comfyui` | POST auto-swaps                                      |
 | `/train/*`     | lora-train:8787 (stripped)   | `train`   | POST auto-swaps                                      |
 | `/health`      | proxy self                   | any       | 200 even mid-swap (status: switching)                |
 | `/v1/models`   | proxy self                   | any       | TOML presets live-reloaded each call                 |
 | `GET /mode`    | proxy self                   | any       | current mode + switching flag + active model         |
-| `POST /mode`   | proxy self                   | (action)  | switch mode; accepts `{mode, model}` for combined op |
+| `POST /mode`   | proxy self                   | (action)  | switch mode (`{mode, model}`) or manage the model lock (`{lock: preset\|true\|false}`) |
 
 **Read-only methods (GET/HEAD/OPTIONS) do NOT trigger auto-swap.** They
 503 cleanly if the target backend isn't active. This prevents status
 polls from accidentally stopping the running service.
+
+**Model lock** (`llmc lock [preset]` / `POST /mode {"lock": ...}`): while
+locked, the proxy refuses anything that would evict the pinned preset -
+model swaps, comfyui/train mode swaps, and unknown-model passthrough.
+Use it for unattended multi-hour consumers (a self-correcting loop
+worker on the `loop` preset); without it any client POST (Open WebUI
+re-POSTs the previously selected model) silently evicts the running
+model mid-generation. In-memory only: a proxy restart clears the lock.
+The lock survives deletion of the locked preset's TOML (the running
+model stays servable by name).
 
 POST to a route in a different mode auto-swaps:
 1. Stop current GPU service (`stop_gpu_services` finds containers by label)
@@ -134,7 +145,8 @@ POST to a route in a different mode auto-swaps:
 3. Optional: `[mmproj]`, `[template]`, `[runtime]`
 4. Schema is strict — unknown keys / wrong types rejected at load time
 5. `llmc models` confirms it parses, `llmc switch <name>` loads it
-6. No image rebuild, no proxy restart (presets live-reload on `/v1/models`)
+6. No image rebuild, no proxy restart (presets live-reload on `/v1/models`,
+   on switch, and on lock - `_ensure_model` reloads per request)
 
 `vram_gb` must be <= LIMIT - RESERVE (default 32 - 6 = 26 GB).
 
@@ -143,10 +155,10 @@ POST to a route in a different mode auto-swaps:
 | Image                                           | Source                       | Notes |
 |-------------------------------------------------|------------------------------|-------|
 | `erfianugrah/llmc-proxy:v2`                     | `images/proxy.Dockerfile`    | <30s build. Python 3.12 + docker SDK + llmc package. |
-| `erfianugrah/llama-server:cuda12.8-sm120`       | `llama-server.Dockerfile`    | ~10 min. Pinned via `LLAMA_CPP_VERSION=b8799`. sm_120 (Blackwell). |
+| `erfianugrah/llama-server:cuda12.8-sm120`       | `llama-server.Dockerfile`    | ~10 min. Pinned via `LLAMA_CPP_VERSION=b10362`. sm_120 (Blackwell). |
 | `erfianugrah/comfyui:cuda12.8-sm120`            | `comfyui.Dockerfile`         | ~5 min. PyTorch 2.11 + CUDA 12.8. ComfyUI v0.19.5 + Manager. |
 | `erfianugrah/lora-train:latest`                 | `lora-train.Dockerfile`      | ~5 min. PyTorch 2.7 + kohya sd-scripts. HTTP API on :8787. |
-| Open WebUI                                      | `ghcr.io/open-webui/...`     | Pinned to `v0.9.2`. |
+| Open WebUI                                      | `ghcr.io/open-webui/...`     | Pinned to `v0.10.2`. |
 
 ## Named volumes
 
@@ -328,6 +340,10 @@ name.
   pass as `[script]` (single-element list).
 - **GET requests do NOT auto-swap mode**. Status polls return 503 if
   the backend isn't active. Use POST /mode or `llmc mode <m>` first.
+- **llama-server `-v` is off by default** (spawned-container logs are
+  capped at 50m x 3 via json-file rotation; verbose request logging
+  would churn through them on multi-hour agentic runs). Set
+  `LLAMA_VERBOSE=1` in the spawn env to re-enable.
 - **Mode swap latency**: 5-10s page-cache warm, 30-60s cold storage.
   First-time GGUF load can take up to 12 min for a 22 GB model.
 - **ComfyUI WebSocket** (live preview) is NOT proxied. Use direct
