@@ -35,8 +35,8 @@ make metrics            # curl /metrics
 
 # Mode + model switching (CLI)
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
-llmc lock [preset]      # pin a preset: refuse GPU-evicting swaps (loop runs)
-llmc unlock             # clear the model lock
+llmc lock [preset] [--owner id]   # pin a preset: refuse GPU-evicting swaps
+llmc unlock [--owner id]        # release one owner; no owner = force-clear all
 # Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
@@ -122,8 +122,8 @@ Container env vars are passed directly to `docker run` via the SDK.
 503 cleanly if the target backend isn't active. This prevents status
 polls from accidentally stopping the running service.
 
-**Model lock** (`llmc lock [preset]` / `POST /mode {"lock": ...}`): while
-locked, the proxy refuses anything that would evict the pinned preset -
+**Model lock** (`llmc lock [preset] [--owner id]` / `POST /mode {"lock": ...}`):
+while locked, the proxy refuses anything that would evict the pinned preset -
 model swaps, comfyui/train mode swaps, and unknown-model passthrough.
 Use it for unattended multi-hour consumers (a self-correcting loop
 worker on the `loop` preset); without it any client POST (Open WebUI
@@ -131,6 +131,15 @@ re-POSTs the previously selected model) silently evicts the running
 model mid-generation. In-memory only: a proxy restart clears the lock.
 The lock survives deletion of the locked preset's TOML (the running
 model stays servable by name).
+
+The lock is SHARED with named owners: each consumer locks with a
+distinct `--owner` (e.g. the pi session id) and releases only itself;
+the preset stays pinned until the last owner releases. Ownerless unlock
+force-clears everything (admin escape hatch). `GET /mode` and
+`llmc status` show `lock_owners`. Concurrent loops: share ONE preset
+(`loop` runs `parallel_slots = 2`, 2x98K ctx), one git worktree per
+loop when looping the same repo, and never let a loop's sensors
+rebuild/restart the stack that serves them.
 
 POST to a route in a different mode auto-swaps:
 1. Stop current GPU service (`stop_gpu_services` finds containers by label)
