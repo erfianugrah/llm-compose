@@ -413,8 +413,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # (unlock). Always allowed, including while locked.
         if "lock" in payload:
             lock_val = payload.get("lock")
+            owner = payload.get("owner")
             if lock_val in (None, False):
-                self.ctx.lock_model = None
+                with self.ctx.swap_lock:
+                    if owner:
+                        self.ctx.lock_owners.discard(owner)
+                        if not self.ctx.lock_owners:
+                            self.ctx.lock_model = None
+                    else:
+                        self.ctx.lock_model = None
+                        self.ctx.lock_owners.clear()
                 _log("model lock cleared")
                 _json_response(self, 200, {"locked": None})
                 return
@@ -440,6 +448,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             # another thread's lock check and this mutation.
             with self.ctx.swap_lock:
                 self.ctx.lock_model = lock_name
+                self.ctx.lock_owners.add(owner or "default")
             _log(f"model lock set: {lock_name}")
             _json_response(self, 200, {"locked": lock_name})
             return
