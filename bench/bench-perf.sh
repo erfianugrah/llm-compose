@@ -241,9 +241,14 @@ run_quant() {
     cleanup
 }
 
-# Ensure no other GPU service is hogging the card
-echo "Stopping llama_server, comfyui, lora_train to free GPU..."
-for container in llama_server comfyui lora_train; do
+# Ensure no other GPU service is hogging the card. whisper-live keeps
+# large-v3 resident (measured ~5.6 GB VRAM on 2026-08-13) - with it up,
+# Q8_0 (28.6 GB) cannot fit and --fit would silently shrink ctx, producing
+# incomparable numbers. NOTE: not restarted by this script - `docker start`
+# them after, and beware an active llmc loop will re-grab the GPU via the
+# proxy mid-run.
+echo "Stopping llama_server, comfyui, lora_train, whisper GPU services..."
+for container in llama_server comfyui lora_train whisper-transcribe-whisper-1 whisper-transcribe-whisper-live-1; do
     docker rm -f "$container" >/dev/null 2>&1 || true
 done
 
