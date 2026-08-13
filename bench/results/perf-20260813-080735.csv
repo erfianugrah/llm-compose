@@ -1,0 +1,2 @@
+label,file,size_gb,ttft_ms_p50,ttft_ms_p95,gen_tok_s,prompt_tok_s,vram_peak_mib,ram_peak_mib,gen_tokens
+UD-Q4_K_XL,Qwen3.6-27B-UD-Q4_K_XL.gguf,17.6,156.1,175.5,73.8,149.7,20561,2445.31,500

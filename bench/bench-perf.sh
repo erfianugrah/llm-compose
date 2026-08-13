@@ -153,32 +153,31 @@ run_quant() {
     cleanup
     sleep 2
 
-    # Start llama-server with this GGUF. Prefer the flat file in the preset
-    # models dir when it exists - the HF-hub cache layout is a different
-    # store, so --hf-file would re-download GGUFs we already have on disk
-    # (observed 2026-08-12: UD-Q4_K_XL re-downloaded 17.6 GB with the flat
-    # file sitting in models/).
-    local -a model_args
+    # Start llama-server with this GGUF. The image entrypoint resolves the
+    # model itself from MODEL_FILE/MODEL_REPO env vars (local /models/$MODEL_FILE
+    # first, else --hf-repo/--hf-file download into /root/.cache). Do NOT pass
+    # -m/--hf-* via argv: the entrypoint always prepends its own model args, and
+    # with MODEL_FILE unset that is an empty --hf-repo, which is fatal
+    # (observed 2026-08-13: bench_perf exit 1, "invalid HF repo format", then
+    # the health wait hangs until timeout).
     if [ -f "${CACHE_DIR}/models/$file" ]; then
         echo "  using local /models/$file"
-        model_args=(-m "/models/$file")
-    else
-        model_args=(--hf-repo "$REPO" --hf-file "$file")
     fi
+    # Entrypoint hardcodes port/host/ngl/flash-attn/ctk/ctv/ctx(np)/threads/
+    # jinja/metrics. Appended args below override via llama.cpp last-wins for
+    # the few knobs the bench changes (batch size, no-warmup).
     docker run -d --name "$CONTAINER" --gpus all \
         -v "${CACHE_DIR}:/root/.cache" \
         -v "${CACHE_DIR}/models:/models" \
+        -e MODEL_REPO="$REPO" \
+        -e MODEL_FILE="$file" \
+        -e CONTEXT_SIZE="$CTX" \
         -p "${PORT}:8080" \
         --shm-size 2g \
         "$IMAGE" \
-        "${model_args[@]}" \
-        --port 8080 --host 0.0.0.0 \
-        -ngl "$NGL" --flash-attn on \
-        -ctk q8_0 -ctv q8_0 \
-        -c "$CTX" \
-        -np 1 -b 4096 -ub 4096 \
-        --threads 8 --threads-batch 8 \
-        --jinja --no-warmup --metrics >/dev/null
+        -ngl "$NGL" \
+        -b 4096 -ub 4096 \
+        --no-warmup >/dev/null
 
     if ! wait_health "$label" "$file" "$size_gb"; then
         echo "$label,$file,$size_gb,FAIL,FAIL,0,0,0,0,0" >> "$CSV"
