@@ -86,20 +86,22 @@ start_server() {
     local file="$1"
     cleanup
     sleep 2
+    # Model selection goes via MODEL_FILE/MODEL_REPO env - the image
+    # entrypoint builds its own model args from them (local /models/$MODEL_FILE
+    # preferred, else HF download into /root/.cache). Do NOT pass -m/--hf-* via
+    # argv: the entrypoint's prepended empty --hf-repo is fatal ("invalid HF
+    # repo format"), and the health wait then hangs until timeout.
     docker run -d --name "$CONTAINER" --gpus all \
         -v "${CACHE_DIR}:/root/.cache" \
         -v "${CACHE_DIR}/models:/models" \
+        -e MODEL_REPO="$REPO" \
+        -e MODEL_FILE="$file" \
+        -e CONTEXT_SIZE="$CTX" \
         -p "${PORT}:8080" \
         --shm-size 2g \
         "$IMAGE" \
-        --hf-repo "$REPO" --hf-file "$file" \
-        --port 8080 --host 0.0.0.0 \
-        -ngl 99 --flash-attn on \
-        -ctk q8_0 -ctv q8_0 \
-        -c "$CTX" \
-        -np 1 -b 4096 -ub 4096 \
-        --threads 8 --threads-batch 8 \
-        --jinja --no-warmup --metrics >/dev/null
+        -b 4096 -ub 4096 \
+        --no-warmup >/dev/null
     wait_health
 }
 
@@ -246,10 +248,16 @@ print(f"{f(he.get('pass@1'))}|{f(he.get('pass@1_plus'))}|{f(hs.get('acc'))}|{f(h
 PY
 }
 
-# Free GPU
-echo "Stopping llama_server, comfyui, lora_train to free GPU..."
+# Free GPU. whisper-live keeps large-v3 resident (~5.6 GiB VRAM) - Q8_0
+# (28.6 GB) cannot co-load. llama/comfyui/train are proxy-managed (rm is
+# fine, the proxy recreates them); whisper is compose-managed - STOP only,
+# rm destroys the container. Recover with: cd ~/infra/ai/whisper-transcribe && make up
+echo "Stopping llama_server, comfyui, lora_train, whisper GPU services..."
 for container in llama_server comfyui lora_train; do
     docker rm -f "$container" >/dev/null 2>&1 || true
+done
+for container in whisper-transcribe-whisper-1 whisper-transcribe-whisper-live-1; do
+    docker stop "$container" >/dev/null 2>&1 || true
 done
 
 # Build eval image if needed

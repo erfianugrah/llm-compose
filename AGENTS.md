@@ -128,7 +128,12 @@ model swaps, comfyui/train mode swaps, and unknown-model passthrough.
 Use it for unattended multi-hour consumers (a self-correcting loop
 worker on the `loop` preset); without it any client POST (Open WebUI
 re-POSTs the previously selected model) silently evicts the running
-model mid-generation. In-memory only: a proxy restart clears the lock.
+model mid-generation. The lock persists via the state file
+(`locked` + `lock_owners`, restored on proxy start; commit a566af5) -
+a proxy restart no longer clears it. Consequence: a loop that exits
+without unlocking leaves the pinned model RESIDENT, holding VRAM
+indefinitely (observed 2026-08-13: Gemma 26B squatting 22.5 GiB hours
+after the loop ended). `llmc unlock` to release and free the GPU.
 The lock survives deletion of the locked preset's TOML (the running
 model stays servable by name).
 
@@ -159,6 +164,40 @@ POST to a route in a different mode auto-swaps:
    on switch, and on lock - `_ensure_model` reloads per request)
 
 `vram_gb` must be <= LIMIT - RESERVE (default 32 - 6 = 26 GB).
+
+## Benchmarking (quant sweeps)
+
+`bench/bench-perf.sh` measures per-quant TTFT / gen tok/s / prompt tok/s /
+peak VRAM+RAM into `bench/results/perf-<ts>.csv`; `bench/bench-quants.sh`
+is the full sweep (perf + HumanEval/HellaSwag/BFCL accuracy, ~6-10 h).
+`--only Q4_K_M,Q8_0` for a subset; matrix lives in `bench/quants.txt`.
+
+Hard-won operating rules (all observed 2026-08-12/13):
+
+- **Model selection is env-only.** The llama-server image entrypoint
+  builds its own model args from `MODEL_FILE`/`MODEL_REPO` env (local
+  `/models/$MODEL_FILE` preferred, else HF download into the cache).
+  Passing `-m`/`--hf-repo` via argv leaves the entrypoint's empty
+  `--hf-repo` in front - fatal ("invalid HF repo format"), and the
+  health wait then hangs until timeout. Both bench scripts pass env now.
+- **Stop whisper GPU services first.** whisper-live keeps large-v3
+  resident (~5.6 GiB VRAM); with it up, Q8_0 (28.6 GB) cannot fit and
+  `--fit on` would silently shrink ctx, producing incomparable numbers.
+  The scripts `docker stop` (never `docker rm`) the two whisper
+  containers - they are compose-managed, rm destroys them. Recover
+  with `cd ~/infra/ai/whisper-transcribe && make up`.
+- **An active llmc loop re-grabs the GPU mid-bench** (lock + first
+  request re-spawns llama_server). Bench only when no loop is running,
+  or accept skewed/OOM'd rows.
+- **HF downloads inside llama.cpp are fragile** (3 retries then exit).
+  If a quant download dies mid-blob, resume it with curl into the hub
+  cache (`blobs/<oid>.downloadInProgress`, then mv + snapshot symlink)
+  from a root container - the cache dir is root-owned.
+
+Qwen3.6-27B, ctx=32K, RTX 5090 (2026-08-13): UD-Q4_K_XL 73.8 tok/s gen
+/ 20.6 GiB peak; Q4_K_M 75.1 / 25.6 GiB; Q8_0 52.1 / 31.6 GiB. Verdict:
+UD-Q4_K_XL stays the default (Q4_K_M speed at -5 GiB); Q8_0 is 30%
+slower with ~1 GiB headroom - not viable as a daily driver.
 
 ## Image builds
 
