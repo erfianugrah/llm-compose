@@ -84,7 +84,7 @@ Suite must include at least one task known to be at the edge of Gemma's ability 
 
 - No CI workflow (solo repo, Makefile is the pipeline).
 - No GGUF download manager - presets already declare repo/file; first run downloads via the normal path.
-- No cross-machine benchmarking (1070/servarr) in v1.
+- No cross-machine benchmarking (1070/servarr) in v1, EXCEPT the single deploy-fit check for the small-model track winner (section 8.4).
 
 ### 4.5 Watch mode (decided: in scope)
 
@@ -136,6 +136,8 @@ Matrix: perf (2 ctx points) + tasks (2-3 runs per task per model) + humaneval/bf
 
 ### 7.2 P0 spikes (sequential, roughly 1-2 h)
 
+**DONE 2026-08-15** (bench/results/p0-qwen38-20260815-122704.jsonl): arch support PASS on b10362 (no llama.cpp bump needed), text + vision smokes PASS, full ctx matrix FIT including 196608 x 2 slots at 31153 MiB (2x98304 effective/slot). Preset set to 196608 x 2. Details below kept as the record of method.
+
 1. **Arch support**: `docker run` the pinned llama-server image with the Qwen3.8-27B GGUF. If it fails to load, check the unsloth model card for the minimum llama.cpp build, bump LLAMA_CPP_VERSION, `make rebuild-llama`, and re-baseline `loop` + `gemma4` perf immediately (the result store's reason for existing).
 2. **KV/ctx fit**: for ctx in {65536, 131072, 196608} x slots in {1, 2}: load, measure peak VRAM, record fit/OOM in the store. Output is the max config inside 32 GB with ~2 GB spare.
 3. **Vision smoke**: with mmproj wired, one image-understanding request through the proxy. Pass/fail only.
@@ -161,3 +163,48 @@ Task suite: 6 sensor-gated tasks from bench/fixtures, 3 runs each, sensors-only,
 ### 7.5 Evidence output
 
 `llmc bench report --markdown` table committed next to this plan as `2026-08-1X-qwen38-eval-results.md`, decision recorded in AGENTS.md + pi memory.
+
+## 8. Small-model track: gumshoe research-agent (servarr 1070)
+
+Separate from the 5090 track. The gumshoe research-agent runs on the 1070 (8 GB VRAM, sm_61, flash-attn off) with thinking FORCED OFF and a 10-tool JSON action protocol. Incumbent: Qwen3.5-9B. Generic benchmark numbers (Luxand BFCL-agentic, July 2026) were measured with reasoning ON, so they are directional only for this role.
+
+### 8.1 Candidates (all fit 8 GB with KV headroom)
+
+| Preset | Model | Size @Q4 | Why |
+|---|---|---|---|
+| `qwen35-9b` (incumbent baseline) | Qwen3.5-9B | ~5.5 GB | already deployed, thinking-off tolerant |
+| `gemma4-12b` | Gemma 4 12B Unified | ~7 GB | quality ceiling; Tau2 69.0; 262K ctx (cap to 32K on the 1070); MTP drafter |
+| `qwen35-4b` | Qwen3.5-4B | 2.7 GB | Luxand 67.0% agentic, best score-per-GB; big speed win on Pascal |
+| `lfm25-8b` (optional) | LFM2.5-8B-A1B | 5.2 GB | 1.5B active = fastest decode; only if speed is the binding constraint; LFM Open license, not Apache |
+
+No Qwen3.8 small exists (27B is the smallest 3.8 so far) - this track is Gemma 4 12B / Qwen3.5 small / LFM2.5.
+
+### 8.2 Workload-shaped suite (`llmc bench tasks --suite gumshoe`)
+
+Scripted research prompts scored on the things the role actually does:
+
+1. **Tool-sequence correctness**: did it pick the right tool (osint_ip vs web_search vs fetch vs direct-answer) per prompt; oracle defined per fixture.
+2. **JSON protocol validity**: parseable action JSON every turn (the peg failure mode), thinking-off.
+3. **Steps-to-answer** within the 6-step bound, forced-final fallback rate.
+4. **Final synthesis quality**: rubric-scored by a fixed judge (paid rung, one model for all candidates so the judge is not a variable).
+
+~15-20 prompts across the 4 gumshoe tool families (web_search, fetch, osint_*, direct). Fixtures vendored in bench/fixtures/gumshoe/ (decision 2).
+
+### 8.3 Method
+
+- **Quality A/B on the 5090** (fast iteration, one GPU, sequential): all candidates through the gumshoe suite at matched ctx (32K). Perf measured too but 5090 tok/s is NOT the deploy number - it ranks, it does not predict Pascal.
+- **Deploy-fit check on the 1070** for the winner only (section 8.4).
+
+### 8.4 Deploy-fit check (servarr, 1070)
+
+For the quality winner: load on the gumshoe llama container (Pascal flags: flash-attn off), measure VRAM at 32K ctx, tok/s on a representative research turn, and one live end-to-end research-agent call. Pass = fits with ~1 GB headroom AND tok/s not worse than the incumbent by >20%.
+
+### 8.5 Decision rules
+
+- **gemma4-12b replaces qwen35-9b** if tool-sequence accuracy >= incumbent AND JSON-valid rate >= 99% AND 1070 deploy-fit passes.
+- **qwen35-4b replaces the incumbent** only if its tool-sequence accuracy is within 5 points of the incumbent - the trade is quality for speed, and it only wins if it is nearly free.
+- Otherwise keep Qwen3.5-9B and record why.
+
+### 8.6 Sequencing
+
+Slot into P2 (suite build, gumshoe fixtures alongside loop-task fixtures) and P3 (run after the 5090 matrix; total added time ~2-3 h on the 5090 + 1 h on servarr). The 1070 check needs servarr up and no gumshoe traffic - coordinate, don't surprise the stack.
