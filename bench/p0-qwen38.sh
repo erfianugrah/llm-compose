@@ -46,7 +46,11 @@ wait_idle() {
     while [ "$waited" -lt "$WAIT_MAX_S" ]; do
         used=$(gpu_used)
         local idle=1
-        [ "${used:-99999}" -ge "$IDLE_VRAM_MIB" ] && idle=0
+        # P0_ASSUME_IDLE=1 skips the VRAM threshold (operator has confirmed no
+        # game/local GPU load is running); lock + switching checks always apply.
+        if [ "${P0_ASSUME_IDLE:-0}" != "1" ]; then
+            [ "${used:-99999}" -ge "$IDLE_VRAM_MIB" ] && idle=0
+        fi
         if [ "$idle" -eq 1 ] && proxy_ok; then
             locked=$(status_field '.mode.locked // empty')
             switching=$(status_field '.mode.switching // false')
