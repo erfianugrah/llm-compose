@@ -1,0 +1,33 @@
+name = "Qwen3.8 27B Dense - coding, vision, thinking (eval candidate)"
+description = """
+Qwen3.8 27B Dense - eval candidate vs gemma4 / loop presets.
+Plan: docs/plans/2026-08-15-local-model-bench-framework.md.
+
+~17.1 GB model (Q4_K_M) + ~0.9 GB mmproj. 27B dense, hybrid
+Gated DeltaNet + Gated Attention (64 layers), 262144 native ctx.
+Sampling = model card thinking-mode recommendation
+(temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0).
+
+context_size is PROVISIONAL (131072 x 1 slot) - the P0 spike
+(bench/p0-qwen38.sh, KV/ctx fit matrix) sets the final value.
+Loop-role target is 196608 x 2 slots if VRAM allows.
+"""
+vram_gb = 21.0
+
+[model]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-Q4_K_M.gguf"
+
+[mmproj]
+file = "qwen38-mmproj.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 131072
+parallel_slots = 1
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
