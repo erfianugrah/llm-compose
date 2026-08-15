@@ -8,9 +8,11 @@ Gated DeltaNet + Gated Attention (64 layers), 262144 native ctx.
 Sampling = model card thinking-mode recommendation
 (temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0).
 
-context_size is PROVISIONAL (131072 x 1 slot) - the P0 spike
+context_size set from P0 spike (2026-08-15): 196608 x 2 slots fits
+at 31153 MiB (2x98304 effective per slot, ~1.4 GB headroom).
+Arch support on llama.cpp b10362 confirmed; vision smoke passed.
 (bench/p0-qwen38.sh, KV/ctx fit matrix) sets the final value.
-Loop-role target is 196608 x 2 slots if VRAM allows.
+
 """
 vram_gb = 21.0
 

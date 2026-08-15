@@ -1,0 +1,10 @@
+{"ts":"20260815-122704","kind":"meta","llama_cpp":"b10362","image":"erfianugrah/llama-server:cuda12.8-sm120","model_file":"Qwen3.8-27B-Q4_K_M.gguf"}
+{"ts":"20260815-122704","kind":"spike1-arch","ok":true,"vram_mib":28706,"ctx":131072,"slots":1}
+{"ts":"20260815-122704","kind":"spike3-text","ok":true,"response":"pong"}
+{"ts":"20260815-122704","kind":"spike3-vision","ok":true,"response":"Red"}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":65536,"slots":1,"ok":true,"vram_mib":26018,"effective_ctx":65536}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":65536,"slots":2,"ok":true,"vram_mib":26033,"effective_ctx":32768}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":131072,"slots":1,"ok":true,"vram_mib":28699,"effective_ctx":131072}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":131072,"slots":2,"ok":true,"vram_mib":28593,"effective_ctx":65536}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":196608,"slots":1,"ok":true,"vram_mib":31387,"effective_ctx":196608}
+{"ts":"20260815-122704","kind":"spike2-ctxfit","ctx":196608,"slots":2,"ok":true,"vram_mib":31153,"effective_ctx":98304}
