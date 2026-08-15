@@ -125,11 +125,16 @@ PREV_MODEL="$(status_field '.active_model // empty')"
 log "previous active model: ${PREV_MODEL:-none}"
 
 restore() {
-    log "restore: switching back to ${PREV_MODEL:-loop}"
+    log "restore: unlocking p0-bench, switching back to ${PREV_MODEL:-loop}"
     docker rm -f "$BENCH_CONTAINER" >/dev/null 2>&1
+    llmc unlock --owner p0-bench >>"$LOG" 2>&1
     llmc switch "${PREV_MODEL:-loop}" >>"$LOG" 2>&1 || log "WARN: restore switch failed - run 'llmc switch ${PREV_MODEL:-loop}' manually"
 }
 trap restore EXIT
+
+# Hold the GPU for the whole spike: any client requesting another model gets
+# a clean 503 instead of evicting qwen38 mid-measurement.
+llmc lock qwen38 --owner p0-bench >>"$LOG" 2>&1 && log "locked qwen38 (owner p0-bench)" || log "WARN: lock failed - spike runs unlocked"
 
 # ── Spike 1: arch support via managed switch ──────────────────────────
 log "spike 1: llmc switch qwen38 (arch support, managed path)"
