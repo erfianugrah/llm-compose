@@ -46,3 +46,8 @@ top_k = 64
 min_p = 0.05
 presence_penalty = 0.0
 repeat_penalty = 1.0
+
+[bench]
+# tokenizer for loglikelihood evals (HellaSwag); GGUF repos carry tokenizer.json
+# and are NOT license-gated (google/gemma-* repos 401 without an accepted license)
+tokenizer = "unsloth/gemma-4-26b-a4b-it-GGUF"

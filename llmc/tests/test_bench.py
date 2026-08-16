@@ -122,3 +122,44 @@ def test_staleness_preset_edit_detected(tmp_path: Path):
     f.write_text("x = 2\n")  # edit after the run
     rows = watch.staleness(recs, tmp_path, pin="PIN")
     assert rows[0]["state"].startswith("STALE-PRESET")
+
+
+# ── eval ───────────────────────────────────────────────────────────────
+
+from llmc.bench import eval as bench_eval
+
+
+def test_build_eval_flags_tokenizer_and_subsets():
+    flags = bench_eval.build_eval_flags("p", "model-id", "out.json",
+                                        humaneval=True, hellaswag=500, bfcl=True,
+                                        tokenizer="unsloth/X-GGUF")
+    s = " ".join(flags)
+    assert "--humaneval" in flags
+    assert "--hellaswag-subset 500" in s
+    assert "--hellaswag-tokenizer unsloth/X-GGUF" in s
+    assert "--bfcl" in flags
+    assert "--num-gpus" not in s  # the silent no-op is gone
+
+
+def test_build_eval_flags_none_requested():
+    flags = bench_eval.build_eval_flags("p", "m", "o", False, 0, False, None)
+    assert "--humaneval" not in flags and "--bfcl" not in flags and "--hellaswag" not in flags
+
+
+def test_parse_eval_json(tmp_path: Path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({
+        "label": "x",
+        "humaneval": {"pass@1": 0.5, "pass@1_plus": 0.45},
+        "hellaswag": {"acc": 0.8, "acc_norm": 0.85},
+        "bfcl": {"overall": 0.6},
+    }))
+    m = bench_eval.parse_eval_json(p)
+    assert m == {"humaneval_pass1": 0.5, "humaneval_pass1_plus": 0.45,
+                 "hellaswag_acc_norm": 0.85, "bfcl_overall": 0.6}
+
+
+def test_parse_eval_json_partial_failures(tmp_path: Path):
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"label": "x", "humaneval": {"pass@1": None, "error": "boom"}}))
+    assert bench_eval.parse_eval_json(p) == {}

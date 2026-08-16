@@ -4,9 +4,10 @@ from __future__ import annotations
 import argparse
 from typing import Optional, Sequence
 
+from llmc.bench import eval as bench_eval
 from llmc.bench import perf, report, watch
 
-NATIVE = {"perf", "report", "watch"}
+NATIVE = {"perf", "report", "watch", "eval"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare latest perf of two presets")
     sp.add_argument("--markdown", action="store_true", help="emit a markdown table")
 
+    sp = sub.add_parser("eval", help="HumanEval/HellaSwag/BFCL via the eval container")
+    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--humaneval", action="store_true")
+    sp.add_argument("--hellaswag", type=int, default=0, metavar="N", help="HellaSwag subset size (needs [bench] tokenizer per preset)")
+    sp.add_argument("--bfcl", action="store_true", help="BFCL full ast category")
+
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
 
@@ -38,6 +45,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.bench_command == "report":
         pair = tuple(args.compare) if args.compare else None
         return report.run_report(last=args.last, compare_pair=pair, markdown=args.markdown)
+    if args.bench_command == "eval":
+        return bench_eval.run_eval(
+            [p.strip() for p in args.presets.split(",") if p.strip()],
+            humaneval=args.humaneval,
+            hellaswag=args.hellaswag,
+            bfcl=args.bfcl,
+        )
     if args.bench_command == "watch":
         return watch.run_watch()
     build_parser().print_help()

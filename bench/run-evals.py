@@ -111,13 +111,16 @@ def eval_bfcl(base_url: str, model: str, limit: int, workdir: Path) -> dict:
         "OPENAI_BASE_URL": base_url,
         # BFCL reads model name from CLI — pass our placeholder
     }
-    # Generate model responses
+    # Generate model responses. NOTE: BFCL has no working subset mechanism -
+    # the old --bfcl-subset mapped to a no-op --num-gpus and the FULL category
+    # always ran (the 'limit silently dropped' bug). We run the full ast
+    # category and ignore `limit` entirely.
+    if limit > 0:
+        print(f"[run-evals] WARNING: bfcl subset {limit} requested but unsupported; running full ast category", file=sys.stderr)
     gen = ["bfcl", "generate",
            "--model", model,
            "--test-category", "ast",  # AST + executable subset
            "--num-threads", "4"]
-    if limit > 0:
-        gen += ["--num-gpus", "1"]  # ignored for openai backend
     r = run(gen, env=env, cwd=out, capture_output=True, text=True)
     log(r.stdout[-300:] if r.stdout else "")
     if r.returncode != 0:
