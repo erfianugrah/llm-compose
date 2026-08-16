@@ -13,4 +13,4 @@
 # not the cwd, so commands work from any directory.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-exec env PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m llmc "$@"
+exec env PYTHONUNBUFFERED=1 PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m llmc "$@"
