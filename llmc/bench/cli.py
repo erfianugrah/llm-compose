@@ -5,9 +5,9 @@ import argparse
 from typing import Optional, Sequence
 
 from llmc.bench import eval as bench_eval
-from llmc.bench import gumshoe, perf, report, watch
+from llmc.bench import gumshoe, perf, report, tasks, watch
 
-NATIVE = {"perf", "report", "watch", "eval", "gumshoe"}
+NATIVE = {"perf", "report", "watch", "eval", "gumshoe", "tasks"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--presets", required=True, help="comma-separated preset names")
     sp.add_argument("--repeats", type=int, default=3, help="runs per case (selection is a rate)")
     sp.add_argument("--cases", help="path to the fixtures JSON (default: gumshoe repo copy)")
+
+    sp = sub.add_parser("tasks", help="sensor-gated loop-task suite (bench/tasks/*.json)")
+    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--runs", type=int, default=1, help="runs per task")
+    sp.add_argument("--tasks", help="comma-separated task names (default: all)")
+    sp.add_argument("--verify-only", action="store_true",
+                    help="run loop verify-sensors per task (canary gate), no model scoring")
 
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
@@ -62,6 +69,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             [p.strip() for p in args.presets.split(",") if p.strip()],
             repeats=args.repeats,
             cases_path=args.cases,
+        )
+    if args.bench_command == "tasks":
+        return tasks.run_tasks(
+            [p.strip() for p in args.presets.split(",") if p.strip()],
+            runs=args.runs,
+            tasks=[t.strip() for t in args.tasks.split(",")] if args.tasks else None,
+            verify_only=args.verify_only,
         )
     if args.bench_command == "watch":
         return watch.run_watch()

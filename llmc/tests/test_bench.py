@@ -225,3 +225,50 @@ def test_run_case_invalid_json_nudges_then_recovers():
     trace = gumshoe.run_case(fake_llm, _case({"tools": ["web_search"]}))
     assert trace["json_invalid"] == 1
     assert [s["tool"] for s in trace["steps"]] == ["web_search"]
+
+
+# ── tasks ──────────────────────────────────────────────────────────────
+
+from llmc.bench import tasks as bench_tasks
+
+
+def test_materialize_harness_strips_meta_and_resolves_solutions():
+    m = {"name": "t", "fixture": "fx", "probe": "p_test.go", "task": "do x",
+         "sensors": [{"name": "probe", "cmd": "go test ./...",
+                      "canary": "cp {SOLUTIONS}/t-x.go x.go"}]}
+    h = bench_tasks.materialize_harness(m, "model-id")
+    assert h["models"] == ["llama-server/model-id"]
+    assert "name" not in h and "fixture" not in h and "probe" not in h
+    assert "{SOLUTIONS}" not in h["sensors"][0]["canary"]
+    assert h["sensors"][0]["canary"].endswith("/t-x.go x.go")
+
+
+def test_setup_workdir_keeps_only_this_probe(tmp_path: Path, monkeypatch):
+    fx = tmp_path / "fixtures" / "fx"
+    fx.mkdir(parents=True)
+    (fx / "main.go").write_text("package main\n")
+    (fx / "probe_a_test.go").write_text("package main\n")
+    (fx / "probe_b_test.go").write_text("package main\n")
+    monkeypatch.setattr(bench_tasks, "FIXTURES_DIR", tmp_path / "fixtures")
+    wd = bench_tasks.setup_workdir("fx", "probe_a_test.go", {"task": "x"})
+    try:
+        assert (wd / "probe_a_test.go").exists()
+        assert not (wd / "probe_b_test.go").exists()
+        assert (wd / ".pi" / "harness.json").exists()
+        # git baseline committed
+        import subprocess
+        r = subprocess.run(["git", "log", "--oneline"], cwd=wd,
+                           capture_output=True, text=True)
+        assert "baseline" in r.stdout
+    finally:
+        import shutil
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+def test_parse_report_shapes(tmp_path: Path):
+    (tmp_path / ".pi").mkdir()
+    (tmp_path / ".pi" / "harness-report.json").write_text(
+        '{"iterations": [{"kept": true}, {"kept": false}, {"kept": true, "escalated": true}]}')
+    out = bench_tasks.parse_report(tmp_path)
+    assert out == {"iterations": 3, "rolled_back": 1, "escalations": 1}
+    assert bench_tasks.parse_report(tmp_path / "nope") == {}
