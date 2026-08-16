@@ -163,3 +163,65 @@ def test_parse_eval_json_partial_failures(tmp_path: Path):
     p = tmp_path / "r.json"
     p.write_text(json.dumps({"label": "x", "humaneval": {"pass@1": None, "error": "boom"}}))
     assert bench_eval.parse_eval_json(p) == {}
+
+
+# ── gumshoe ────────────────────────────────────────────────────────────
+
+from llmc.bench import gumshoe
+
+
+def test_parse_action_variants():
+    assert gumshoe.parse_action('{"tool": "web_search", "args": {}}')["tool"] == "web_search"
+    assert gumshoe.parse_action('```json\n{"final": "ok"}\n```')["final"] == "ok"
+    assert gumshoe.parse_action("prose then {\"tool\": \"fetch\", \"args\": {\"url\": \"x\"}}")["tool"] == "fetch"
+    assert gumshoe.parse_action("no json here") is None
+    assert gumshoe.parse_action('{"other": 1}') is None
+
+
+def test_ordered_subsequence_with_alts():
+    assert gumshoe._ordered_subsequence(["a", "x", "b"], [{"a"}, {"b"}])
+    assert gumshoe._ordered_subsequence(["a", "b"], [{"a"}, {"b"}, {"c"}]) is False
+    assert gumshoe._ordered_subsequence(["osint_url"], [{"any": ["osint_domain", "osint_url"]}])
+    assert gumshoe._ordered_subsequence(["web_search"], [{"any": ["osint_domain"]}]) is False
+
+
+def _case(exp):
+    return {"id": "t", "prompt": "q", "expect": exp}
+
+
+def test_check_trace_sequence_args_answer():
+    case = _case({"tools": ["web_search"], "args": {"q": "nginx"}})
+    good = {"steps": [{"tool": "web_search", "args": {"query": "nginx"}}], "answer": "done"}
+    bad_seq = {"steps": [{"tool": "fetch", "args": {}}], "answer": "x"}
+    no_final = {"steps": [{"tool": "web_search", "args": {"nginx"}}], "answer": ""}
+    assert gumshoe.check_trace(case, good)
+    assert not gumshoe.check_trace(case, bad_seq)
+    assert not gumshoe.check_trace(case, no_final)
+
+
+def test_run_case_with_scripted_model():
+    responses = iter([
+        '{"tool": "osint_domain", "args": {"domain": "google.com"}}',
+        '{"tool": "osint_ip", "args": {"ip": "142.250.185.78"}}',
+        '{"final": "Google mail infrastructure summary"}',
+    ])
+    def fake_llm(messages, max_tokens=1200, temperature=0.2):
+        return next(responses)
+    case = _case({"tools": ["osint_domain", "osint_ip"]})
+    trace = gumshoe.run_case(fake_llm, case)
+    assert [s["tool"] for s in trace["steps"]] == ["osint_domain", "osint_ip"]
+    assert trace["json_invalid"] == 0
+    assert gumshoe.check_trace(case, trace)
+
+
+def test_run_case_invalid_json_nudges_then_recovers():
+    responses = iter([
+        "sorry, let me think about that",   # not JSON -> nudge
+        '{"tool": "web_search", "args": {"query": "x"}}',
+        '{"final": "answer"}',
+    ])
+    def fake_llm(messages, max_tokens=1200, temperature=0.2):
+        return next(responses)
+    trace = gumshoe.run_case(fake_llm, _case({"tools": ["web_search"]}))
+    assert trace["json_invalid"] == 1
+    assert [s["tool"] for s in trace["steps"]] == ["web_search"]

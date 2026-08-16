@@ -5,9 +5,9 @@ import argparse
 from typing import Optional, Sequence
 
 from llmc.bench import eval as bench_eval
-from llmc.bench import perf, report, watch
+from llmc.bench import gumshoe, perf, report, watch
 
-NATIVE = {"perf", "report", "watch", "eval"}
+NATIVE = {"perf", "report", "watch", "eval", "gumshoe"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hellaswag", type=int, default=0, metavar="N", help="HellaSwag subset size (needs [bench] tokenizer per preset)")
     sp.add_argument("--bfcl", action="store_true", help="BFCL full ast category")
 
+    sp = sub.add_parser("gumshoe", help="research-agent protocol suite (18 cases, stub tools)")
+    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--repeats", type=int, default=3, help="runs per case (selection is a rate)")
+    sp.add_argument("--cases", help="path to the fixtures JSON (default: gumshoe repo copy)")
+
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
 
@@ -51,6 +56,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             humaneval=args.humaneval,
             hellaswag=args.hellaswag,
             bfcl=args.bfcl,
+        )
+    if args.bench_command == "gumshoe":
+        return gumshoe.run_gumshoe(
+            [p.strip() for p in args.presets.split(",") if p.strip()],
+            repeats=args.repeats,
+            cases_path=args.cases,
         )
     if args.bench_command == "watch":
         return watch.run_watch()
