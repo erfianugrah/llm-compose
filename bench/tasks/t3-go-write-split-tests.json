@@ -1,0 +1,26 @@
+{
+  "name": "t3-go-write-split-tests",
+  "fixture": "go-strutil",
+  "probe": "",
+  "task": "Write unit tests for Split(s, sep string): basic, empty-sep and repeated-sep cases. Create strutil_split_test.go with at least 3 TestSplit* functions, each containing at least one real assertion (t.Error or t.Errorf).",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["strutil_split_test.go"],
+  "rules": [
+    "each test function must contain at least one real assertion",
+    "run `go test ./...` after every edit"
+  ],
+  "sensors": [
+    { "name": "build", "cmd": "go build ./..." },
+    { "name": "test-count",
+      "expect": "fail",
+      "cmd": "test $(go test ./... -list 'TestSplit[A-Za-z_]*' 2>/dev/null | grep -c '^Test') -ge 3",
+      "canary": "cp {SOLUTIONS}/t3-split_test.go strutil_split_test.go",
+      "hint": "need 3+ TestSplit* functions in strutil_split_test.go" },
+    { "name": "assertions",
+      "cmd": "test $(rg -o 't\\.(Error|Errorf|Fatal|Fatalf)' strutil_split_test.go --count-matches 2>/dev/null | awk -F: '{s+=$2} END{print s}') -ge 3",
+      "hint": "tests must assert, not just call" },
+    { "name": "green", "cmd": "go test ./..." }
+  ]
+}

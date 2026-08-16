@@ -1,0 +1,20 @@
+{
+  "name": "t5-ts-fix-slugify",
+  "fixture": "ts-slug",
+  "probe": "src/probe_slugify.test.ts",
+  "task": "Fix slugify in src/slug.ts: separator RUNS must collapse to a single dash, and edge dashes trimmed. Do NOT edit the probe test file.",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["src/slug.ts"],
+  "rules": [
+    "minimal diff",
+    "run `bun test` after every edit",
+    "never touch src/probe_slugify.test.ts - it is the acceptance probe"
+  ],
+  "sensors": [
+    { "name": "probe", "expect": "fail", "cmd": "bun test",
+      "canary": "cp {SOLUTIONS}/t5-slug.ts src/slug.ts",
+      "hint": "probe expects separator-run collapsing" }
+  ]
+}

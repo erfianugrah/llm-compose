@@ -1,0 +1,22 @@
+{
+  "name": "t2-go-fix-palindrome",
+  "fixture": "go-strutil",
+  "probe": "probe_palindrome_test.go",
+  "task": "Fix IsPalindrome in strutil.go: it must be case-insensitive (Level, RaceCar -> true). Do NOT edit the probe test file.",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["strutil.go"],
+  "rules": [
+    "minimal diff",
+    "run `go build ./...` after every edit",
+    "never touch probe_palindrome_test.go - it is the acceptance probe"
+  ],
+  "sensors": [
+    { "name": "build", "cmd": "go build ./..." },
+    { "name": "vet",  "cmd": "go vet ./..." },
+    { "name": "probe", "expect": "fail", "cmd": "go test ./...",
+      "canary": "cp {SOLUTIONS}/t2-strutil.go strutil.go",
+      "hint": "probe expects case-insensitive palindrome" }
+  ]
+}

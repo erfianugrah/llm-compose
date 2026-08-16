@@ -1,0 +1,22 @@
+{
+  "name": "t1-go-add-truncate",
+  "fixture": "go-strutil",
+  "probe": "probe_truncate_test.go",
+  "task": "Implement Truncate(s string, n int) string in strutil.go. It returns s with at most n RUNES (unicode-safe), no suffix. All tests must pass. Do NOT edit the probe test file.",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["strutil.go"],
+  "rules": [
+    "no whole-file rewrites; exact oldText from a fresh read",
+    "run `go build ./...` after every edit",
+    "never touch probe_truncate_test.go - it is the acceptance probe"
+  ],
+  "sensors": [
+    { "name": "build", "cmd": "go build ./..." },
+    { "name": "vet",  "cmd": "go vet ./..." },
+    { "name": "probe", "expect": "fail", "cmd": "go test ./...",
+      "canary": "cp {SOLUTIONS}/t1-strutil.go strutil.go",
+      "hint": "tests fail until Truncate exists" }
+  ]
+}

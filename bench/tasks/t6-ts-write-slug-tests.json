@@ -1,0 +1,25 @@
+{
+  "name": "t6-ts-write-slug-tests",
+  "fixture": "ts-slug",
+  "probe": "",
+  "task": "Write unit tests for unslug covering empty input, single word, and non-ascii words. Create src/unslug_cases.test.ts with at least 3 test blocks using expect() assertions.",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["src/unslug_cases.test.ts"],
+  "rules": [
+    "each test must contain at least one expect() assertion",
+    "run `bun test` after every edit"
+  ],
+  "sensors": [
+    { "name": "test-count",
+      "expect": "fail",
+      "cmd": "test $(rg -c '^test\\(' src/unslug_cases.test.ts 2>/dev/null || echo 0) -ge 3",
+      "canary": "cp {SOLUTIONS}/t6-unslug_cases.test.ts src/unslug_cases.test.ts",
+      "hint": "need 3+ test() blocks in unslug_cases.test.ts" },
+    { "name": "assertions",
+      "cmd": "test $(rg -o 'expect\\(' src/unslug_cases.test.ts --count-matches 2>/dev/null | awk -F: '{s+=$2} END{print s}') -ge 3",
+      "hint": "tests must assert with expect()" },
+    { "name": "green", "cmd": "bun test" }
+  ]
+}

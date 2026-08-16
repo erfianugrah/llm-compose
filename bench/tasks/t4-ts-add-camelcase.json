@@ -1,0 +1,20 @@
+{
+  "name": "t4-ts-add-camelcase",
+  "fixture": "ts-slug",
+  "probe": "src/probe_camel.test.ts",
+  "task": "Implement camelCase(slug: string): string in src/slug.ts. It converts separator-name to camelCase words. All tests must pass. Do NOT edit the probe test file.",
+  "maxIterations": 8,
+  "stallPatience": 3,
+  "agentTimeoutMs": 3600000,
+  "writeScope": ["src/slug.ts"],
+  "rules": [
+    "minimal diff",
+    "run `bun test` after every edit",
+    "never touch src/probe_camel.test.ts - it is the acceptance probe"
+  ],
+  "sensors": [
+    { "name": "probe", "expect": "fail", "cmd": "bun test",
+      "canary": "cp {SOLUTIONS}/t4-slug.ts src/slug.ts",
+      "hint": "tests fail until camelCase exists" }
+  ]
+}
