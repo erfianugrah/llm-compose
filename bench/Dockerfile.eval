@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pinned versions — bump deliberately.
 ARG EVALPLUS_VERSION=0.3.1
 ARG LM_EVAL_VERSION=0.4.9
-ARG BFCL_VERSION=2.0.0
+ARG BFCL_VERSION=2026.3.23
 
 # Core deps
 RUN pip install \
