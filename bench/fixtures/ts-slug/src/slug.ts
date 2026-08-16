@@ -1,12 +1,9 @@
 /** slugify converts a title to a URL slug.
- * BUG: separator collapsing only handles doubles ("--"), runs of 3+
- * separators and edge dashes leak through. */
+ * BUG: edge dashes are not trimmed - "--Lead--" -> "-lead-". */
 export function slugify(title: string): string {
   return title
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/--/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9]+/g, "-");
 }
 
 /** unslug converts a slug back to a title-cased string. */

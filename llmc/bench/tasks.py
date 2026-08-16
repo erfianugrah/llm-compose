@@ -56,7 +56,7 @@ def setup_workdir(fixture: str, probe: str, harness: dict[str, Any]) -> Path:
     if not src.is_dir():
         raise ValueError(f"fixture not found: {src}")
     tmp = Path(tempfile.mkdtemp(prefix="llmc-bench-task-"))
-    shutil.copytree(src, tmp)
+    shutil.copytree(src, tmp, dirs_exist_ok=True)
     # Each task sees only its own probe; the other fixtures' probes would
     # pollute `go test` / `bun test` with out-of-scope failures.
     for p in tmp.rglob("probe_*"):
@@ -65,10 +65,10 @@ def setup_workdir(fixture: str, probe: str, harness: dict[str, Any]) -> Path:
         p.unlink()
     env = {"GIT_AUTHOR_NAME": "bench", "GIT_AUTHOR_EMAIL": "bench@local",
            "GIT_COMMITTER_NAME": "bench", "GIT_COMMITTER_EMAIL": "bench@local"}
-    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "baseline"]):
-        subprocess.run(["git"] + args, cwd=tmp, check=True, capture_output=True, env=env)
     (tmp / ".pi").mkdir(exist_ok=True)
     (tmp / ".pi" / "harness.json").write_text(json.dumps(harness, indent=2))
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "baseline"]):
+        subprocess.run(["git"] + args, cwd=tmp, check=True, capture_output=True, env=env)
     return tmp
 
 
