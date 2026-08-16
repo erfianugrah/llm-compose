@@ -94,6 +94,7 @@ class RuntimeSpec:
     min_p: float = 0.0
     presence_penalty: Optional[float] = None
     repeat_penalty: Optional[float] = None
+    spec_type: Optional[str] = None  # e.g. "draft-mtp" - llama.cpp --spec-type
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ _RUNTIME_KEYS = {
     "min_p": (int, float),
     "presence_penalty": (int, float),
     "repeat_penalty": (int, float),
+    "spec_type": str,
 }
 
 
@@ -191,6 +193,7 @@ def _load_runtime(data: dict | None) -> RuntimeSpec:
         min_p=float(data.get("min_p", 0.0)),
         presence_penalty=float(data["presence_penalty"]) if "presence_penalty" in data else None,
         repeat_penalty=float(data["repeat_penalty"]) if "repeat_penalty" in data else None,
+        spec_type=data.get("spec_type", "").strip() or None,
     )
 
 
@@ -280,4 +283,6 @@ def preset_to_env(preset: Preset) -> dict[str, str]:
         env["PRESENCE_PENALTY"] = str(preset.runtime.presence_penalty)
     if preset.runtime.repeat_penalty is not None:
         env["REPEAT_PENALTY"] = str(preset.runtime.repeat_penalty)
+    if preset.runtime.spec_type:
+        env["SPEC_TYPE"] = preset.runtime.spec_type
     return env
