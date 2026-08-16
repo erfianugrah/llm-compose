@@ -1,7 +1,7 @@
 # Plan: Qwen3.8 / GLM-5.3 local-model evaluation + real bench framework
 
 Date: 2026-08-15
-Status: plan only, no code yet
+Status: P0 DONE (spike results in 7.2); qwen38 preset + p0-qwen38.sh committed; gumshoe fixtures + runner committed in the gumshoe repo; framework (P1+) not started
 
 ## 1. What actually shipped (verified 2026-08-15)
 
@@ -77,6 +77,8 @@ Fixed set of ~6-10 sensor-gated mini-tasks under `bench/tasks/`, each a manifest
 Metrics per task: pass/fail, iterations to green, wall time, malformed-output count (the peg-gemma4 failure mode - count parse-error loops explicitly since they don't trip stallPatience), tokens consumed (from proxy /metrics if available).
 
 Guardrails from loop experience baked in: `llmc lock <preset> --owner bench` for the whole run, 196608 ctx / PI_COMPACT_FRACTION=0.95 equivalents, agentTimeoutMs 3600000, tasks sliced to ~3-hunk scope, sensors never rebuild the serving stack, runs sequential (one GPU).
+
+Sensor trust protocol (from the self-correcting-loop skill, mandatory per task): every acceptance probe gets a `canary` (a command that plants the fault it catches) and the suite passes `loop verify-sensors` before any model is scored on it; feature sensors carry `expect: "fail"` and are confirmed red at baseline; each task manifest gets a `loop run --trial` before the full matrix. An unsatisfiable sensor looks identical to a hard task and would silently score every model 0 - this is the cheapest check in the whole plan and the one that catches the most expensive failure.
 
 Suite must include at least one task known to be at the edge of Gemma's ability (e.g. writing NEW test code - the task C repetition-loop failure) or the suite can't discriminate upward.
 
@@ -166,18 +168,20 @@ Task suite: 6 sensor-gated tasks from bench/fixtures, 3 runs each, sensors-only,
 
 ## 8. Small-model track: gumshoe research-agent (servarr 1070)
 
-Separate from the 5090 track. The gumshoe research-agent runs on the 1070 (8 GB VRAM, sm_61, flash-attn off) with thinking FORCED OFF and a 10-tool JSON action protocol. Incumbent: Qwen3.5-9B. Generic benchmark numbers (Luxand BFCL-agentic, July 2026) were measured with reasoning ON, so they are directional only for this role.
+Separate from the 5090 track. The gumshoe research-agent runs on the 1070 (8 GB VRAM, sm_61, flash-attn off, shares the card with jellyfin NVENC bursts - real LLM headroom ~6-6.5 GB) with thinking FORCED OFF and a 12-tool JSON action protocol. Incumbent: Qwen3.5-9B. Generic benchmark numbers (Luxand BFCL-agentic, July 2026) were measured with reasoning ON, so they are directional only for this role.
 
-### 8.1 Candidates (all fit 8 GB with KV headroom)
+HARDWARE NOTE (2026-08-16, user): a 3080 Ti (12 GB) is planned for servarr eventually. Until it lands, candidates must fit the 1070; the Gemma 4 12B row is scored on quality but its deploy-fit is DEFERRED to the 3080 Ti.
 
-| Preset | Model | Size @Q4 | Why |
-|---|---|---|---|
-| `qwen35-9b` (incumbent baseline) | Qwen3.5-9B | ~5.5 GB | already deployed, thinking-off tolerant |
-| `gemma4-12b` | Gemma 4 12B Unified | ~7 GB | quality ceiling; Tau2 69.0; 262K ctx (cap to 32K on the 1070); MTP drafter |
-| `qwen35-4b` | Qwen3.5-4B | 2.7 GB | Luxand 67.0% agentic, best score-per-GB; big speed win on Pascal |
-| `lfm25-8b` (optional) | LFM2.5-8B-A1B | 5.2 GB | 1.5B active = fastest decode; only if speed is the binding constraint; LFM Open license, not Apache |
+### 8.1 Candidates
 
-No Qwen3.8 small exists (27B is the smallest 3.8 so far) - this track is Gemma 4 12B / Qwen3.5 small / LFM2.5.
+| Preset | Model | Size @Q4 | Fits 1070 now? | Why |
+|---|---|---|---|---|
+| `qwen35-9b` (incumbent baseline) | Qwen3.5-9B | ~5.5 GB | yes | already deployed, thinking-off tolerant |
+| `qwen35-4b` | Qwen3.5-4B | 2.7 GB | yes | Luxand 67.0% agentic, best score-per-GB; big speed win on Pascal |
+| `lfm25-8b` | LFM2.5-8B-A1B | 5.3 GB | yes | 1.5B active = fastest decode; LFM Open license, not Apache |
+| `gemma4-12b` | Gemma 4 12B Unified | 7.1 GB (Q4_K_M) / 6.4 GB (IQ4_XS) | **no** (too tight with KV + jellyfin bursts) | quality ceiling; Tau2 69.0; MTP drafter; deploy-fit deferred to the 3080 Ti |
+
+All four GGUFs (+ 12B MTP drafter + IQ4_XS fallback) already downloaded and verified on the dev box. No Qwen3.8 small exists (27B is the smallest 3.8 so far).
 
 ### 8.2 Workload-shaped suite (`llmc bench tasks --suite gumshoe`)
 
@@ -188,21 +192,23 @@ Scripted research prompts scored on the things the role actually does:
 3. **Steps-to-answer** within the 6-step bound, forced-final fallback rate.
 4. **Final synthesis quality**: rubric-scored by a fixed judge (paid rung, one model for all candidates so the judge is not a variable).
 
-~15-20 prompts across the 4 gumshoe tool families (web_search, fetch, osint_*, direct). Fixtures vendored in bench/fixtures/gumshoe/ (decision 2).
+~15-20 prompts across the 4 gumshoe tool families (web_search, fetch, osint_*, direct). CANONICAL HOME of the fixtures + runner is the gumshoe repo (scripts/gumshoe-fixtures-draft.json + scripts/gumshoe-eval-runner.py, committed 2026-08-16 as 26716d4; 18 cases with per-case oracles, repeats-as-rate, {any} alternatives, args checks, multi-turn history). llmc bench CONSUMES that file - do not re-vendor a copy into bench/fixtures (two sources of truth for the same oracle is how baselines rot). The bench-side work is the raw-llama-server runner variant (same cases, but pointed at the candidate on the 5090 without the gateway, which also exposes raw JSON-protocol validity that the gateway's parse-and-reamit hides).
 
 ### 8.3 Method
 
 - **Quality A/B on the 5090** (fast iteration, one GPU, sequential): all candidates through the gumshoe suite at matched ctx (32K). Perf measured too but 5090 tok/s is NOT the deploy number - it ranks, it does not predict Pascal.
 - **Deploy-fit check on the 1070** for the winner only (section 8.4).
 
-### 8.4 Deploy-fit check (servarr, 1070)
+### 8.4 Deploy-fit check (servarr)
 
-For the quality winner: load on the gumshoe llama container (Pascal flags: flash-attn off), measure VRAM at 32K ctx, tok/s on a representative research turn, and one live end-to-end research-agent call. Pass = fits with ~1 GB headroom AND tok/s not worse than the incumbent by >20%.
+For the quality winner AMONG THE 1070-FIT CANDIDATES (9B / 4B / LFM2.5): load on the gumshoe llama container (Pascal flags: flash-attn off), measure VRAM at 32K ctx, tok/s on a representative research turn, and one live end-to-end research-agent call. Pass = fits with ~1 GB headroom AND tok/s not worse than the incumbent by >20%.
+
+`gemma4-12b` deploy-fit is DEFERRED to the 3080 Ti (12 GB): Q4_K_M 7.1 GB + MTP drafter, or IQ4_XS 6.4 GB if the card arrives with other residents. If the 12B wins quality by a wide margin, that is the evidence for accelerating the card swap.
 
 ### 8.5 Decision rules
 
-- **gemma4-12b replaces qwen35-9b** if tool-sequence accuracy >= incumbent AND JSON-valid rate >= 99% AND 1070 deploy-fit passes.
-- **qwen35-4b replaces the incumbent** only if its tool-sequence accuracy is within 5 points of the incumbent - the trade is quality for speed, and it only wins if it is nearly free.
+- **gemma4-12b replaces qwen35-9b WHEN THE 3080 Ti LANDS** if tool-sequence accuracy >= incumbent AND JSON-valid rate >= 99%. It cannot deploy to the 1070; a quality win here is a card-swap justification, not an immediate change.
+- **qwen35-4b or lfm25-8b replaces the incumbent NOW** if tool-sequence accuracy is within 5 points of the incumbent AND JSON-valid rate >= 99% AND 1070 deploy-fit passes - the trade is quality for speed, and it only wins if it is nearly free.
 - Otherwise keep Qwen3.5-9B and record why.
 
 ### 8.6 Sequencing
