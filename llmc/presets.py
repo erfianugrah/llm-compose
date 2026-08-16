@@ -106,6 +106,7 @@ class Preset:
     mmproj: AssetSpec = field(default_factory=AssetSpec)
     template: AssetSpec = field(default_factory=AssetSpec)
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
+    bench: dict = field(default_factory=dict)  # optional [bench] section (tokenizer, tags)
 
     @property
     def model_id(self) -> str:
@@ -125,10 +126,11 @@ class Preset:
 
 
 # Schema definition for validation. Maps section → allowed keys with types.
-_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime"}
+_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime", "bench"}
 _REQUIRED_TOP = {"name", "vram_gb", "model"}
 _MODEL_KEYS = {"repo": str, "file": str}
 _ASSET_KEYS = {"url": str, "file": str}
+_BENCH_KEYS = {"tokenizer": str, "tags": str}
 _RUNTIME_KEYS = {
     "reasoning": str,
     "context_size": int,
@@ -217,6 +219,12 @@ def load_preset(path: Path) -> Preset:
         if not data["model"].get(key, "").strip():
             raise PresetError(f"{path}: model.{key} is required and must be non-empty")
 
+    bench_data = data.get("bench") or {}
+    if not isinstance(bench_data, dict):
+        raise PresetError(f"{path}: [bench] table missing or not a table")
+    _check_keys(f"{path}:bench", bench_data, _BENCH_KEYS)
+    _check_types(f"{path}:bench", bench_data, _BENCH_KEYS)
+
     return Preset(
         name=path.stem,
         display_name=data["name"],
@@ -226,6 +234,7 @@ def load_preset(path: Path) -> Preset:
         mmproj=_load_asset(f"{path}:mmproj", data.get("mmproj")),
         template=_load_asset(f"{path}:template", data.get("template")),
         runtime=_load_runtime(data.get("runtime")),
+        bench=bench_data,
     )
 
 

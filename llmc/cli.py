@@ -886,20 +886,24 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    """Pass through to bench scripts."""
+    """Native bench framework (perf/report/watch) + legacy script pass-thru."""
     if not args.rest:
         _err("Usage: llmc bench <subcommand> [args...]")
-        _err("Subcommands: perf, quants, quants-quick, accuracy, report, image")
+        _err("Native: perf, report, watch. Legacy: quants, quants-quick, accuracy, image, model, model-quick")
         return EXIT_USER_ERROR
     sub = args.rest[0]
     rest = args.rest[1:]
 
+    # Native framework (llmc/bench/) - perf/report/watch per
+    # docs/plans/2026-08-15-local-model-bench-framework.md
+    from llmc.bench import cli as bench_cli
+    if sub in bench_cli.NATIVE:
+        return bench_cli.main(args.rest)
+
     mapping = {
-        "perf":         [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--perf-only"],
         "quants":       [str(REPO_ROOT / "bench" / "bench-quants.sh")],
         "quants-quick": [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--quick"],
         "accuracy":     [str(REPO_ROOT / "bench" / "bench-quants.sh"), "--skip-perf"],
-        "report":       [sys.executable, str(REPO_ROOT / "bench" / "bench-report.py"), "latest"],
         "image":        ["docker", "build",
                          "-t", "erfianugrah/bench-eval:latest",
                          "-f", str(REPO_ROOT / "bench" / "Dockerfile.eval"),
@@ -910,7 +914,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     }
     if sub not in mapping:
         _err(f"Unknown bench subcommand: {sub!r}")
-        _err(f"Available: {', '.join(sorted(mapping))}")
+        _err(f"Available: {', '.join(sorted(bench_cli.NATIVE | set(mapping)))}")
         return EXIT_USER_ERROR
     return _passthrough(mapping[sub], rest)
 
