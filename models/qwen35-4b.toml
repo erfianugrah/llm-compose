@@ -1,0 +1,25 @@
+name = "Qwen3.5 4B - small-track speed candidate"
+description = """
+Qwen3.5 4B - Luxand's best score-per-GB agentic model (67.0% BFCL, July 2026).
+Gumshoe candidate: wins only if tool-sequence accuracy is within 5 points of
+the 9B incumbent (plan section 8.5). reasoning off mirrors the gumshoe role.
+"""
+vram_gb = 4.0
+
+[model]
+repo = "unsloth/Qwen3.5-4B-GGUF"
+file = "Qwen3.5-4B-Q4_K_M.gguf"
+
+[runtime]
+reasoning = "off"
+context_size = 32768
+parallel_slots = 1
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[bench]
+tokenizer = "unsloth/Qwen3.5-4B-GGUF"

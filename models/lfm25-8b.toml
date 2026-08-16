@@ -1,0 +1,24 @@
+name = "LFM2.5 8B-A1B - small-track MoE speed candidate"
+description = """
+LFM2.5 8B-A1B (1.5B active) - fastest possible decode on Pascal. Gumshoe
+candidate, LFM Open license (not Apache). Non-reasoning arch.
+"""
+vram_gb = 6.5
+
+[model]
+repo = "unsloth/LFM2.5-8B-A1B-GGUF"
+file = "LFM2.5-8B-A1B-UD-Q4_K_M.gguf"
+
+[runtime]
+reasoning = "off"
+context_size = 32768
+parallel_slots = 1
+temperature = 0.6
+top_p = 0.95
+top_k = 40
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[bench]
+tokenizer = "unsloth/LFM2.5-8B-A1B-GGUF"

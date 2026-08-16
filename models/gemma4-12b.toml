@@ -1,0 +1,25 @@
+name = "Gemma 4 12B - small-track quality ceiling (3080 Ti deploy target)"
+description = """
+Gemma 4 12B Unified - small-track quality ceiling. Does NOT fit the 1070
+with KV headroom; deploy-fit deferred to the planned 3080 Ti (plan 8.4).
+Scored on quality only. reasoning off mirrors the gumshoe role.
+"""
+vram_gb = 8.5
+
+[model]
+repo = "unsloth/gemma-4-12b-it-GGUF"
+file = "gemma-4-12b-it-Q4_K_M.gguf"
+
+[runtime]
+reasoning = "off"
+context_size = 32768
+parallel_slots = 1
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[bench]
+tokenizer = "unsloth/gemma-4-12b-it-GGUF"
