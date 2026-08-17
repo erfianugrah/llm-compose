@@ -1,0 +1,14 @@
+{
+  "label": "qwen38",
+  "base_url": "http://host.docker.internal:11434/v1",
+  "model": "Qwen3.8-27B-Q4_K_M",
+  "humaneval": {
+    "pass@1": null,
+    "n": 0,
+    "error": "\n    parser = Parser(Language(tree_sitter_python.language()))\n                    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nTypeError: Language.__init__() missing 1 required positional argument: 'name'\n"
+  },
+  "bfcl": {
+    "overall": null,
+    "error": "generate failed"
+  }
+}
