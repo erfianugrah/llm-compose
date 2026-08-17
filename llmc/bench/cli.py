@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--presets", required=True, help="comma-separated preset names")
     sp.add_argument("--humaneval", action="store_true")
     sp.add_argument("--hellaswag", type=int, default=0, metavar="N", help="HellaSwag subset size (needs [bench] tokenizer per preset)")
-    sp.add_argument("--bfcl", action="store_true", help="BFCL full ast category")
+    sp.add_argument("--bfcl", action="store_true", help="BFCL full non_live collection")
 
     sp = sub.add_parser("gumshoe", help="research-agent protocol suite (18 cases, stub tools)")
     sp.add_argument("--presets", required=True, help="comma-separated preset names")

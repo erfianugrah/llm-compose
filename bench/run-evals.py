@@ -17,7 +17,7 @@ Usage inside the container:
         --model bench --humaneval --hellaswag-subset 1000 --bfcl-subset 100
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys, time, tempfile, shutil
+import argparse, json, os, re, subprocess, sys, time, tempfile, shutil
 from pathlib import Path
 
 def log(msg: str) -> None:
@@ -49,13 +49,18 @@ def eval_humaneval(base_url: str, model: str, n_samples: int, workdir: Path) -> 
     if r.returncode != 0:
         log(f"evalplus failed: {r.stderr[-500:]}")
         return {"pass@1": None, "n": 0, "error": r.stderr[-200:]}
-    # Parse the eval_results.json that evalplus writes
-    for p in out.rglob("eval_results.json"):
-        d = json.loads(p.read_text())
-        base = d.get("pass_at_k", {}).get("base", {}).get("pass@1")
-        plus = d.get("pass_at_k", {}).get("plus", {}).get("pass@1")
-        return {"pass@1": base, "pass@1_plus": plus, "n": d.get("hint", {}).get("ntotal", 0)}
-    return {"pass@1": None, "n": 0, "error": "no eval_results.json"}
+    # evalplus 0.3.1 only PRINTS pass@k (cprint lines `pass@1:\t0.451`); the
+    # file it writes is <model>_eval_results.json and contains per-task
+    # statuses, not pass_at_k. Parse stdout: base line first, plus second.
+    scores = re.findall(r"pass@1:\s*([0-9.]+)", r.stdout or "")
+    if not scores:
+        return {"pass@1": None, "n": 0, "error": "no pass@1 in stdout"}
+    n_match = re.search(r"(\d+)/\d+", r.stdout or "")
+    return {
+        "pass@1": float(scores[0]),
+        "pass@1_plus": float(scores[1]) if len(scores) > 1 else None,
+        "n": int(n_match.group(1)) if n_match else 0,
+    }
 
 # ── HellaSwag via lm-eval ───────────────────────────────────────────────
 def eval_hellaswag(base_url: str, model: str, limit: int, workdir: Path, tokenizer: str) -> dict:
@@ -132,18 +137,30 @@ def eval_bfcl(base_url: str, model: str, limit: int, workdir: Path) -> dict:
     if r.returncode != 0:
         log(f"bfcl generate failed: {r.stderr[-500:]}")
         return {"overall": None, "error": "generate failed"}
-    # Evaluate
-    ev = ["bfcl", "evaluate", "--model", model, "--test-category", "non_live"]
+    # Evaluate. 2026.3.23 prints NO accuracy to stdout - only a pointer to
+    # score/data_overall.csv. Pin --score-dir into our workdir and parse the
+    # CSV (sorted desc, first data row = our model; '45.23%' strings).
+    score_dir = out / "score"
+    ev = ["bfcl", "evaluate", "--model", model, "--test-category", "non_live",
+          "--score-dir", str(score_dir)]
     r = run(ev, env=env, cwd=out, capture_output=True, text=True)
     log(r.stdout[-500:] if r.stdout else "")
-    # BFCL prints overall accuracy to stdout — parse it
+    if r.returncode != 0:
+        log(f"bfcl evaluate failed rc={r.returncode}: {r.stderr[-800:]}")
     overall = None
-    for line in (r.stdout or "").splitlines():
-        if "Overall Accuracy" in line:
-            try:
-                overall = float(line.split(":")[-1].strip().rstrip("%")) / 100
-            except ValueError:
-                pass
+    csv_path = score_dir / "data_overall.csv"
+    if csv_path.exists():
+        rows = [l.split(",") for l in csv_path.read_text().splitlines() if l.strip()]
+        if len(rows) > 1:
+            header = [h.strip().lower() for h in rows[0]]
+            idx = next((i for i, h in enumerate(header) if "overall" in h), None)
+            if idx is not None:
+                try:
+                    overall = float(rows[1][idx].rstrip("%")) / 100
+                except (ValueError, IndexError):
+                    pass
+    if overall is None:
+        log("bfcl evaluate: no overall accuracy (CSV missing/unparseable)")
     return {"overall": overall, "raw_tail": (r.stdout or "")[-500:]}
 
 # ── Driver ──────────────────────────────────────────────────────────────

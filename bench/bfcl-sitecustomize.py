@@ -31,19 +31,25 @@ def _register_local_models():
         return  # bfcl not installed (e.g. global interpreter) - stay silent
     for name in names.split(","):
         name = name.strip()
-        if name and name not in MODEL_CONFIG_MAPPING:
-            MODEL_CONFIG_MAPPING[name] = ModelConfig(
-                model_name=name,
-                display_name=name,
-                url=None,
-                org="local",
-                license="local",
-                model_handler=OpenAICompletionsHandler,
-                input_price=None,
-                output_price=None,
-                is_fc_model=False,  # prompt mode: generic, no native-FC assumptions
-                underscore_to_dot=False,
-            )
+        if not name:
+            continue
+        # bfcl evaluate does model_name.replace("_", "/") for config lookups
+        # (their convention: file paths use _ for /). Our GGUF stems contain
+        # literal underscores (Q4_K_M), so register BOTH forms.
+        for key in {name, name.replace("_", "/")}:
+            if key not in MODEL_CONFIG_MAPPING:
+                MODEL_CONFIG_MAPPING[key] = ModelConfig(
+                    model_name=name,
+                    display_name=name,
+                    url=None,
+                    org="local",
+                    license="local",
+                    model_handler=OpenAICompletionsHandler,
+                    input_price=None,
+                    output_price=None,
+                    is_fc_model=False,  # prompt mode: generic, no native-FC assumptions
+                    underscore_to_dot=False,
+                )
 
 
 _register_local_models()
