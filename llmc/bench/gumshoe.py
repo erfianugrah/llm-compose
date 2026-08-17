@@ -267,7 +267,11 @@ def run_gumshoe(preset_names: list[str], repeats: int = 3,
     for name in preset_names:
         preset = presets[name]
         log(f"\n=== {name} ({len(cases)} cases x {repeats}) ===")
-        client.set_lock(name, owner="bench")
+        status, payload = client.set_lock(name, owner="bench")
+        if status != 200:
+            log(f"  lock failed ({status}): {payload.get('error', payload)}")
+            rc = 1
+            continue
         status, payload = client.set_mode("llm", model=name)
         if status != 200:
             log(f"  switch failed ({status}): {payload.get('error', payload)}")

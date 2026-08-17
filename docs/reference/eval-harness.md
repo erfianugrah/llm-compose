@@ -7,8 +7,9 @@ bench/Dockerfile.eval or bench/run-evals.py.
 ## Architecture
 
 - `llmc bench eval --presets a,b --humaneval --bfcl` switches the proxy to each
-  preset (locked, owner `bench`), then runs one throwaway container per preset
-  from `erfianugrah/bench-eval:latest`.
+  preset (locked, owner `bench` - fails fast with 409 if another preset is
+  pinned; no queue, rerun when the GPU is free), then runs one throwaway
+  container per preset from `erfianugrah/bench-eval:latest`.
 - The container entrypoint is bench/run-evals.sh -> run-evals.py, which shells
   out to `evalplus.evaluate` / `lm_eval` / `bfcl` and writes one JSON per
   preset to bench/results/eval-<preset>-<ts>.json. llmc parses that into

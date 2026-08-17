@@ -1,0 +1,14 @@
+{
+  "label": "gemma4",
+  "base_url": "http://host.docker.internal:11434/v1",
+  "model": "gemma-4-31B-it-Q4_K_M",
+  "humaneval": {
+    "pass@1": null,
+    "n": 0,
+    "error": "no eval_results.json"
+  },
+  "bfcl": {
+    "overall": null,
+    "error": "generate failed"
+  }
+}

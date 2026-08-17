@@ -100,6 +100,13 @@ class ProxyContext:
     # In-memory only: a proxy restart clears the lock.
     lock_model: Optional[str] = None
     lock_owners: set[str] = field(default_factory=set)
+    # FIFO wait queue for contended lock requests ({"lock": M, "owner": O,
+    # "wait": true}). Entries: {"owner", "model", "ts"}. A contended lock
+    # request can no longer hijack the locked model; it queues here and the
+    # head entry acquires the lock (via its next poll) once the current
+    # owners drain. In-memory only BY DESIGN: a restart drops the queue and
+    # a polling waiter re-enqueues idempotently, so nothing stale survives.
+    lock_queue: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.lock_model = self.state.locked
@@ -135,6 +142,27 @@ def _json_response(handler, status: int, payload: dict) -> None:
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _queue_payload(ctx: "ProxyContext") -> list[dict]:
+    """Render the FIFO lock wait queue for status/409/202 payloads."""
+    return [
+        {"owner": e["owner"], "model": e["model"], "position": i + 1}
+        for i, e in enumerate(ctx.lock_queue)
+    ]
+
+
+def _enqueue(queue: list[dict], owner: str, model: str) -> int:
+    """Idempotently place owner in the lock queue; returns 1-based position.
+    A re-enqueue by the same owner updates the model in place (keeps its
+    position) - a polling waiter re-sends this every cycle, so it must not
+    duplicate the entry."""
+    for i, e in enumerate(queue):
+        if e["owner"] == owner:
+            e["model"] = model
+            return i + 1
+    queue.append({"owner": owner, "model": model, "ts": time.time()})
+    return len(queue)
 
 
 def _check_vram_budget(preset: Preset, config: ProxyConfig) -> tuple[bool, str]:
@@ -403,6 +431,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "model": self.ctx.state.model,
             "locked": self.ctx.lock_model,
             "lock_owners": sorted(list(self.ctx.lock_owners)),
+            "lock_queue": _queue_payload(self.ctx),
         })
 
     def _handle_mode_post(self, body: bytes) -> None:
@@ -422,6 +451,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 with self.ctx.swap_lock:
                     if owner:
                         self.ctx.lock_owners.discard(owner)
+                        # Unlocking also abandons any queued wait this owner
+                        # had - "I'm done" applies to both.
+                        self.ctx.lock_queue = [
+                            e for e in self.ctx.lock_queue if e["owner"] != owner
+                        ]
                         if not self.ctx.lock_owners:
                             self.ctx.lock_model = None
                     else:
@@ -457,11 +491,56 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if self.ctx.state.model != lock_name:
                 _log(f"warning: locking {lock_name!r} while active model is "
                      f"{self.ctx.state.model!r} - lock pins a model that is not running")
+            wait = bool(payload.get("wait"))
+            owner_key = owner or "default"
             # Under swap_lock so a concurrent swap can't interleave between
             # another thread's lock check and this mutation.
             with self.ctx.swap_lock:
+                free = not self.ctx.lock_owners
+                same = self.ctx.lock_model == lock_name
+                # FIFO gate on a FREE lock: only the queue head may take it,
+                # and only for the model it queued for. Joining the owners of
+                # the already-locked model is never gated (no eviction risk).
+                behind_queue = (
+                    free
+                    and bool(self.ctx.lock_queue)
+                    and (self.ctx.lock_queue[0]["owner"] != owner_key
+                         or self.ctx.lock_queue[0]["model"] != lock_name)
+                )
+                if not same and (not free or behind_queue):
+                    if self.ctx.lock_model:
+                        why = (f"model lock active on {self.ctx.lock_model!r} "
+                               f"(owners: {', '.join(sorted(self.ctx.lock_owners))})")
+                    else:
+                        head = self.ctx.lock_queue[0]
+                        why = (f"lock free but queue head is "
+                               f"{head['owner']}->{head['model']}")
+                    if not wait:
+                        _json_response(self, 409, {
+                            "error": f"{why}; refusing to hijack - "
+                                     "retry with wait to join the FIFO queue",
+                            "locked": self.ctx.lock_model,
+                            "lock_owners": sorted(list(self.ctx.lock_owners)),
+                            "lock_queue": _queue_payload(self.ctx),
+                        })
+                        return
+                    pos = _enqueue(self.ctx.lock_queue, owner_key, lock_name)
+                    _log(f"lock queue: {owner_key} waits for {lock_name!r} "
+                         f"at position {pos}")
+                    _json_response(self, 202, {
+                        "queued": True,
+                        "position": pos,
+                        "locked": self.ctx.lock_model,
+                        "lock_owners": sorted(list(self.ctx.lock_owners)),
+                        "lock_queue": _queue_payload(self.ctx),
+                    })
+                    return
                 self.ctx.lock_model = lock_name
-                self.ctx.lock_owners.add(owner or "default")
+                self.ctx.lock_owners.add(owner_key)
+                # Acquiring drops any queue entry the requester held.
+                self.ctx.lock_queue = [
+                    e for e in self.ctx.lock_queue if e["owner"] != owner_key
+                ]
                 try:
                     self.ctx.state = state_mod.update(
                         self.ctx.config.state_path,

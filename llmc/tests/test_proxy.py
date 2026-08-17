@@ -792,6 +792,126 @@ class TestOwnerSemantics(unittest.TestCase):
             self.assertIn("lock_owners", payload)
             self.assertEqual(payload["lock_owners"], ["A"])
 
+    # -- FIFO lock queue (contended lock requests) ------------------------
+
+    def test_contended_lock_without_wait_409s_no_hijack(self):
+        """The 2026-08-17 bug: a second `lock M` while L was held hijacked the
+        lock (evicting L's model mid-run). It must now fail fast."""
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B"})
+            self.assertEqual(status, 409)
+            self.assertIn("wait", payload["error"])
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["lock_owners"], ["A"])
+            self.assertEqual(payload["lock_queue"], [])
+
+    def test_contended_lock_with_wait_queues_202(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "qwen38", "owner": "B", "wait": True})
+            self.assertEqual(status, 202)
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["position"], 1)
+            self.assertEqual(payload["locked"], "qwen36")
+            # Queue visible in status
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["lock_queue"],
+                             [{"owner": "B", "model": "qwen38", "position": 1}])
+
+    def test_queue_head_acquires_after_drain(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
+            # B's next poll acquires and dequeues
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "qwen38", "owner": "B", "wait": True})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["locked"], "qwen38")
+            self.assertEqual(payload["lock_owners"], ["B"])
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["lock_queue"], [])
+
+    def test_queue_fifo_order_enforced(self):
+        """C queues behind B; when the lock drains, C cannot jump B's grant."""
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": "summarizer", "owner": "C", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
+            # C polls first but is not head: stays queued at position 2
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "summarizer", "owner": "C", "wait": True})
+            self.assertEqual(status, 202)
+            self.assertEqual(payload["position"], 2)
+            # B (head) acquires
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "qwen38", "owner": "B", "wait": True})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["locked"], "qwen38")
+            # B drains; C (now head) acquires
+            _http_post(srv.port, "/mode", {"lock": False, "owner": "B"})
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "summarizer", "owner": "C", "wait": True})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["locked"], "summarizer")
+
+    def test_join_same_locked_model_bypasses_queue(self):
+        """Joining the owners of the ALREADY-locked model evicts nothing, so
+        the queue must not gate it."""
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "C"})
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["lock_owners"], ["A", "C"])
+
+    def test_enqueue_is_idempotent_and_model_updates_in_place(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            # B polls again (same model): still one entry, position 1
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "qwen38", "owner": "B", "wait": True})
+            self.assertEqual(status, 202)
+            self.assertEqual(len(payload["lock_queue"]), 1)
+            # B changes its mind: model updates, position kept
+            status, _, payload = _http_post(srv.port, "/mode",
+                                            {"lock": "summarizer", "owner": "B", "wait": True})
+            self.assertEqual(status, 202)
+            self.assertEqual(payload["lock_queue"],
+                             [{"owner": "B", "model": "summarizer", "position": 1}])
+
+    def test_unlock_removes_owner_from_queue(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            # B gives up waiting
+            _http_post(srv.port, "/mode", {"lock": False, "owner": "B"})
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["lock_queue"], [])
+            self.assertEqual(payload["locked"], "qwen36")
+
+    def test_unknown_preset_does_not_enqueue(self):
+        ctx = self._make_ctx()
+        with _ProxyServer(ctx) as srv:
+            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            status, _, _ = _http_post(srv.port, "/mode",
+                                      {"lock": "nope", "owner": "B", "wait": True})
+            self.assertEqual(status, 404)
+            status, _, payload = _http_get(srv.port, "/mode")
+            self.assertEqual(payload["lock_queue"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

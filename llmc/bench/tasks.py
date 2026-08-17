@@ -161,7 +161,11 @@ def run_tasks(preset_names: list[str], runs: int = 1,
                 {"tasks": results}, rid, extra={"model_file": preset.model.file}))
             continue
 
-        client.set_lock(name, owner="bench")
+        status, payload = client.set_lock(name, owner="bench")
+        if status != 200:
+            log(f"  lock failed ({status}): {payload.get('error', payload)}")
+            rc = 1
+            continue
         status, payload = client.set_mode("llm", model=name)
         if status != 200:
             log(f"  switch failed ({status}): {payload.get('error', payload)}")

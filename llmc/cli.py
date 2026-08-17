@@ -151,13 +151,16 @@ class ProxyClient:
         # Mode swaps can take 10+ minutes for first GGUF load.
         return self._request("POST", "/mode", body=body, timeout=900)
 
-    def set_lock(self, lock, owner: Optional[str] = None) -> tuple[int, dict]:
+    def set_lock(self, lock, owner: Optional[str] = None, wait: bool = False) -> tuple[int, dict]:
         """lock: preset name, True (lock current model), or False/None (unlock).
         owner: name of the process/user holding the lock.
+        wait: when contended, join the FIFO queue (202) instead of failing (409).
         """
         body = {"lock": lock}
         if owner:
             body["owner"] = owner
+        if wait:
+            body["wait"] = True
         return self._request("POST", "/mode", body=body, timeout=30)
 
 
@@ -223,6 +226,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         ("Locked:", lock_info),
         ("Presets:", str(len(models_payload.get("data", [])))),
     ])
+    queue = mode_payload.get("lock_queue") or []
+    if queue:
+        _print_kv([
+            ("Lock queue:", "; ".join(
+                f"{e['position']}. {e['owner']} -> {e['model']}" for e in queue
+            )),
+        ])
     return EXIT_OK
 
 
@@ -293,22 +303,43 @@ def cmd_switch(args: argparse.Namespace) -> int:
 
 
 def cmd_lock(args: argparse.Namespace) -> int:
-    """Lock a preset against GPU-evicting swaps (loop-engine protection)."""
+    """Lock a preset against GPU-evicting swaps (loop-engine protection).
+
+    A contended lock (another model pinned by live owners) is never hijacked:
+    without --wait this fails fast with 409; with --wait it joins the proxy's
+    FIFO queue and polls until the current owners drain and the grant lands.
+    """
     client = ProxyClient()
     lock_val = args.preset if args.preset else True
-    try:
-        status, payload = client.set_lock(lock_val, owner=args.owner)
-    except (OSError, http.client.HTTPException) as exc:
-        _err(f"Proxy unreachable: {exc}")
-        return EXIT_TRANSIENT
-    if status == 200:
-        if args.json:
-            _print_json(payload)
-        else:
-            print(f"Locked: {payload.get('locked')}")
-        return EXIT_OK
-    _err(f"Lock failed ({status}): {payload.get('error', payload)}")
-    return EXIT_BACKEND_ERROR
+    deadline = (time.monotonic() + args.wait_timeout) if args.wait_timeout else None
+    last_line = None
+    while True:
+        try:
+            status, payload = client.set_lock(lock_val, owner=args.owner, wait=args.wait)
+        except (OSError, http.client.HTTPException) as exc:
+            _err(f"Proxy unreachable: {exc}")
+            return EXIT_TRANSIENT
+        if status == 200:
+            if args.json:
+                _print_json(payload)
+            else:
+                print(f"Locked: {payload.get('locked')}")
+            return EXIT_OK
+        if status == 202 and args.wait:
+            if deadline and time.monotonic() > deadline:
+                _err(f"Timed out waiting for the lock (still held: "
+                     f"{payload.get('locked')}, owners: {payload.get('lock_owners')})")
+                return EXIT_TRANSIENT
+            line = (f"Queued for {lock_val}: position {payload.get('position')}, "
+                    f"waiting on {payload.get('locked')} "
+                    f"(owners: {', '.join(payload.get('lock_owners') or [])})")
+            if line != last_line:
+                print(line, flush=True)
+                last_line = line
+            time.sleep(5)
+            continue
+        _err(f"Lock failed ({status}): {payload.get('error', payload)}")
+        return EXIT_BACKEND_ERROR
 
 
 def cmd_unlock(args: argparse.Namespace) -> int:
@@ -1064,9 +1095,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("preset", nargs="?", default=None,
                     help="preset to lock (omit to lock the currently-active model)")
     sp.add_argument("--owner", help="identity of the owner (e.g. session ID)")
+    sp.add_argument("--wait", action="store_true",
+                    help="if the lock is held on another model, join the FIFO queue "
+                         "and wait for the grant instead of failing (409)")
+    sp.add_argument("--wait-timeout", type=float, default=0, metavar="SECONDS",
+                    help="give up waiting after N seconds (default: wait forever)")
     sp.set_defaults(func=cmd_lock)
 
-    sp = sub.add_parser("unlock", help="clear the model lock")
+    sp = sub.add_parser("unlock", help="clear the model lock (also drops your queue entry)")
     sp.add_argument("--owner", help="identity of the owner to unlock")
     sp.set_defaults(func=cmd_unlock)
 

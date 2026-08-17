@@ -58,8 +58,9 @@ llmc switch gemma4         # or any other preset
 llmc models                # list available presets
 llmc status                # show what's running
 llmc lock loop             # pin a preset against GPU-evicting swaps
-# Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
-llmc unlock                # clear the lock
+llmc lock qwen38 --wait    # another preset pinned? queue FIFO until it drains (never hijacks)
+# Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); loops on different presets queue with --wait; when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
+llmc unlock                # clear the lock (also drops your queue entry)
 ```
 
 ### Tool boundary

@@ -35,9 +35,13 @@ make metrics            # curl /metrics
 
 # Mode + model switching (CLI)
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
-llmc lock [preset] [--owner id]   # pin a preset: refuse GPU-evicting swaps
-llmc unlock [--owner id]        # release one owner; no owner = force-clear all
-# Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
+llmc lock [preset] [--owner id] [--wait]  # pin a preset: refuse GPU-evicting swaps.
+#   Contended (another preset pinned): 409 fail-fast, or --wait joins the FIFO
+#   queue and polls until the current owners drain (swap to your preset is lazy,
+#   on first request after the grant). A contended lock NEVER hijacks the
+#   running model (pre-2026-08-17 it did - that bug killed a loop mid-iteration).
+llmc unlock [--owner id]        # release one owner (also drops its queue entry); no owner = force-clear all
+# Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); loops on DIFFERENT presets queue with --wait. When looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
 
@@ -145,6 +149,18 @@ force-clears everything (admin escape hatch). `GET /mode` and
 (`loop` runs `parallel_slots = 2`, 2x98K ctx), one git worktree per
 loop when looping the same repo, and never let a loop's sensors
 rebuild/restart the stack that serves them.
+
+Contended lock requests QUEUE instead of hijacking (2026-08-17): a
+`lock M` while another preset is pinned fails fast with 409, or with
+`--wait` / `{"wait": true}` joins an in-memory FIFO queue (202 +
+position). The head waiter acquires the lock on its next poll once the
+last owner releases; the swap to its preset is lazy (first request
+after grant). Unlocking also drops the owner's queue entry. The queue
+is in-memory only - a proxy restart drops it and polling waiters
+re-enqueue on their next cycle (the lock itself stays restart-safe via
+the state file). `GET /mode` and `llmc status` show `lock_queue`.
+Bench modules lock with owner `bench` and FAIL FAST on contention (no
+queue) - rerun when `llmc status` shows the GPU free.
 
 POST to a route in a different mode auto-swaps:
 1. Stop current GPU service (`stop_gpu_services` finds containers by label)

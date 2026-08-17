@@ -236,7 +236,11 @@ def run_perf(
             model_id = preset.model_id
             log(f"\n=== {name} ({preset.model.file}, ctx {preset.runtime.context_size} x {preset.runtime.parallel_slots}) ===")
 
-            client.set_lock(name, owner="bench")
+            status, payload = client.set_lock(name, owner="bench")
+            if status != 200:
+                log(f"  lock failed ({status}): {payload.get('error', payload)}")
+                rc = 1
+                continue
             status, payload = client.set_mode("llm", model=name)
             if status != 200:
                 log(f"  switch failed ({status}): {payload.get('error', payload)}")
