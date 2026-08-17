@@ -9,6 +9,8 @@
 #   TEMPLATE_FILE    Optional. Jinja chat template filename.
 #   REASONING        Optional. "on" | "off" — sets --reasoning flag.
 #   SPEC_TYPE        Optional. llama.cpp --spec-type (e.g. draft-mtp for MTP heads).
+#   CHAT_TEMPLATE_KWARGS  Optional. Compact JSON for --chat-template-kwargs
+#                    (e.g. {"reasoning_effort":"medium"} on Qwen3.8+).
 #   FLASH_ATTN       Default "on". "on" | "off" | "auto". Pascal (sm_61)
 #                    has weak FP16, so a Pascal deploy may set "off".
 #   CONTEXT_SIZE     Default 65536. Sets both -c and --fit-ctx.
@@ -44,6 +46,7 @@ exec llama-server \
   ${TEMPLATE_FILE:+--chat-template-file /models/${TEMPLATE_FILE}} \
   ${REASONING:+--reasoning ${REASONING}} \
   ${SPEC_TYPE:+--spec-type ${SPEC_TYPE}} \
+  ${CHAT_TEMPLATE_KWARGS:+--chat-template-kwargs ${CHAT_TEMPLATE_KWARGS}} \
   --port 8080 \
   --host 0.0.0.0 \
   -ngl 99 \

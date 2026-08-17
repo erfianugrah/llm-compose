@@ -40,6 +40,7 @@ Validation rules:
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,7 @@ class RuntimeSpec:
     presence_penalty: Optional[float] = None
     repeat_penalty: Optional[float] = None
     spec_type: Optional[str] = None  # e.g. "draft-mtp" - llama.cpp --spec-type
+    reasoning_effort: Optional[str] = None  # xhigh|medium|low - Qwen3.8+ chat-template kwarg
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ _RUNTIME_KEYS = {
     "presence_penalty": (int, float),
     "repeat_penalty": (int, float),
     "spec_type": str,
+    "reasoning_effort": str,
 }
 
 
@@ -194,6 +197,7 @@ def _load_runtime(data: dict | None) -> RuntimeSpec:
         presence_penalty=float(data["presence_penalty"]) if "presence_penalty" in data else None,
         repeat_penalty=float(data["repeat_penalty"]) if "repeat_penalty" in data else None,
         spec_type=data.get("spec_type", "").strip() or None,
+        reasoning_effort=data.get("reasoning_effort", "").strip() or None,
     )
 
 
@@ -285,4 +289,12 @@ def preset_to_env(preset: Preset) -> dict[str, str]:
         env["REPEAT_PENALTY"] = str(preset.runtime.repeat_penalty)
     if preset.runtime.spec_type:
         env["SPEC_TYPE"] = preset.runtime.spec_type
+    if preset.runtime.reasoning_effort:
+        if preset.runtime.reasoning_effort not in ("xhigh", "high", "medium", "low"):
+            raise PresetError(f"runtime.reasoning_effort: unexpected value {preset.runtime.reasoning_effort!r}")
+        # Compact JSON: the entrypoint word-splits ${VAR:+--flag $VAR}, so
+        # spaces in the value would break the flag.
+        env["CHAT_TEMPLATE_KWARGS"] = json.dumps(
+            {"reasoning_effort": preset.runtime.reasoning_effort}, separators=(",", ":")
+        )
     return env

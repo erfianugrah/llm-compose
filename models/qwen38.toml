@@ -37,6 +37,9 @@ repeat_penalty = 1.0
 # MTP speculative decoding - adopted from the P4 spike (2026-08-17):
 # gen +15.1%, pp +38.1%, TTFT -20%, fits 196608x2 at 31.9GB, S4 guard 4/4.
 spec_type = "draft-mtp"
+# reasoning_effort = "medium"  # candidate: 10-20x fewer thinking tokens than
+# the xhigh default (community-reported 2026-08-17). All current bench numbers
+# are xhigh - flip only after an A/B on the task suite.
 
 [bench]
 tokenizer = "unsloth/Qwen3.8-27B-GGUF"
