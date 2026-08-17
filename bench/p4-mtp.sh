@@ -16,11 +16,17 @@ while pgrep -f "llmc bench" >/dev/null 2>&1; do sleep 60; done
 log "P3 done - starting MTP spike"
 
 # ── 1. qwen38-mtp preset ───────────────────────────────────────────────
+# Presets are deduped by model_id (GGUF stem) and the proxy hard-fails on
+# duplicates, so the MTP variant needs its own filename - a hardlink shares
+# the inode, zero extra disk.
+ln -f "$MODELS_DIR/Qwen3.8-27B-Q4_K_M.gguf" "$MODELS_DIR/Qwen3.8-27B-Q4_K_M-mtp.gguf"
 python3 - <<'EOF'
 from pathlib import Path
 src = Path("models/qwen38.toml").read_text()
 src = src.replace('name = "Qwen3.8 27B Dense - coding, vision, thinking (eval candidate)"',
                   'name = "Qwen3.8 27B Dense + MTP draft-mtp (speed spike)"')
+src = src.replace('file = "Qwen3.8-27B-Q4_K_M.gguf"',
+                  'file = "Qwen3.8-27B-Q4_K_M-mtp.gguf"', 1)
 src = src.replace('repeat_penalty = 1.0', 'repeat_penalty = 1.0\nspec_type = "draft-mtp"', 1)
 Path("models/qwen38-mtp.toml").write_text(src)
 EOF
