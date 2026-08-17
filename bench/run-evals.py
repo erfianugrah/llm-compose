@@ -109,17 +109,23 @@ def eval_bfcl(base_url: str, model: str, limit: int, workdir: Path) -> dict:
         **os.environ,
         "OPENAI_API_KEY": "sk-noop",
         "OPENAI_BASE_URL": base_url,
-        # BFCL reads model name from CLI — pass our placeholder
+        # Registers this model id in bfcl's MODEL_CONFIG_MAPPING at startup
+        # (see bfcl-sitecustomize.py) - bfcl hard-KeyErrors on unknown models.
+        "BFCL_LOCAL_MODELS": model,
     }
     # Generate model responses. NOTE: BFCL has no working subset mechanism -
     # the old --bfcl-subset mapped to a no-op --num-gpus and the FULL category
-    # always ran (the 'limit silently dropped' bug). We run the full ast
-    # category and ignore `limit` entirely.
+    # always ran (the 'limit silently dropped' bug). We run the full non_live
+    # collection and ignore `limit` entirely.
+    # bfcl-eval 2026.3.23 removed the 'ast' category; 'non_live' is the same
+    # static set (simple_python/java/javascript, multiple, parallel,
+    # parallel_multiple, irrelevance) - no live/web_search/agentic categories
+    # that need external API keys.
     if limit > 0:
-        print(f"[run-evals] WARNING: bfcl subset {limit} requested but unsupported; running full ast category", file=sys.stderr)
+        print(f"[run-evals] WARNING: bfcl subset {limit} requested but unsupported; running full non_live collection", file=sys.stderr)
     gen = ["bfcl", "generate",
            "--model", model,
-           "--test-category", "ast",  # AST + executable subset
+           "--test-category", "non_live",  # static AST + irrelevance set
            "--num-threads", "4"]
     r = run(gen, env=env, cwd=out, capture_output=True, text=True)
     log(r.stdout[-300:] if r.stdout else "")
@@ -127,7 +133,7 @@ def eval_bfcl(base_url: str, model: str, limit: int, workdir: Path) -> dict:
         log(f"bfcl generate failed: {r.stderr[-500:]}")
         return {"overall": None, "error": "generate failed"}
     # Evaluate
-    ev = ["bfcl", "evaluate", "--model", model, "--test-category", "ast"]
+    ev = ["bfcl", "evaluate", "--model", model, "--test-category", "non_live"]
     r = run(ev, env=env, cwd=out, capture_output=True, text=True)
     log(r.stdout[-500:] if r.stdout else "")
     # BFCL prints overall accuracy to stdout — parse it

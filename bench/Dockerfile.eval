@@ -51,6 +51,8 @@ RUN python -m venv /opt/venv-bfcl && \
       "writer-sdk>=2.1.0" overrides boto3 beautifulsoup4 \
       "sentence-transformers>=2.7.0" "faiss-cpu>=1.12" && \
     ln -sf /opt/venv-bfcl/bin/bfcl /usr/local/bin/bfcl
+# Local-model registration shim (see file header).
+COPY bfcl-sitecustomize.py /opt/venv-bfcl/lib/python3.14/site-packages/sitecustomize.py
 
 WORKDIR /work
 COPY run-evals.py /work/
