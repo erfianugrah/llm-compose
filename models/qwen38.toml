@@ -34,12 +34,16 @@ top_k = 20
 min_p = 0.0
 presence_penalty = 0.0
 repeat_penalty = 1.0
-# MTP speculative decoding - adopted from the P4 spike (2026-08-17):
-# gen +15.1%, pp +38.1%, TTFT -20%, fits 196608x2 at 31.9GB, S4 guard 4/4.
-spec_type = "draft-mtp"
-# reasoning_effort = "medium"  # candidate: 10-20x fewer thinking tokens than
-# the xhigh default (community-reported 2026-08-17). All current bench numbers
-# are xhigh - flip only after an A/B on the task suite.
+# spec: ngram-mod solo (draftless). MTP draft-mtp is disqualified for
+# agentic churn workloads: decode degrades to ~0.5 tok/s within minutes
+# (upstream ggml-org/llama.cpp#27151/#27296, reproduced 2026-08-18 on
+# b10362+b10472). ngram-mod measured: +93% gen cold, warm pool pays on
+# repetitive content, no draft state to degrade.
+spec_type = "ngram-mod"
+reasoning_effort = "medium"  # adopted 2026-08-19: task suite A/B -
+# all-pass on fast tasks with zero thinking binges (xhigh had a 1308s
+# binge on a 19.7s task); ceiling tasks (t3/t6) fail identically at both
+# efforts, so quality-neutral at 10-20x fewer thinking tokens.
 
 [bench]
 tokenizer = "unsloth/Qwen3.8-27B-GGUF"

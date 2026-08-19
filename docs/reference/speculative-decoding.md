@@ -63,73 +63,94 @@ models can reduce n-min/n-max. The values quoted in the Reddit thread
 
 `--spec-default` enables ngram-mod alone.
 
-## Adoption path in this stack
+## Adoption in this stack - DONE (2026-08-19)
 
-The entrypoint passes `SPEC_TYPE` straight to `--spec-type`, so no proxy
-schema change is needed:
+`ngram-mod` is now the default `spec_type` on `models/qwen38.toml`
+(solo, no MTP). Flags `SPEC_NGRAM_N_{MIN,MAX,MATCH}` were added to the
+entrypoint + preset schema for the small-n variant experiments.
 
-```toml
-# models/qwen38-ngram.toml (A/B variant)
-spec_type = "ngram-mod,draft-mtp"
-```
+## Measured results (2026-08-19, b10472, RTX 5090)
 
-A/B mechanics (same pattern as `bench/p4-mtp.sh`):
+Perf suite vs no-spec baseline (73.2 tok/s gen), cold pool then warm pool:
 
-1. Presets dedup by model_id (GGUF stem) - the variant needs its own
-   filename: `ln -f Qwen3.8-27B-Q4_K_M.gguf Qwen3.8-27B-Q4_K_M-ngram.gguf`
-   in `~/docker-volumes/llama-server/models/`.
-2. `llmc bench perf` across the two presets (lock+switch per preset, results
-   land in `bench/results/runs.jsonl` with preset_hash provenance).
-3. Warm-up caveat: the ngram pool starts empty and builds over the session.
-   A cold-start benchmark understates it; either warm the server with a
-   representative workload before measuring, or compare steady-state rates.
-4. Server logs print per-implementation stats -
-   `statistics ngram_mod: #calls = ..., #gen drafts = ..., #acc tokens = ...` -
-   which shows whether ngram-mod is actually firing on the workload.
+| variant | cold gen | warm gen | TTFT p50 |
+|---|---|---|---|
+| defaults (n-match 24, n-min 48, n-max 64) | 141.1 (+93%) | 462.1 (+531%) | 351.0-361.8ms |
+| small-n (n-min 4, n-max 8, n-match 32) | 146.3 (+100%) | 262.6 (+259%) | 252.7-259.2ms |
 
-Availability: `ngram-mod` is present in the pinned b10362 build (flag +
-docs verified against the b10362 tag). No pin bump required.
+Defaults won on warm-pool peak (long drafts on verbatim repeats), small-n
+won TTFT by ~100ms. Caveat on warm numbers: the perf harness reuses
+canned prompts, so a warm pool is maximally matched - the 462.1 tok/s is
+the mechanism's ceiling, not a realistic agentic-workload figure.
+Defaults adopted (bigger upside, TTFT is a wash at ~100ms).
+
+Why the default is ngram SOLO and not `ngram-mod,draft-mtp` - the MTP
+disqualification:
+
+1. MTP (draft-mtp) decode degrades to ~0.5 tok/s within ~10 min of
+   agentic task churn, on both b10362 and b10472. pp stays fast
+   (~1500 tok/s), draft acceptance stays healthy (0.8+), GPU idles
+   (~100W). Restart restores; re-degrades.
+2. No-spec control: full task suite at a sustained 55-66 tok/s, incl.
+   t3's 5433s/8-iteration arc. Flawless.
+3. Matches upstream: #27151 (MTP acceptance decays over time, restart
+   restores) and #27296 (MTP corrupts draft context across long/short
+   prompt mixes on Qwen3.8-27B; reproduced by them on b10344+b10472).
+4. kept as `qwen38-xhigh` preset for babysat interactive use only.
+
+b10472 pin bump (was b10362) also fixed a separate abandoned-stream
+slot-parking bug (frozen slot, dec stop, GPU idle, slot never frees;
+verified fixed: slot releases ~20s after client disconnect).
 
 ## Caveats and conflicting reports
 
-- **Conflicting benchmarks.** The thread OP measured +6-8 t/s on JS
-  generation (5060 Ti); another user measured -4 t/s on an R9700. The hash
-  work is CPU-side, so the sign of the effect is hardware- and
-  workload-dependent. A/B on the 5090 before adopting.
+- **Conflicting benchmarks resolved here.** The thread OP measured +6-8
+  t/s on JS generation (5060 Ti); another user measured -4 t/s on an
+  R9700; one Vulkan user reports ngram consistently slower. The hash
+  work is CPU-side, so the sign is hardware-dependent. On this 5090
+  stack: strongly positive (cold +93-100%).
 - **Known issue: stuck-loop on failed verification** (upstream PR #25819,
   open, WIP mitigation). When an ngram-mod draft fails verification, the
-  draft can be reused and fail again in a loop with a non-deterministic end
-  condition. Root cause unclear as of 2026-08-18. If the server hangs mid-
-  generation with ngram-mod on, this is the first suspect.
+  draft can be reused and fail again in a loop with a non-deterministic
+  end condition. If the server hangs mid-generation with ngram-mod on,
+  this is the first suspect. (Not observed in our suite so far.)
 - **Acceptance rate is a vanity metric.** Do not tune `--spec-draft-p-min`
-  to raise it: one scripted test showed p-min 0.85 lifting acceptance from
-  76.5% to 92.5% while dropping throughput 7.4% - higher p-min suppresses
-  drafts rather than improving them. Accepted-token count tracks tok/s;
-  optimize for tok/s.
-- **Mac/bandwidth-constrained slowdowns don't apply here.** Reports of MTP
-  hurting on M4 Max / M1 Ultra are unified-memory bandwidth effects; MTP is
-  already benched positive on the 5090 (gen +15.1%, pp +38.1%, TTFT -20%).
+  to raise it: one scripted test showed p-min 0.85 lifting acceptance
+  from 76.5% to 92.5% while dropping throughput 7.4% - higher p-min
+  suppresses drafts rather than improving them. Accepted-token count
+  tracks tok/s; optimize for tok/s.
+- **Draft-KV quant debunked** (community follow-on comments): quantizing
+  the MTP drafter's KV only lowers acceptance (fewer accepted tokens =
+  slower), quality untouched, and it barely saves VRAM. We do not
+  quantize draft KV. One Vulkan user reports q4 draft best on his
+  backend - backend-specific; on CUDA/sm120 unquantized is right.
+- **Mac/bandwidth-constrained slowdowns don't apply here.** Reports of
+  MTP hurting on M4 Max / M1 Ultra are unified-memory bandwidth effects.
 
 ## Related thread claims checked and rejected
 
 From the same thread, deliberately NOT adopted:
 
-- Sampling temp 0.4 / top_p 0.90 / top_k 15 / min_p 0.02 labelled "Official /
-  Recommended" - hallucinated (OP sourced it from ChatGPT). Actual model-card
-  thinking-mode values (temp 1.0, top_p 0.95, top_k 20, min_p 0) are already
-  in `models/qwen38.toml`.
-- KV cache q4_1 to stretch context - a 16 GB VRAM workaround; pointless at
-  32 GB where 196k x 2 slots already fit, and q4 KV measurably degrades
-  long-context recall vs q8.
+- Sampling temp 0.4 / top_p 0.90 / top_k 15 / min_p 0.02 labelled
+  "Official / Recommended" - hallucinated (the thread OP sourced it from
+  ChatGPT). Actual model-card thinking-mode values (temp 1.0, top_p 0.95,
+  top_k 20, min_p 0) remain in `models/qwen38.toml`.
+- KV cache q4_1 on the MAIN cache to stretch context - a 16 GB VRAM
+  workaround; pointless at 32 GB, and q4 main KV measurably degrades
+  long-context recall vs q8. (Draft-KV quant is a separate no-op we
+  also skip; see caveats.)
 
 ## Sources
 
 - Upstream spec doc (HTTP 200 verified): https://raw.githubusercontent.com/ggml-org/llama.cpp/master/docs/speculative.md
 - Priority order + draft orchestration: `common/speculative.cpp`
   (`common_speculative_init`, `common_speculative_draft`) at master;
-  flag list cross-checked at tag b10362 (README + docs/speculative.md both
-  present in the pinned build).
+  flag list cross-checked at tag b10362 (README + docs/speculative.md
+  both present in the pinned build).
 - ngram-mod introduction: llama.cpp PR #19164; score-based pruning PR
   #19294 (open); stuck-loop mitigation PR #25819 (open, WIP).
+- MTP degradation upstream issues: #27151, #27296 (both open).
 - Community reports: r/LocalLLaMA Qwen3.8-27B config thread (2026-08),
-  incl. the p-min debunk and the R9700 regression report.
+  incl. the p-min debunk and R9700 regression; OVERBRING Labs follow-on
+  article + comments (2026-08-17), incl. small-n guidance
+  (4/8/32 vs defaults) and the draft-KV-quant debunk.

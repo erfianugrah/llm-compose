@@ -46,6 +46,9 @@ exec llama-server \
   ${TEMPLATE_FILE:+--chat-template-file /models/${TEMPLATE_FILE}} \
   ${REASONING:+--reasoning ${REASONING}} \
   ${SPEC_TYPE:+--spec-type ${SPEC_TYPE}} \
+  ${SPEC_NGRAM_N_MIN:+--spec-ngram-mod-n-min ${SPEC_NGRAM_N_MIN}} \
+  ${SPEC_NGRAM_N_MAX:+--spec-ngram-mod-n-max ${SPEC_NGRAM_N_MAX}} \
+  ${SPEC_NGRAM_N_MATCH:+--spec-ngram-mod-n-match ${SPEC_NGRAM_N_MATCH}} \
   ${CHAT_TEMPLATE_KWARGS:+--chat-template-kwargs ${CHAT_TEMPLATE_KWARGS}} \
   --port 8080 \
   --host 0.0.0.0 \

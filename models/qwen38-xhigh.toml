@@ -1,0 +1,34 @@
+name = "Qwen3.8 27B Dense - xhigh effort + MTP (interactive quality ceiling)"
+description = """
+Alternative arm of qwen38 for interactive, babysat work where the
+extra thinking tokens are worth it: reasoning_effort unset (server
+default = xhigh) + MTP draft-mtp (+15% gen on short bursts).
+Do NOT use for agentic churn workloads (loops, benches): MTP decode
+degrades to ~0.5 tok/s within ~10 min of agentic task traffic
+(reproduced 2026-08-18 on b10362+b10472; upstream #27151/#27296).
+The daily-driver qwen38 preset runs medium + ngram-mod instead.
+Hardlinked GGUF (presets dedup by model_id stem).
+"""
+vram_gb = 21.0
+
+[model]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-Q4_K_M-xhigh.gguf"
+
+[mmproj]
+file = "qwen38-mmproj.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 196608
+parallel_slots = 2
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+spec_type = "draft-mtp"
+
+[bench]
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"

@@ -96,6 +96,9 @@ class RuntimeSpec:
     presence_penalty: Optional[float] = None
     repeat_penalty: Optional[float] = None
     spec_type: Optional[str] = None  # e.g. "draft-mtp" - llama.cpp --spec-type
+    spec_ngram_n_min: Optional[int] = None  # llama.cpp --spec-ngram-mod-n-min (default 48)
+    spec_ngram_n_max: Optional[int] = None  # llama.cpp --spec-ngram-mod-n-max (default 64)
+    spec_ngram_n_match: Optional[int] = None  # llama.cpp --spec-ngram-mod-n-match (default 24)
     reasoning_effort: Optional[str] = None  # xhigh|medium|low - Qwen3.8+ chat-template kwarg
 
 
@@ -145,6 +148,9 @@ _RUNTIME_KEYS = {
     "presence_penalty": (int, float),
     "repeat_penalty": (int, float),
     "spec_type": str,
+    "spec_ngram_n_min": int,
+    "spec_ngram_n_max": int,
+    "spec_ngram_n_match": int,
     "reasoning_effort": str,
 }
 
@@ -197,6 +203,9 @@ def _load_runtime(data: dict | None) -> RuntimeSpec:
         presence_penalty=float(data["presence_penalty"]) if "presence_penalty" in data else None,
         repeat_penalty=float(data["repeat_penalty"]) if "repeat_penalty" in data else None,
         spec_type=data.get("spec_type", "").strip() or None,
+        spec_ngram_n_min=int(data["spec_ngram_n_min"]) if "spec_ngram_n_min" in data else None,
+        spec_ngram_n_max=int(data["spec_ngram_n_max"]) if "spec_ngram_n_max" in data else None,
+        spec_ngram_n_match=int(data["spec_ngram_n_match"]) if "spec_ngram_n_match" in data else None,
         reasoning_effort=data.get("reasoning_effort", "").strip() or None,
     )
 
@@ -289,6 +298,12 @@ def preset_to_env(preset: Preset) -> dict[str, str]:
         env["REPEAT_PENALTY"] = str(preset.runtime.repeat_penalty)
     if preset.runtime.spec_type:
         env["SPEC_TYPE"] = preset.runtime.spec_type
+    if preset.runtime.spec_ngram_n_min is not None:
+        env["SPEC_NGRAM_N_MIN"] = str(preset.runtime.spec_ngram_n_min)
+    if preset.runtime.spec_ngram_n_max is not None:
+        env["SPEC_NGRAM_N_MAX"] = str(preset.runtime.spec_ngram_n_max)
+    if preset.runtime.spec_ngram_n_match is not None:
+        env["SPEC_NGRAM_N_MATCH"] = str(preset.runtime.spec_ngram_n_match)
     if preset.runtime.reasoning_effort:
         if preset.runtime.reasoning_effort not in ("xhigh", "high", "medium", "low"):
             raise PresetError(f"runtime.reasoning_effort: unexpected value {preset.runtime.reasoning_effort!r}")
