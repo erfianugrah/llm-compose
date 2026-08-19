@@ -109,20 +109,20 @@ when the resident model advertises the capability in its TOML
 and an Anthropic `/v1/messages` shim so Claude Code can point
 `ANTHROPIC_BASE_URL` at it.
 
-Soak service `model-proxy-go` runs on 127.0.0.1:11435 with its own
-state dir (`~/docker-volumes/state-go`) - the Python proxy on :11434
-stays authoritative until cutover.
+`model-proxy-go` owns 127.0.0.1:11434 (authoritative since 2026-08-19)
+with its own state dir (`~/docker-volumes/state-go`). The Python proxy
+(`model-proxy`) is stopped and kept on :11436 as the rollback lane
+(swap the published ports back to revert).
 
 ```bash
 make build-proxy-go   # build the Go image
 make test-proxy-go    # go test -race (host toolchain)
-make smoke-proxy-go   # live hurl suite against :11435
-LLMC_PROXY_PORT=11435 llmc status   # point the CLI at the Go proxy
+make smoke-proxy-go   # live hurl suite (edit base var if testing a non-default port)
 ```
 
-Cutover (after soak): repoint clients to :11435 (or swap the published
-ports in compose.yaml), retire `llmc/proxy.py`. The llmc harness picks
-its proxy via `LLMC_PROXY_PORT` env.
+Cutover done (2026-08-19): pi's provider, the llmc CLI default port, and
+Open WebUI (env: OPENAI_API_BASE_URL/COMFYUI_BASE_URL -> model-proxy-go)
+all land on the Go proxy. `llmc/proxy.py` remains for rollback only.
 
 Architecture: single-goroutine scheduler event loop
 (`internal/proxy/scheduler.go`) owns lock/queue/in-flight state; swaps

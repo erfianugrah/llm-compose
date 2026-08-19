@@ -20,6 +20,8 @@ services:
   # Routes /v1/* → llama-server, /comfyui/* → comfyui, /train/* → lora-train.
   # Spawns each GPU service via Docker SDK when its route is hit; stops
   # the previous one first (mutual exclusion on a single GPU).
+  # model-proxy (Python): LEGACY since 2026-08-19, kept stopped for
+  # rollback (swap published ports back). :11436 is the rollback lane.
   model-proxy:
     build:
       context: .
@@ -29,7 +31,7 @@ services:
     hostname: model-proxy
     restart: unless-stopped
     ports:
-      - "127.0.0.1:11434:11434"
+      - "127.0.0.1:11436:11434"
     environment:
       LLMC_NETWORK: llmc
       # Host's HOME used by volumes.toml's ${HOME}-relative bind paths.
@@ -95,7 +97,7 @@ services:
     hostname: model-proxy-go
     restart: unless-stopped
     ports:
-      - "127.0.0.1:11435:11434"
+      - "127.0.0.1:11434:11434"
     environment:
       LLMC_NETWORK: llmc
       HOME: ${HOME:?HOME must be set in compose runtime env}
@@ -106,7 +108,7 @@ services:
       - ${HOME}/docker-volumes/state-go:/state
       - ${HOME}/docker-volumes/llama-server/models:/assets
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:11434/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -135,10 +137,10 @@ services:
       DATA_DIR: /app/backend/data
       # Open WebUI → proxy → llama-server. Image gen also routes through
       # the proxy at /comfyui/* so it triggers a GPU mode swap on demand.
-      OPENAI_API_BASE_URL: http://model-proxy:11434/v1
+      OPENAI_API_BASE_URL: http://model-proxy-go:11434/v1
       OPENAI_API_KEY: not-needed
       OLLAMA_BASE_URL: ""
-      COMFYUI_BASE_URL: http://model-proxy:11434/comfyui/
+      COMFYUI_BASE_URL: http://model-proxy-go:11434/comfyui/
       ENABLE_IMAGE_GENERATION: "true"
       IMAGE_GENERATION_ENGINE: comfyui
       # Branding + behaviour
@@ -167,7 +169,7 @@ services:
     tmpfs:
       - /tmp:noexec,nosuid,size=256m
     depends_on:
-      model-proxy:
+      model-proxy-go:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]

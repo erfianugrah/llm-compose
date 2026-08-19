@@ -6,7 +6,7 @@
 
 ## Status (2026-08-19)
 
-Implemented in `proxy-go/` (R1-R5) and in soak on 127.0.0.1:11435 (R6). 34 Go tests, `-race` clean; live smoke suite `tests/hurl/proxy-go-smoke.hurl` (11 requests) green; `make build-proxy-go` / `test-proxy-go` / `smoke-proxy-go`. Claude Code path: `ANTHROPIC_BASE_URL=http://127.0.0.1:11435`. Cutover (repoint clients, retire `llmc/proxy.py`) pending soak. Python-side schema compat (`capabilities` preset key, lock state keys) shipped in the same series.
+Implemented in `proxy-go/` (R1-R5); cut over 2026-08-19: owns 127.0.0.1:11434 (pi provider, llmc CLI default, Open WebUI envs all land there). Python proxy kept stopped on :11436 as rollback. R6 soak completed the same day (smoke suite green post-cutover). 34 Go tests, `-race` clean; live smoke suite `tests/hurl/proxy-go-smoke.hurl` (11 requests) green; `make build-proxy-go` / `test-proxy-go` / `smoke-proxy-go`. Claude Code path: `ANTHROPIC_BASE_URL=http://127.0.0.1:11435`. Cutover (repoint clients, retire `llmc/proxy.py`) pending soak. Python-side schema compat (`capabilities` preset key, lock state keys) shipped in the same series.
 
 ## Context and motivation
 
