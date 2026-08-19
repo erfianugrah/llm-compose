@@ -81,6 +81,46 @@ services:
     # ever flakes (e.g. external networks attached via overlay), reinstate
     # the static IP and update OPENAI_API_BASE_URL / COMFYUI_BASE_URL.
 
+  # ── Go proxy (proxy-v2 soak, spec R6) ─────────────────────────────
+  # Side-by-side with the Python proxy on 127.0.0.1:11435, same presets and
+  # volumes, but its OWN state dir (docker-volumes/state-go) so the two
+  # proxies never fight over active.toml. Cutover = repoint clients to
+  # :11435; rollback = repoint to :11434.
+  model-proxy-go:
+    build:
+      context: .
+      dockerfile: images/proxy-go.Dockerfile
+    image: erfianugrah/llmc-proxy-go:v1
+    container_name: model_proxy_go
+    hostname: model-proxy-go
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11435:11434"
+    environment:
+      LLMC_NETWORK: llmc
+      HOME: ${HOME:?HOME must be set in compose runtime env}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./models:/presets:ro
+      - ./volumes.toml:/volumes.toml:ro
+      - ${HOME}/docker-volumes/state-go:/state
+      - ${HOME}/docker-volumes/llama-server/models:/assets
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - llmc
+
   # ── Chat UI ────────────────────────────────────────────────────────
   # Open WebUI's image is built to run as UID 1000. We set user
   # explicitly so files written to the data volume are owned by the
