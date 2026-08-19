@@ -11,6 +11,8 @@ presence_penalty=0.0 for thinking mode. If you see repetition loops, bump to 1.5
 """
 vram_gb = 17.5
 
+capabilities = ["vision"]
+
 [model]
 repo = "unsloth/Qwen3.6-27B-GGUF"
 file = "Qwen3.6-27B-UD-Q4_K_XL.gguf"

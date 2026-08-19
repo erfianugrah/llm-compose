@@ -6,6 +6,8 @@ Best for: coding with image context, multimodal tasks, general agentic work.
 """
 vram_gb = 20.2
 
+capabilities = ["vision"]
+
 [model]
 repo = "ggml-org/gemma-4-31B-it-GGUF"
 file = "gemma-4-31B-it-Q4_K_M.gguf"

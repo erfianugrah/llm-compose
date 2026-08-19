@@ -28,6 +28,8 @@ Tuning rationale:
 """
 vram_gb = 23.0
 
+capabilities = ["code"]
+
 [model]
 # Local symlink -> gemma-4-26B-A4B-it-Q4_K_M.gguf (see description).
 # repo is a placeholder to satisfy preset validation; entrypoint

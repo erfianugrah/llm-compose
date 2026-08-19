@@ -17,6 +17,8 @@ Arch support on llama.cpp b10362 confirmed; vision smoke passed.
 """
 vram_gb = 21.0
 
+capabilities = ["vision", "code"]
+
 [model]
 repo = "unsloth/Qwen3.8-27B-GGUF"
 file = "Qwen3.8-27B-Q4_K_M.gguf"

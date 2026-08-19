@@ -11,6 +11,8 @@ Hardlinked GGUF (presets dedup by model_id stem).
 """
 vram_gb = 21.0
 
+capabilities = ["vision", "code"]
+
 [model]
 repo = "unsloth/Qwen3.8-27B-GGUF"
 file = "Qwen3.8-27B-Q4_K_M-xhigh.gguf"

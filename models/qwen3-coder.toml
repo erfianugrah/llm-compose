@@ -6,6 +6,8 @@ Best for: code generation, refactoring, agentic coding, fast iteration.
 """
 vram_gb = 18.6
 
+capabilities = ["code"]
+
 [model]
 repo = "prithivMLmods/Qwen3-Coder-30B-A3B-Instruct-GGUF"
 file = "qwen3-coder-30b-a3b-instruct-q4_k_m.gguf"

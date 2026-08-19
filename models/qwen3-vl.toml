@@ -22,6 +22,8 @@ vs the 262k native context.
 """
 vram_gb = 4.5
 
+capabilities = ["vision"]
+
 [model]
 repo = "ggml-org/Qwen3-VL-2B-Instruct-GGUF"
 file = "Qwen3-VL-2B-Instruct-Q8_0.gguf"

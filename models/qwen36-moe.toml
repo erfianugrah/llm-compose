@@ -9,6 +9,8 @@ required to prevent degenerate repetition loops (see model card).
 """
 vram_gb = 22.0
 
+capabilities = ["vision"]
+
 [model]
 repo = "unsloth/Qwen3.6-35B-A3B-GGUF"
 file = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"

@@ -5,6 +5,9 @@ Schema:
     description = "..."           # One-line summary (optional multi-line)
     vram_gb = 20.2                # VRAM estimate for weights only
                                   # (proxy enforces vram_gb <= LIMIT - RESERVE)
+    capabilities = ["vision"]     # Optional flat list ("vision", "code", "small")
+                                  # used by the Go proxy's serve-in-place routing
+                                  # (X-LLM-Capability / cap:<name> requests).
     [model]
     repo = "org/name"             # HuggingFace repo
     file = "name.gguf"            # GGUF filename within repo
@@ -113,6 +116,7 @@ class Preset:
     template: AssetSpec = field(default_factory=AssetSpec)
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
     bench: dict = field(default_factory=dict)  # optional [bench] section (tokenizer, tags)
+    capabilities: tuple = ()  # flat strings, e.g. ("vision", "code")
 
     @property
     def model_id(self) -> str:
@@ -132,7 +136,7 @@ class Preset:
 
 
 # Schema definition for validation. Maps section → allowed keys with types.
-_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime", "bench"}
+_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime", "bench", "capabilities"}
 _REQUIRED_TOP = {"name", "vram_gb", "model"}
 _MODEL_KEYS = {"repo": str, "file": str}
 _ASSET_KEYS = {"url": str, "file": str}
@@ -241,6 +245,10 @@ def load_preset(path: Path) -> Preset:
     _check_keys(f"{path}:bench", bench_data, _BENCH_KEYS)
     _check_types(f"{path}:bench", bench_data, _BENCH_KEYS)
 
+    caps = data.get("capabilities", [])
+    if not isinstance(caps, list) or not all(isinstance(c, str) and c for c in caps):
+        raise PresetError(f"{path}: capabilities must be a list of non-empty strings")
+
     return Preset(
         name=path.stem,
         display_name=data["name"],
@@ -251,6 +259,7 @@ def load_preset(path: Path) -> Preset:
         template=_load_asset(f"{path}:template", data.get("template")),
         runtime=_load_runtime(data.get("runtime")),
         bench=bench_data,
+        capabilities=tuple(caps),
     )
 
 

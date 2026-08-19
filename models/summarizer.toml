@@ -22,6 +22,8 @@ keeps the compute buffer at ~2 GB instead of ~4 GB.
 """
 vram_gb = 24.0
 
+capabilities = ["vision"]
+
 [model]
 repo = "ggml-org/gemma-4-26b-a4b-it-GGUF"
 file = "gemma-4-26B-A4B-it-Q4_K_M.gguf"

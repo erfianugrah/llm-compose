@@ -74,7 +74,10 @@ def load(path: Path) -> State:
     except tomllib.TOMLDecodeError as exc:
         raise StateError(f"{path}: invalid TOML: {exc}") from exc
 
-    allowed = {"mode", "model", "lock_owners", "updated_at", "locked"}
+    allowed = {"mode", "model", "lock_owners", "updated_at", "locked",
+               # Written by the Go proxy (proxy-v2 R1); ignored here but must
+               # not trip the strict schema when both share a state file.
+               "lock_expires_at", "lock_queue"}
     unknown = set(data) - allowed
     if unknown:
         raise StateError(f"{path}: unknown key(s) {sorted(unknown)}")

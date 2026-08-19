@@ -10,6 +10,8 @@ Same as qwen36-moe — MoE variants need presence_penalty to prevent loops.
 """
 vram_gb = 23.0
 
+capabilities = ["vision"]
+
 [model]
 repo = "LuffyTheFox/Qwen3.6-35B-A3B-Plus-Uncensored-Wasserstein-GGUF"
 file = "Qwen3.6-35B-A3B-Plus-Uncensored-Q4_K_P.gguf"
