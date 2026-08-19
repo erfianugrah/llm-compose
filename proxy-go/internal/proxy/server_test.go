@@ -230,8 +230,7 @@ func TestModePostErrors(t *testing.T) {
 		newTestStore(t, map[string]string{"a": tomlA, "b": tomlB, "big": tomlBig}),
 		&State{Mode: "llm", Model: "a"}, ServerConfig{})
 
-	if code, body := doPost(t, ts.URL+"/mode", map[string]any{"mode": "llm", "model": "nope"});
-		code != 404 || !strings.Contains(errMsg(body), "unknown preset") {
+	if code, body := doPost(t, ts.URL+"/mode", map[string]any{"mode": "llm", "model": "nope"}); code != 404 || !strings.Contains(errMsg(body), "unknown preset") {
 		t.Fatalf("unknown preset: %d %#v", code, body)
 	}
 	// 99GB > 24-4=20: VRAM gate.
@@ -239,12 +238,10 @@ func TestModePostErrors(t *testing.T) {
 	if code != 422 || !strings.Contains(errMsg(body), "VRAM") || !strings.Contains(errMsg(body), "Big") {
 		t.Fatalf("vram over: %d %#v", code, body)
 	}
-	if code, body := doPost(t, ts.URL+"/mode", map[string]any{"mode": "bogus"});
-		code != 400 || !strings.Contains(errMsg(body), "invalid mode") {
+	if code, body := doPost(t, ts.URL+"/mode", map[string]any{"mode": "bogus"}); code != 400 || !strings.Contains(errMsg(body), "invalid mode") {
 		t.Fatalf("invalid mode: %d %#v", code, body)
 	}
-	if code, body := rawDo(t, "POST", ts.URL+"/mode", "not json");
-		code != 400 || !strings.Contains(errMsg(body), "invalid JSON") {
+	if code, body := rawDo(t, "POST", ts.URL+"/mode", "not json"); code != 400 || !strings.Contains(errMsg(body), "invalid JSON") {
 		t.Fatalf("bad json: %d %#v", code, body)
 	}
 }
@@ -301,12 +298,10 @@ func TestLockAliases(t *testing.T) {
 		t.Fatalf("lock owners: %#v", body["lock_owners"])
 	}
 
-	if code, body = rawDo(t, "POST", ts.URL+"/lock", "{}");
-		code != 400 || !strings.Contains(errMsg(body), "missing model") {
+	if code, body = rawDo(t, "POST", ts.URL+"/lock", "{}"); code != 400 || !strings.Contains(errMsg(body), "missing model") {
 		t.Fatalf("missing model: %d %#v", code, body)
 	}
-	if code, body = rawDo(t, "POST", ts.URL+"/lock", "not json");
-		code != 400 || !strings.Contains(errMsg(body), "invalid JSON") {
+	if code, body = rawDo(t, "POST", ts.URL+"/lock", "not json"); code != 400 || !strings.Contains(errMsg(body), "invalid JSON") {
 		t.Fatalf("lock bad json: %d %#v", code, body)
 	}
 

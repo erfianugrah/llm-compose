@@ -16,7 +16,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 type AnthropicTranslator struct {
@@ -621,7 +620,7 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 		upReq.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	client := &http.Client{Timeout: 3600 * time.Second}
+	client := upstreamClient // no total timeout; see forwardTo
 	resp, err := client.Do(upReq)
 	if err != nil {
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream error: %v", err))

@@ -102,9 +102,9 @@ func SaveState(path string, st *State) error {
 }
 
 // SortedOwners returns the lock owners in deterministic order (the Python
-// proxy always serves them sorted).
+// proxy always serves them sorted). Non-nil so JSON renders [] not null.
 func (s *State) SortedOwners() []string {
-	out := append([]string(nil), s.LockOwners...)
+	out := append([]string{}, s.LockOwners...)
 	sort.Strings(out)
 	return out
 }

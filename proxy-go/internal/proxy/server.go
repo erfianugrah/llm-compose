@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +33,16 @@ var hopByHop = map[string]bool{
 	"host": true, "connection": true, "transfer-encoding": true,
 	"content-length": true, "keep-alive": true, "proxy-authenticate": true,
 	"proxy-authorization": true, "te": true, "trailer": true, "upgrade": true,
+}
+
+// upstreamClient has no total timeout (long SSE streams must survive); only
+// the dial is bounded. See forwardTo.
+var upstreamClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		ResponseHeaderTimeout: 0, // headers can legitimately take a whole generation
+		IdleConnTimeout:       90 * time.Second,
+	},
 }
 
 func NewServer(sched *Scheduler, presets *PresetStore, cfg ServerConfig, logf func(string, ...any)) *Server {
@@ -413,10 +424,6 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		jsonReply(w, 500, map[string]any{"error": "unknown mode"})
 		return
 	}
-	timeout := 600 * time.Second
-	if mode == "llm" {
-		timeout = 3600 * time.Second // long thinking chains, non-streamed
-	}
 	url := fmt.Sprintf("http://%s:%d%s", svc.Hostname, svc.InternalPort, targetPath)
 	ctx := r.Context()
 	var upstream *http.Request
@@ -438,8 +445,11 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 			upstream.Header.Add(k, v)
 		}
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(upstream)
+	// No total timeout: the Python proxy used a per-read timeout, so hours-long
+	// SSE streams were fine there; http.Client.Timeout is wall-clock total and
+	// would kill them. Stall detection is client-cancel (ctx) + container
+	// healthcheck; the dial is the only bounded phase.
+	resp, err := upstreamClient.Do(upstream)
 	if err != nil {
 		errPlain(w, 502, fmt.Sprintf("upstream error: %v", err), 502, "server_error")
 		return

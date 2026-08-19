@@ -75,7 +75,8 @@ docker/curl/nvidia-smi call — fast targets that don't need Python's
 | `logs-{proxy,webui,llama,comfyui,train}` | `docker logs -f` |
 | `gpu` / `health` / `metrics` | nvidia-smi + curl |
 | `build` / `build-X` / `push-X` | docker build / docker push |
-| `rebuild-X` | docker build `--no-cache` (slow — for base bumps) |
+| `build-proxy-go` / `test-proxy-go` / `smoke-proxy-go` | Go proxy (proxy-go/, soak on :11435): build / go test -race / live hurl suite |
+| `rebuild-X` | docker build `--no-cache` (slow - for base bumps) |
 | `ship` / `ship-proxy` | build + push + restart stack (all four / proxy only) |
 | `deploy` | full bootstrap: setup + build + up |
 

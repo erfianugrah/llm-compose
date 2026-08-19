@@ -17,6 +17,7 @@ LLMC := python3 -m llmc
 
 # Image tags — keep in sync with images/*.Dockerfile and orchestrator.py
 PROXY_IMAGE   := erfianugrah/llmc-proxy:v2
+PROXY_GO_IMAGE := erfianugrah/llmc-proxy-go:v1
 LLAMA_IMAGE   := erfianugrah/llama-server:cuda12.8-sm120
 # Pascal / GTX 1070 (sm_61) variant — same Dockerfile, CUDA_ARCH build-arg.
 # Built on the sm_120 dev box, pulled on an always-on Pascal host.
@@ -24,8 +25,8 @@ LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
-.PHONY: help setup up down restart status shell test test-docker test-integration \
-        build build-proxy build-llama build-llama-pascal build-comfyui build-train \
+.PHONY: help setup up down restart status shell test test-docker test-integration test-proxy-go smoke-proxy-go \
+        build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
         pull push push-proxy push-llama push-llama-pascal push-comfyui push-train \
         release ship ship-proxy deploy clean \
@@ -150,6 +151,18 @@ build: build-proxy build-llama build-comfyui build-train
 
 build-proxy:
 	docker build -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
+
+## Go proxy (proxy-v2 soak on :11435)
+build-proxy-go:
+	docker build -t $(PROXY_GO_IMAGE) -f images/proxy-go.Dockerfile .
+
+## Go proxy tests (host Go toolchain, race detector)
+test-proxy-go:
+	cd proxy-go && go test ./... -race -count=1
+
+## Go proxy live smoke against the soak port (stack must be up)
+smoke-proxy-go:
+	hurl --variable base=http://127.0.0.1:11435 --test tests/hurl/proxy-go-smoke.hurl
 
 build-llama:
 	docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .

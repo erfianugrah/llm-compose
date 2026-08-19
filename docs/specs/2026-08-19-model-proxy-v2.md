@@ -4,6 +4,10 @@
 **Workflow:** design-first (technically constrained: single GPU timeshare, porting an existing Python design to Go).
 **Non-goals:** the two-resident-model VRAM split (deferred to the 3080 Ti decision); priority/preemption policies beyond FIFO+drain; multi-GPU scheduling; any change to the llmc bench CLI surface.
 
+## Status (2026-08-19)
+
+Implemented in `proxy-go/` (R1-R5) and in soak on 127.0.0.1:11435 (R6). 34 Go tests, `-race` clean; live smoke suite `tests/hurl/proxy-go-smoke.hurl` (11 requests) green; `make build-proxy-go` / `test-proxy-go` / `smoke-proxy-go`. Claude Code path: `ANTHROPIC_BASE_URL=http://127.0.0.1:11435`. Cutover (repoint clients, retire `llmc/proxy.py`) pending soak. Python-side schema compat (`capabilities` preset key, lock state keys) shipped in the same series.
+
 ## Context and motivation
 
 Current proxy (`llmc/proxy.py`, Python, threaded): routes by exact model name, swaps presets unconditionally (stopping the old container with a 10s timeout, killing in-flight streams), and coordinates tenants via an in-memory lock + FIFO queue. Observed failure modes this week:

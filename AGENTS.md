@@ -97,6 +97,39 @@ GPU services live OUTSIDE compose. The proxy spawns them via Docker SDK
 in `llmc/orchestrator.py` and labels them with `llmc.mode` so it can
 find them again after a restart.
 
+## proxy-go (v2 rewrite, in soak)
+
+`proxy-go/` is the Go rewrite of the proxy (spec:
+`docs/specs/2026-08-19-model-proxy-v2.md`). It adds: drain-before-swap
+(in-flight requests finish before a model swap kills the container,
+`LLMC_DRAIN_GRACE_S` deadline), capability serve-in-place routing
+(`X-LLM-Capability` header or `cap:<name>` model form skips the swap
+when the resident model advertises the capability in its TOML
+`capabilities` list), lock TTL + durable FIFO queue in active.toml,
+and an Anthropic `/v1/messages` shim so Claude Code can point
+`ANTHROPIC_BASE_URL` at it.
+
+Soak service `model-proxy-go` runs on 127.0.0.1:11435 with its own
+state dir (`~/docker-volumes/state-go`) - the Python proxy on :11434
+stays authoritative until cutover.
+
+```bash
+make build-proxy-go   # build the Go image
+make test-proxy-go    # go test -race (host toolchain)
+make smoke-proxy-go   # live hurl suite against :11435
+LLMC_PROXY_PORT=11435 llmc status   # point the CLI at the Go proxy
+```
+
+Cutover (after soak): repoint clients to :11435 (or swap the published
+ports in compose.yaml), retire `llmc/proxy.py`. The llmc harness picks
+its proxy via `LLMC_PROXY_PORT` env.
+
+Architecture: single-goroutine scheduler event loop
+(`internal/proxy/scheduler.go`) owns lock/queue/in-flight state; swaps
+are fire-and-forget goroutines; handlers are thin. Stdlib + BurntSushi/toml
+only. Docker Engine API via a hand-rolled unix-socket client
+(`internal/proxy/docker.go`).
+
 ## Source of truth
 
 | Concern               | Lives in                                              |
