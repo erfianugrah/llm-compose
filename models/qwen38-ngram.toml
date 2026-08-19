@@ -1,0 +1,32 @@
+name = "Qwen3.8 27B Dense + ngram-mod speculative (A/B variant)"
+description = """
+A/B variant of qwen38: identical except spec_type =
+"ngram-mod,draft-mtp" (draftless hash-pool speculator layered ahead
+of MTP). Background + adoption criteria:
+docs/reference/speculative-decoding.md. Watch for the stuck-loop
+issue (upstream PR #25819) in server logs.
+Hardlinked GGUF (presets dedup by model_id stem).
+"""
+vram_gb = 21.0
+
+[model]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-Q4_K_M-ngram.gguf"
+
+[mmproj]
+file = "qwen38-mmproj.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 196608
+parallel_slots = 2
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+spec_type = "ngram-mod,draft-mtp"
+
+[bench]
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"

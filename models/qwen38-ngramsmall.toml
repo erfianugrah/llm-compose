@@ -1,0 +1,36 @@
+name = "Qwen3.8 27B Dense + ngram-mod small-n (A/B variant)"
+description = """
+A/B variant of qwen38: ngram-mod solo with small draft sizes
+(n-min 4, n-max 8, n-match 32) vs qwen38-ngramsolo's upstream
+defaults (48/64/24). Rationale from community testing: single-user
+GPUs verify short drafts better than datacenter GPUs, and ngram
+pays mainly under reasoning (repetition-heavy drafts - our
+reasoning=on suite matches). docs/reference/speculative-decoding.md.
+Hardlinked GGUF (presets dedup by model_id stem).
+"""
+vram_gb = 21.0
+
+[model]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-Q4_K_M-ngramsmall.gguf"
+
+[mmproj]
+file = "qwen38-mmproj.gguf"
+
+[runtime]
+reasoning = "on"
+context_size = 196608
+parallel_slots = 2
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+spec_type = "ngram-mod"
+spec_ngram_n_min = 4
+spec_ngram_n_max = 8
+spec_ngram_n_match = 32
+
+[bench]
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"
