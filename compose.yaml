@@ -128,7 +128,7 @@ services:
   # explicitly so files written to the data volume are owned by the
   # host user, not root.
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.10.2
+    image: ghcr.io/open-webui/open-webui:v0.11.0
     container_name: open_webui
     hostname: open-webui
     restart: unless-stopped
