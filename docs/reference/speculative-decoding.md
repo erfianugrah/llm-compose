@@ -63,11 +63,15 @@ models can reduce n-min/n-max. The values quoted in the Reddit thread
 
 `--spec-default` enables ngram-mod alone.
 
-## Adoption in this stack - DONE (2026-08-19)
+## Adoption in this stack - REVERSED (2026-08-19)
 
-`ngram-mod` is now the default `spec_type` on `models/qwen38.toml`
-(solo, no MTP). Flags `SPEC_NGRAM_N_{MIN,MAX,MATCH}` were added to the
-entrypoint + preset schema for the small-n variant experiments.
+First adoption was `ngram-mod` as the default `spec_type`. The p6
+validation suite then caught ngram-mod degrading identically to MTP
+under agentic churn (0.6-0.7 tok/s, GPU idle ~106W, restart restores).
+Final state: `models/qwen38.toml` runs NO speculation - the only config
+proven stable under agentic task churn. `SPEC_NGRAM_N_{MIN,MAX,MATCH}`
+plumbing remains in the entrypoint + schema for future re-tests on
+newer pins. `qwen38-xhigh` keeps MTP for babysat interactive use.
 
 ## Measured results (2026-08-19, b10472, RTX 5090)
 
@@ -84,8 +88,8 @@ canned prompts, so a warm pool is maximally matched - the 462.1 tok/s is
 the mechanism's ceiling, not a realistic agentic-workload figure.
 Defaults adopted (bigger upside, TTFT is a wash at ~100ms).
 
-Why the default is ngram SOLO and not `ngram-mod,draft-mtp` - the MTP
-disqualification:
+Why nothing speculative runs by default - the degradation applies to
+BOTH speculator types. MTP evidence first:
 
 1. MTP (draft-mtp) decode degrades to ~0.5 tok/s within ~10 min of
    agentic task churn, on both b10362 and b10472. pp stays fast
@@ -97,6 +101,12 @@ disqualification:
    restores) and #27296 (MTP corrupts draft context across long/short
    prompt mixes on Qwen3.8-27B; reproduced by them on b10344+b10472).
 4. kept as `qwen38-xhigh` preset for babysat interactive use only.
+5. ngram-mod (draftless): identical degradation caught by the p6
+   validation suite on 2026-08-19 - the hash-pool warmup stays fine,
+   but under sustained loop-task churn decode collapses the same way.
+   Shared-mechanism hypothesis: rejected-draft rollback of the hybrid
+   Gated DeltaNet recurrent state, expensive at 24k+ context. No-spec
+   never rolls back and never degrades.
 
 b10472 pin bump (was b10362) also fixed a separate abandoned-stream
 slot-parking bug (frozen slot, dec stop, GPU idle, slot never frees;

@@ -8,8 +8,11 @@ preset_hash provenance). Reference: `docs/reference/speculative-decoding.md`
 
 `models/qwen38.toml` (daily driver) now:
 
+(amended same-day after p6 validation: speculation removed entirely - see
+the Speculative decoding section.)
+
 - `reasoning_effort = "medium"` - adopted from the A/B below.
-- `spec_type = "ngram-mod"` - draftless; replaces `draft-mtp`.
+- `spec_type` unset (no speculation) - see the correction below.
 
 Variants kept:
 
@@ -57,11 +60,15 @@ Full detail in `docs/reference/speculative-decoding.md`. Summary:
 - MTP draft-mtp: +15% gen on short bursts, but degrades to ~0.5 tok/s
   after ~10 min of agentic churn (reproduced on b10362 + b10472; upstream
   #27151/#27296). Disqualified for loops/benches.
-- ngram-mod (draftless): +93-100% gen cold pool, dramatic warm-pool
-  upside, no draft state to degrade. Adopted with upstream defaults
-  (n-match 24 / n-min 48 / n-max 64) over the small-n community settings
-  (4/8/32) - defaults win warm-pool peak, small-n only wins TTFT by
-  ~100ms. Entrypoint + schema now accept SPEC_NGRAM_N_{MIN,MAX,MATCH}.
+- ngram-mod (draftless): +93-100% gen cold pool on synthetic perf, BUT
+  CORRECTION (p6 validation, same day): ngram-mod degrades identically
+  under agentic task churn (0.6-0.7 tok/s, GPU idle ~106W, fresh-server
+  probes fine, restart restores). Both speculators require rolling back
+  the hybrid Gated DeltaNet recurrent state on rejected drafts; only
+  no-spec (no rollbacks) sustained 55-66 tok/s through a 5433s task.
+  Adopted default is therefore NO speculation. The perf numbers stand as
+  short-burst evidence only. SPEC_NGRAM_N_{MIN,MAX,MATCH} plumbing kept
+  in the entrypoint + schema for future re-tests on newer pins.
 - llama.cpp pin b10362 -> b10472 (commit 8c35091): fixed a separate
   abandoned-stream slot-parking bug that froze slots under the loop
   harness (verified fixed upstream on b10472).
