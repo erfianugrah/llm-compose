@@ -49,7 +49,17 @@ The proxy is never the bottleneck (the GPU is); the design target is correctness
 - THE SYSTEM SHALL pass a Go port of the proxy test cases from `llmc/tests/test_proxy.py`.
 - THE SYSTEM SHALL run as a drop-in compose service on the same port with the same volume/env contract.
 
-### R5: Soak and cutover
+### R5: Client compatibility (pi, Claude Code, Open WebUI) + MCP transparency
+**Story:** As a user, I want every client in the stack to work through the proxy without client-side workarounds, so that the router is the single front door.
+**Acceptance criteria:**
+- THE SYSTEM SHALL serve OpenAI-compatible `POST /v1/chat/completions` with streaming (SSE) for pi (provider `openai-completions`) and Open WebUI, including `tools`/`tool_calls` payloads passed through byte-identical.
+- THE SYSTEM SHALL serve `GET /v1/models` listing every configured preset (Open WebUI's model picker and pi's /model flow depend on it).
+- THE SYSTEM SHALL serve an Anthropic-compatible `POST /v1/messages` (Messages API subset: `system`, `messages`, `tools`, streaming SSE with `content_block_*` events) translated to the resident/scheduled model, so Claude Code can target the proxy via `ANTHROPIC_BASE_URL`.
+- IF a `/v1/messages` request uses an untranslatable feature (prompt caching blocks, citations), THEN THE SYSTEM SHALL degrade to the closest translatable form and log the dropped feature, never silently corrupt.
+- THE SYSTEM SHALL pass through request/response fields it does not understand without stripping (MCP-adjacent payloads, structured-output `response_format`, vendor extensions); the proxy's job is scheduling, not schema enforcement.
+- WHERE llama-server exposes MCP-related endpoints (e.g. its UI MCP proxy), THE SYSTEM SHALL forward them transparently under the same path prefix.
+
+### R6: Soak and cutover
 **Story:** As the operator, I want both proxies runnable side by side, so that cutover is reversible.
 **Acceptance criteria:**
 - THE SYSTEM SHALL support running the Go proxy on an alternate port against the same presets and state dir.
@@ -58,7 +68,13 @@ The proxy is never the bottleneck (the GPU is); the design target is correctness
 
 ## Design
 
-**Language/architecture:** Go, stdlib-first (house convention; cf. drawbridge). `net/http` + a hand-rolled `httputil.ReverseProxy` wrapper that increments/decrements the in-flight counter per model around each proxied request, with SSE streams held open by the handler goroutine. One `sync.Mutex`-guarded scheduler state struct (lock owners, FIFO queue, in-flight counts, pending swap). `BurntSushi/toml` for preset parsing (schema mirrors `llmc/presets.py`). State file format unchanged (JSON) so both proxies read the same store; the Go proxy writes lock/queue state into it (R1).
+**Language/architecture:** Go, stdlib-first (house convention; cf. drawbridge). `net/http` + a hand-rolled `httputil.ReverseProxy` wrapper that increments/decrements the in-flight counter per model around each proxied request, with SSE streams held open by the handler goroutine. `BurntSushi/toml` for preset parsing (schema mirrors `llmc/presets.py`). State file format unchanged (JSON) so both proxies read the same store; the Go proxy writes lock/queue state into it (R1).
+
+**Scheduler architecture: steal llama-swap's.** Their `internal/router` split (a single-goroutine run loop consuming events off channels; scheduler state mutated only on that goroutine so no mutex is needed; swaps as fire-and-forget goroutines reporting back `SwapDone`; a pure-function Swapper for eviction decisions; in-flight grants counted only after the caller provably took the handler) is the right shape and well documented in their design.md. Notably, llama-swap already implements drain-before-evict (in-flight WaitGroup; eviction deferred until the count hits zero) - R2 is validated prior art, and their exact race (request between lock-release and in-flight increment) is the one to write the test for first. What llama-swap does NOT do: capability serve-in-place routing (it always swaps to the named group member), docker-container lifecycle (it manages raw processes), GPU-mode arbitration against comfyui/train/whisper, or the lock API - so we adopt the architecture, not the tool.
+
+**Rejected alternatives:** LiteLLM (provider load-balancer; no local model lifecycle, heavyweight Python dep, Redis for state - solves a different problem), llama.cpp `--models-preset` router mode (no queueing/locks/drain; config-file only), llama-swap as-is (see above - missing four integration surfaces we already depend on).
+
+**Anthropic shim (R5):** a `POST /v1/messages` handler translating Anthropic Messages -> OpenAI chat completions (system -> system message, `tool_use`/`tool_result` blocks -> OpenAI tool calls, streaming `content_block_delta` -> OpenAI deltas) and back. Scope deliberately to what Claude Code sends; unknown blocks pass through when possible, otherwise logged-and-dropped per the degradation criterion.
 
 **Module layout:** `proxy-go/` in this repo: `cmd/proxy/main.go`, `internal/proxy/{server,scheduler,presets,state,orchestrator}.go`. The orchestrator part shells to docker via the socket (same operations as `llmc/orchestrator.py`: stop_gpu_services, spawn container from preset, wait healthy).
 
@@ -72,7 +88,7 @@ The proxy is never the bottleneck (the GPU is); the design target is correctness
 
 **Whisper bot change (follow-on, separate compose repo):** set its LLM envs to capability form once R3 ships, so bot traffic stops naming gemma-4 explicitly.
 
-**Testing strategy:** Go table tests for the scheduler decision order and lock/queue state machine (ported from `llmc/tests/test_proxy.py`); a hurl suite against the running service for REST parity incl. SSE; soak per R5 using `llmc bench perf` + one task suite (the degradation-informed watch: confirm no wedge, decode rate sane).
+**Testing strategy:** Go table tests for the scheduler decision order and lock/queue state machine (ported from `llmc/tests/test_proxy.py`); a hurl suite against the running service for REST parity incl. SSE; soak per R6 using `llmc bench perf` + one task suite (the degradation-informed watch: confirm no wedge, decode rate sane).
 
 ## Open questions
 
