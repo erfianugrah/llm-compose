@@ -27,9 +27,9 @@ TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
 .PHONY: help setup up down restart status shell test test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
-        rebuild-proxy rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
-        pull push push-proxy push-llama push-llama-pascal push-comfyui push-train \
-        release ship ship-proxy deploy clean \
+        rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
+        pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train \
+        release ship ship-proxy ship-proxy-go deploy clean \
         logs-proxy logs-webui logs-llama logs-comfyui logs-train \
         gpu health metrics
 
@@ -63,7 +63,7 @@ down:
 
 ## Force-recreate proxy + Open WebUI (keep any running GPU service)
 restart:
-	docker compose up -d --force-recreate model-proxy open-webui
+	docker compose up -d --force-recreate model-proxy-go open-webui
 
 ## Show stack + active mode + active model.
 ## Uses llmc because it queries the proxy's mode endpoint and renders a table.
@@ -147,7 +147,7 @@ test-integration:
 # it skipped rebuilds even when the source had changed.
 
 ## Build all images (Docker's layer cache makes this fast if unchanged)
-build: build-proxy build-llama build-comfyui build-train
+build: build-proxy build-proxy-go build-llama build-comfyui build-train
 
 build-proxy:
 	docker build -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
@@ -183,6 +183,9 @@ build-train:
 rebuild-proxy:
 	docker build --no-cache -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
 
+rebuild-proxy-go:
+	docker build --no-cache -t $(PROXY_GO_IMAGE) -f images/proxy-go.Dockerfile .
+
 rebuild-llama:
 	docker build --no-cache -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
 
@@ -205,10 +208,13 @@ pull:
 	docker pull $(TRAIN_IMAGE)
 
 ## Push all custom images to the registry
-push: push-proxy push-llama push-comfyui push-train
+push: push-proxy push-proxy-go push-llama push-comfyui push-train
 
 push-proxy:
 	docker push $(PROXY_IMAGE)
+
+push-proxy-go:
+	docker push $(PROXY_GO_IMAGE)
 
 push-llama:
 	docker push $(LLAMA_IMAGE)
@@ -237,7 +243,11 @@ ship: release
 ## ~14 GB of llama-server + comfyui + lora-train pushes that are no-ops
 ## on every layer when only Python changed.
 ship-proxy: build-proxy push-proxy restart
-	@echo "Proxy shipped and restarted"
+	@echo "Python proxy (rollback lane) shipped"
+
+## Ship the Go proxy (daily flow for proxy-go/ changes)
+ship-proxy-go: build-proxy-go push-proxy-go restart
+	@echo "Go proxy shipped and restarted"
 
 ## Full bootstrap: setup + build all + start
 deploy: setup build up
