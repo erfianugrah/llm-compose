@@ -72,7 +72,26 @@ The proxy is never the bottleneck (the GPU is); the design target is correctness
 
 **Scheduler architecture: steal llama-swap's.** Their `internal/router` split (a single-goroutine run loop consuming events off channels; scheduler state mutated only on that goroutine so no mutex is needed; swaps as fire-and-forget goroutines reporting back `SwapDone`; a pure-function Swapper for eviction decisions; in-flight grants counted only after the caller provably took the handler) is the right shape and well documented in their design.md. Notably, llama-swap already implements drain-before-evict (in-flight WaitGroup; eviction deferred until the count hits zero) - R2 is validated prior art, and their exact race (request between lock-release and in-flight increment) is the one to write the test for first. What llama-swap does NOT do: capability serve-in-place routing (it always swaps to the named group member), docker-container lifecycle (it manages raw processes), GPU-mode arbitration against comfyui/train/whisper, or the lock API - so we adopt the architecture, not the tool.
 
-**Rejected alternatives:** LiteLLM (provider load-balancer; no local model lifecycle, heavyweight Python dep, Redis for state - solves a different problem), llama.cpp `--models-preset` router mode (no queueing/locks/drain; config-file only), llama-swap as-is (see above - missing four integration surfaces we already depend on).
+**Prior art (validated against primary sources, 2026-08-19):**
+
+| System | Swap scheduling | Drain before unload | Capability routing | Lock/lease API | Anthropic `/v1/messages` |
+|---|---|---|---|---|---|
+| llama-swap | per-model queues, swap on demand | yes (in-flight WaitGroup, deferred eviction) | no (always swaps to named group member) | no | no |
+| Ollama | global FIFO queue (default max 512, then 503), load on demand | yes (unloads only "as prior models become idle") | no (`model` field only) | TTL pin via `keep_alive: -1`; no explicit lock | no |
+| llama.cpp router mode | on-demand load, LRU eviction at `--models-max` (default 4), manual `/models/load`/`/models/unload` | undocumented (in-flight eviction semantics unspecified) | no (`model` field only) | no | no |
+| LiteLLM | n/a (provider LB/failover, no local lifecycle) | n/a | no (model alias routing) | no | yes |
+| claude-code-router | n/a (protocol translation + provider control plane) | n/a | rule-based routing per agent/role | no | yes (its core function; also fronts Codex/OpenCode/pi) |
+| RouteLLM / vLLM / Envoy AI GW | different problem (cost routing / single-model serving / k8s gateway) | - | - | - | - |
+
+Sources: llama-swap `internal/router/design.md`; ollama/ollama `docs/faq.mdx`; HF blog "Model Management in llama.cpp" + `tools/server/README-dev.md`; musistudio/claude-code-router README.
+
+Findings:
+- R2 (drain + queue) is independently validated by both llama-swap and Ollama; nothing in the class kills in-flight work on a swap except our current proxy. Ollama also validates queue-instead-of-reject with a bounded queue and 503 overflow (our 409/202 lock semantics are the equivalent for lock contention).
+- R3 (capability serve-in-place) has no prior art in this class: every swapper routes strictly by model name. It remains the differentiator.
+- llama.cpp router mode's resumable streaming (`X-Conversation-Id`, 4 MiB ring buffer per session, `GET /v1/stream` reattach, 300 s TTL) targets client-disconnect resilience, not swap-drain - a complementary pattern, parked as future work.
+- claude-code-router is the reference implementation for the R5 Anthropic shim scope (what Claude Code actually sends) and a viable drop-in shim layer if the hand-rolled translation misses CC features.
+
+**Rejected as wholesale replacements:** LiteLLM (provider load-balancer; no local model lifecycle, heavyweight Python dep, Redis for state - solves a different problem), llama.cpp router mode (no queueing/locks, undocumented in-flight eviction, config-file presets only), llama-swap as-is (no capability routing, no container lifecycle, no GPU-mode arbitration, no lock API), claude-code-router (no GPU/container lifecycle; shim reference only).
 
 **Anthropic shim (R5):** a `POST /v1/messages` handler translating Anthropic Messages -> OpenAI chat completions (system -> system message, `tool_use`/`tool_result` blocks -> OpenAI tool calls, streaming `content_block_delta` -> OpenAI deltas) and back. Scope deliberately to what Claude Code sends; unknown blocks pass through when possible, otherwise logged-and-dropped per the degradation criterion.
 
@@ -95,3 +114,5 @@ The proxy is never the bottleneck (the GPU is); the design target is correctness
 - **Preemption/priority** (interactive request preempting a loop): deferred; default assumption is FIFO + drain only.
 - **Two-resident split (qwen38 @ ~98k ctx + gemma4-12b permanent):** parked until the 3080 Ti decision; the capability table in R3 is designed so this becomes a topology change, not a protocol change.
 - **Capability granularity:** v1 is a flat string list; defaults: qwen38 gets `["vision","code"]`, loop gets `["vision","code"]`, gemma4-12b gets `["vision","small"]`.
+- **TTL-pin vs explicit lock:** Ollama proves idle-TTL pinning (`keep_alive: -1`) covers interactive use. Our explicit lock/queue API exists because bench loops need deterministic handoff and queue position (202). Revisit only if R1's lock TTL plus R3 cover the loop cases without the explicit API.
+- **Resumable streaming:** llama.cpp's ring-buffer + reattach pattern would make client disconnects survivable without holding the drain; parked (R2's drain already covers the swap case).
