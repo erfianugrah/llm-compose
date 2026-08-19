@@ -160,15 +160,37 @@ state.model dangling).
 
 - [ ] **Step 1:** `cd ~/infra/ai/llm-compose && make push-proxy-go` (pushes `erfianugrah/llmc-proxy-go:v1` to Docker Hub; requires `docker login` already done - verify with `docker info | rg Username`).
 
-### Task 8: Docs sweep (after Task 5 decides the final number)
+### Task 8: Proxy liveness recovery (known gap from cutover day)
+
+The Go scheduler trusts `state.Model`; if `llama_server` dies out-of-band
+(OOM-kill, manual `docker rm`), acquires keep granting and forwarding
+502-loops until a proxy restart reconciles. The Python proxy checked
+`current_mode()` live per request and would respawn. Fix:
+
+**Files:**
+- Modify: `proxy-go/internal/proxy/scheduler.go` (new event), `proxy-go/internal/proxy/server.go` (notify on connection failure)
+- Test: `proxy-go/internal/proxy/scheduler_test.go`
+
+- [ ] **Step 1: failing test** - grant resident acquire, `NoteUpstreamDead("llm")`, next acquire for the same model must trigger a spawn (fake orchestrator records SpawnLlama).
+- [ ] **Step 2: implement** - add `NoteUpstreamDead(mode string)` to Scheduler (new loop event): sets `st.Mode = "idle"` (keep `st.Model`), persists, logs. In `server.go` `forwardTo`, call it when `upstreamClient.Do` fails with a connection error (not on upstream 5xx - the container answered then).
+- [ ] **Step 3:** `go test ./... -race -count=1`, rebuild + recreate `model-proxy-go`, commit.
+
+### Task 9: Client verification against the Go proxy
+
+- [ ] **Step 1: bench harness** - `cd ~/infra/ai/llm-compose && export PATH="$PWD/bin:$PATH" && llmc bench perf --presets qwen38 --runs 1`. Verifies the lock/swap path the loop engine depends on. Expected: run completes, result row in `bench/results/runs.jsonl`.
+- [ ] **Step 2: real Claude Code session** - `ANTHROPIC_BASE_URL=http://127.0.0.1:11434 claude -p "read the file /etc/hostname and tell me its content"` (forces a tool_use round-trip + streaming). Expected: completes with the hostname; check `docker logs model_proxy_go` for clean translation (no dropped-block warnings beyond acceptable ones).
+
+### Task 10: Docs sweep (after Task 5 decides the final number)
 
 - [ ] `README.md` - make-target table has `ship-proxy-go`; architecture line mentions proxy-go.
-- [ ] `AGENTS.md` - proxy-go section: final ctx number, rollback-profile procedure.
+- [ ] `AGENTS.md` - proxy-go section: final ctx number, rollback-profile procedure; **fix the architecture diagram** (still says `llmc-proxy :11434 --- Python proxy`).
 - [ ] `docs/specs/2026-08-19-model-proxy-v2.md` - status section: suite results + final ctx.
 - [ ] dotfiles skill `.pi/agent/skills/llm-compose/SKILL.md` - final ctx number + suite one-liner.
 - [ ] Lexicanum: `rg -l 'llm-compose|model.proxy' ~/lexicanum/src/content/docs`, update the proxy/stack doc with the v2 rewrite (drain-before-swap, capability routing, lock TTL, Anthropic shim) - follow `~/lexicanum/AGENTS.md` conventions (frontmatter unchanged, sentence-case headings, `bun run build` must pass).
 
-### Task 9: Final gates + commit
+**Deferred (not a task now):** retire `llmc/proxy.py` + the `model-proxy` rollback service after 2-4 weeks of stable Go-proxy operation. Note it in the spec status when Task 10 lands.
+
+### Task 11: Final gates + commit
 
 - [ ] `cd proxy-go && go test ./... -race -count=1`
 - [ ] `hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl` (11/11)
