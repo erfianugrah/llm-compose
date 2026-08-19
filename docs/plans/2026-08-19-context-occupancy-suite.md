@@ -81,7 +81,7 @@ if path == "/tokenize" || path == "/detokenize" {
 }
 ```
 
-Add a unit test in `proxy-go/internal/proxy/server_test.go` asserting `POST /tokenize` with inactive llm mode returns 503 (read-path: it is a POST, so it triggers acquire - assert it reaches forwarding, i.e. 502 with no upstream in tests). Run `cd proxy-go && go test ./... -race -count=1`. Then `make build-proxy-go && docker compose up -d --force-recreate model-proxy-go`.
+Add a unit test in `proxy-go/internal/proxy/server_test.go`: `POST /tokenize` with llm mode inactive must go through the acquire path (POST = swap trigger) and, with the fake orchestrator succeeding, end at a 502 (forward attempted, no upstream) - NOT a 404 (route missing) and NOT a 503 (that is the read-only-GET path). Run `cd proxy-go && go test ./... -race -count=1`. Then `make build-proxy-go && docker compose up -d --force-recreate model-proxy-go`.
 
 ### Task 3: Corpus builder + tokenizer sizing
 
@@ -112,10 +112,30 @@ llmc bench context --preset qwen38 --ctx 196608,229376,245760,262144 --slots 1 \
   --occupancy 0.25,0.5,0.75,0.9,0.98 --gen-tokens 200
 ```
 
-For each ctx value: rewrite a THROWAWAY preset copy (`models/.bench-ctx-<n>.toml`, same content as the source preset but name/context_size/parallel_slots overridden), wait for spawn+healthy via the proxy, then for each occupancy fraction: fill KV to `int(ctx*frac)` tokens with a single user message of filler + "Reply with exactly: READY", then send the measurement request (fresh short prompt in the same conversation? NO - llama.cpp is stateless per request; occupancy is achieved by putting the filler IN the measurement request itself: `messages = [user: filler(ctx*frac tokens) + question]`, measure `predicted_per_second` on a 200-token generation).
+For each ctx value, create a THROWAWAY preset so the proxy can spawn the
+variant. A plain TOML copy does NOT work: model_id derives from the GGUF
+filename and the store rejects duplicate model IDs (this is why loop.toml
+exists - same pattern). So per candidate:
+1. Symlink the GGUF: `ln -s Qwen3.8-27B-Q4_K_M.gguf ~/docker-volumes/llama-server/models/ctx-sweep-<n>.gguf`
+2. Write `models/ctx-sweep-<n>.toml` - copy of the source preset with
+   `name`, `context_size`, `parallel_slots` overridden and `[model] file =
+   "ctx-sweep-<n>.gguf"` (visible name, not dotfile: Go's filepath.Glob
+   matches dotfiles but Python's glob does not - keep the loaders consistent)
+3. `llmc lock ctx-sweep-<n> --owner bench-context --wait`, then one chat
+   request to drive the swap + healthy wait
+
+Then for each occupancy fraction: llama.cpp is stateless per request, so
+occupancy is achieved by putting the filler IN the measurement request:
+`messages = [user: filler + question]` where filler is exactly
+`int(ctx * frac) - gen_tokens - 64` tokens (leave headroom: prompt plus
+gen tokens must fit under n_ctx or llama-server truncates/errors).
+Measure `predicted_per_second` on a 200-token generation.
+
 Record per point: `{tag: "context-occupancy", preset, ctx, slots, occupancy, prompt_tokens, completion_tokens, tg, vram_mib (nvidia-smi), llama_cpp pin, gpu, ts}` appended to `bench/results/runs.jsonl`.
-Lock/unlock around the whole sweep (`--owner bench-context --wait`).
-Delete throwaway presets after; restore the source preset untouched.
+Cleanup per candidate: unlock owner `bench-context`, delete the TOML +
+symlink. After the whole sweep: `llmc switch qwen38` to restore the parked
+config (deleting the active throwaway preset without switching back leaves
+state.model dangling).
 
 - [ ] **Step 1: failing test** - result envelope matches the bench store schema (mirror `test_bench.py` conventions; read it first).
 - [ ] **Step 2: implement**; run `python3 -m unittest llmc.tests.test_bench_context`.
@@ -123,7 +143,7 @@ Delete throwaway presets after; restore the source preset untouched.
 
 ### Task 5: Run the full sweep + decide
 
-- [ ] **Step 1:** full sweep (est. 60-90 min; 4 ctx x 5 occupancies x ~30-60s each + reloads). Run as a bg task, not interactively.
+- [ ] **Step 1:** full sweep as a bg task, not interactively. Realistic estimate 2-4 hours: 4 ctx x 5 occupancies, where each high-occupancy point pays its filler prefill every time (224k tokens at ~400-2000 t/s prefill = 2-9 min per deep point) plus 4 model reloads (~3 min each).
 - [ ] **Step 2:** decide final `context_size`: the largest ctx whose tg stays >= 20 t/s at 0.90 occupancy AND >= 40 t/s at 0.50 occupancy (floors from the 196608 baseline of 67 t/s; adjust if the baseline itself degrades at occupancy - that is a finding too).
 - [ ] **Step 3:** if 262144 fails, capture `docker logs llama_server` for the failing run (look for CUDA graph capture failures / MTP acceptance rates) and record the mechanism in the TOML comment.
 - [ ] **Step 4:** set `models/qwen38.toml` to the winner with the spike table in the comment; commit.
