@@ -4,11 +4,13 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -246,6 +248,32 @@ func ensureAsset(assetsDir, filename, url string) (string, error) {
 		return "", err
 	}
 	return dest, nil
+}
+
+// LoadedLlamaModel returns the preset name of the model llama-server
+// currently has loaded ("" if unknown/unreachable). Used at startup to fill
+// state.model after a state-loss restart, avoiding a pointless swap.
+func (o *DockerOrchestrator) LoadedLlamaModel(presets *PresetStore) string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s:%d/v1/models", LlamaService.Hostname, LlamaService.InternalPort))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || len(body.Data) == 0 {
+		return ""
+	}
+	// llama-server reports the GGUF path (e.g. /models/Qwen3.8-27B-Q4_K_M.gguf)
+	base := strings.TrimSuffix(filepath.Base(body.Data[0].ID), ".gguf")
+	if p := presets.ByName(base); p != nil {
+		return p.Name
+	}
+	return ""
 }
 
 // ValidMode reports whether name is a switchable GPU mode.

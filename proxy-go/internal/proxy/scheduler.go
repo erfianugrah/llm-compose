@@ -157,6 +157,18 @@ func NewScheduler(cfg SchedulerConfig, orch Orchestrator, presets *PresetStore, 
 		st.Mode = actual
 		s.persist()
 	}
+	// If llm mode is active but the model is unknown (fresh/lost state dir),
+	// probe llama-server for what it actually has loaded. A wrong/empty
+	// model here causes a pointless swap on the first request.
+	if st.Mode == "llm" {
+		if prober, ok := orch.(interface{ LoadedLlamaModel(*PresetStore) string }); ok {
+			if m := prober.LoadedLlamaModel(presets); m != "" && m != st.Model {
+				s.logf("state reconciliation: loaded model %q recovered from llama-server", m)
+				st.Model = m
+				s.persist()
+			}
+		}
+	}
 	now := time.Now()
 	s.expireLockIfNeeded(now)
 	s.pruneQueue(now)

@@ -113,6 +113,6 @@ Findings:
 
 - **Preemption/priority** (interactive request preempting a loop): deferred; default assumption is FIFO + drain only.
 - **Two-resident split (qwen38 @ ~98k ctx + gemma4-12b permanent):** parked until the 3080 Ti decision; the capability table in R3 is designed so this becomes a topology change, not a protocol change.
-- **Capability granularity:** v1 is a flat string list; defaults: qwen38 gets `["vision","code"]`, loop gets `["vision","code"]`, gemma4-12b gets `["vision","small"]`.
+- **Capability granularity:** v1 is a flat string list. As shipped in models/*.toml (set from actual mmproj presence): qwen38* get `["vision","code"]`, loop gets `["code"]` (text-only, no mmproj), gemma4-12b gets `["small"]` (no mmproj), gemma4/qwen36*/qwen3-vl/summarizer get `["vision"]`, qwen3-coder gets `["code"]`.
 - **TTL-pin vs explicit lock:** Ollama proves idle-TTL pinning (`keep_alive: -1`) covers interactive use. Our explicit lock/queue API exists because bench loops need deterministic handoff and queue position (202). Revisit only if R1's lock TTL plus R3 cover the loop cases without the explicit API.
 - **Resumable streaming:** llama.cpp's ring-buffer + reattach pattern would make client disconnects survivable without holding the drain; parked (R2's drain already covers the swap case).
