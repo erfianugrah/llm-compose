@@ -17,6 +17,12 @@
 #   A2a: nospec arm t4/t5 x2; medium-nospec arm t1/t2/t4/t5 x2
 #   A2b: medium-nospec arm t3/t6 x1   <- the decision-driving measurement
 #   B:   qwen38-ngramsolo perf, cold-pool then warm-pool passes
+#
+# POSTSCRIPT 2026-08-19 (p6 validation): ngram-mod ALSO degrades under
+# task-suite churn (same ~0.5 tok/s signature as MTP - pp fast, GPU idle,
+# restart restores). The adopted qwen38 default is medium + NO
+# speculation; the ngram variant presets are deleted. Keep this script
+# for the watchdog + phase structure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$PWD/bin:$PATH"
