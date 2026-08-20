@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("context", help="context occupancy sweep")
     sp.add_argument("--preset", required=True, help="base preset name")
-    sp.add_argument("--ctx", type=int, required=True, help="context size")
-    sp.add_argument("--occupancy", type=float, required=True, help="occupancy fraction (0.0-1.0)")
+    sp.add_argument("--ctx", required=True, help="comma-separated context sizes")
+    sp.add_argument("--occupancy", required=True, help="comma-separated occupancy fractions (0.0-1.0)")
     sp.add_argument("--gen-tokens", type=int, default=200, help="generation tokens")
     sp.add_argument("--dry-run", action="store_true", help="do not modify environment")
     sp.add_argument("--slots", type=int, default=1, help="parallel slots")
@@ -88,9 +88,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.bench_command == "context":
         return context.run_context_sweep(
             preset_name=args.preset,
-            ctx_sizes=[args.ctx],
+            ctx_sizes=[int(x) for x in args.ctx.split(",")],
             slots=args.slots,
-            occupancies=[args.occupancy],
+            occupancies=[float(x) for x in args.occupancy.split(",")],
             gen_tokens=args.gen_tokens,
             dry_run=args.dry_run,
         )

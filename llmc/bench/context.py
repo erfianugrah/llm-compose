@@ -1,98 +1,150 @@
-"""llmc bench context - occupancy sweep driver."""
+"""llmc bench context - occupancy sweep driver.
+
+Measures generation throughput (tok/s) as a function of real KV occupancy for
+a preset at candidate context sizes. Answers: what is the largest usable
+context_size before tg collapses?
+
+Design (docs/plans/2026-08-19-context-occupancy-suite.md):
+- For each candidate ctx, materialize a THROWAWAY preset whose GGUF is a
+  symlink to the base preset's GGUF (unique file stem => unique model_id; a
+  plain TOML copy duplicates the model ID and the store rejects it). The TOML
+  + symlink go into the MAIN repo's models/ dir (the dir the proxy mounts and
+  live-reloads), not the worktree.
+- Occupancy is achieved by putting a filler corpus sized to
+  int(ctx*frac) - gen_tokens - HEADROOM tokens directly into the measurement
+  request (llama.cpp is stateless per request). Sized via POST /tokenize.
+- Generation speed from the response's timings.predicted_per_second.
+"""
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from llmc.bench import store
-from llmc.presets import load_all, Preset
+from llmc.presets import load_all
 from llmc.cli import ProxyClient
+from llmc import volumes as volumes_mod
 
-try:
-    from llmc.volumes import load as load_volumes
-except ImportError:
-    load_volumes = None
+# Main repo models dir (proxy mounts this, live-reloads). The worktree's own
+# models/ is NOT what the proxy sees - throwaway presets must land here.
+MAIN_MODELS_DIR = store.REPO_ROOT / "models"
+MAIN_VOLUMES_TOML = store.REPO_ROOT / "volumes.toml"
 
-# ── Pure helpers (unit-tested) ─────────────────────────────────────────
+HEADROOM_TOKENS = 64
+TOKENIZE_TIMEOUT = 300  # s; a near-full-ctx filler tokenizes slowly
+GEN_TIMEOUT = 3600      # s; prefill of a 200k-token prompt takes minutes
+SWEEP_STORE = store.RESULTS_DIR / "context-runs.jsonl"
+
 
 def run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
 
-def fill_to_tokens(
-    target: int,
-    source_text: str,
-    tokenize_fn: Callable[[str], list[str]],
-) -> str:
-    """Greedily/bin-search builds a string with exactly `target` tokens."""
+
+# ── Pure helpers (unit-tested) ─────────────────────────────────────────
+
+def fill_to_tokens(target: int, source_text: str, tokenize_fn: Callable[[str], list]) -> str:
+    """Return a string drawn from source_text with exactly `target` tokens.
+
+    source_text must tokenize to >= target (caller grows the corpus first).
+    Greedy-append with binary search on the tail chunk.
+    """
     if target <= 0:
         return ""
-    
-    # Ensure source is large enough
-    current_tokens = tokenize_fn(source_text)
-    if len(current_tokens) < target:
-        # Repeat source until we have enough
-        repeats = (target // len(current_tokens)) + 1
-        source_text = source_text * repeats
-
-    # Greedy approach with chunks
-    chunk_size = 500
-    chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
-    
-    current_text = ""
-    for chunk in chunks:
-        test_text = current_text + chunk
-        test_tokens = tokenize_fn(test_text)
-        if len(test_tokens) <= target:
-            current_text = test_text
+    if len(tokenize_fn(source_text)) < target:
+        raise ValueError("source_text too small for target tokens")
+    # Binary search on a character prefix (token count is monotonic enough for
+    # whitespace-bounded prose; we verify at the end).
+    lo, hi, best = 0, len(source_text), ""
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = source_text[:mid]
+        n = len(tokenize_fn(cand))
+        if n <= target:
+            best = cand
+            lo = mid + 1
         else:
-            # Binary search within this chunk
-            low = 0
-            high = len(chunk)
-            best_chunk = ""
-            while low <= high:
-                mid = (low + high) // 2
-                mid_text = current_text + chunk[:mid]
-                mid_tokens = tokenize_fn(mid_text)
-                if len(mid_tokens) <= target:
-                    best_chunk = chunk[:mid]
-                    low = mid + 1
-                else:
-                    high = mid - 1
-            current_text += best_chunk
-            break
-    
-    # Final check: if we are still below target, it's because we ran out of chunks.
-    # But we ensured source_text was large enough.
-    return current_text
+            hi = mid - 1
+    return best
 
-def get_prose_chunk(stores_dir: Path) -> str:
-    """Get a random prose chunk from docs/*.md."""
-    docs = list(stores_dir.glob("../docs/**/*.md"))
-    if not docs:
-        return "placeholder text"
-    
-    doc_path = random.choice(docs)
+
+def occupancy_target(ctx: int, frac: float, gen_tokens: int) -> int:
+    """Filler tokens for a sweep point; <=0 means skip (won't fit)."""
+    return int(ctx * frac) - gen_tokens - HEADROOM_TOKENS
+
+
+# ── Corpus ─────────────────────────────────────────────────────────────
+
+def build_corpus(tokenize_fn: Callable[[str], list], min_tokens: int, log) -> str:
+    """Rotating prose from docs/*.md, grown until it tokenizes to >= min_tokens.
+
+    Real prose (not repeated single chars) so prefill exercises real attention.
+    """
+    paragraphs: list[str] = []
+    for doc in sorted(MAIN_MODELS_DIR.parent.glob("docs/**/*.md")):
+        try:
+            paragraphs += [p.strip() for p in doc.read_text().split("\n\n") if p.strip()]
+        except OSError:
+            continue
+    if not paragraphs:
+        paragraphs = ["The quick brown fox jumps over the lazy dog."] * 100
+    rng = random.Random(42)
+    corpus = ""
+    while len(tokenize_fn(corpus)) < min_tokens:
+        corpus += rng.choice(paragraphs) + "\n\n"
+    return corpus
+
+
+# ── Proxy / tokenizer plumbing ─────────────────────────────────────────
+
+def make_tokenizer(proxy: str) -> Callable[[str], list]:
+    def tok(text: str) -> list:
+        body = json.dumps({"content": text}).encode()
+        req = urllib.request.Request(
+            f"{proxy}/tokenize", data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=TOKENIZE_TIMEOUT) as r:
+            return json.loads(r.read())["tokens"]
+    return tok
+
+
+def _chat(proxy: str, model: str, prompt: str, max_tokens: int, timeout: int) -> dict:
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+    }).encode()
+    req = urllib.request.Request(
+        f"{proxy}/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _vram_mib() -> int:
     try:
-        content = doc_path.read_text()
-        # Split into paragraphs
-        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-        if not paragraphs:
-            return "placeholder text"
-        return random.choice(paragraphs)
-    except:
-        return "placeholder text"
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return int(out.stdout.splitlines()[0].strip())
+    except Exception:
+        pass
+    return 0
 
-# _______________________________________________________________________
 
-# ── The runner ─────────────────────────────────────────────────────────
+def _model_dir() -> Path:
+    """Resolve the GGUF volume dir (llmc-llama-models) via volumes.toml."""
+    reg = volumes_mod.load(MAIN_VOLUMES_TOML)
+    return reg.device_for("llmc-llama-models")
+
+
+# ── The sweep ──────────────────────────────────────────────────────────
 
 def run_context_sweep(
     preset_name: str,
@@ -103,146 +155,118 @@ def run_context_sweep(
     dry_run: bool = False,
     proxy: str = "http://127.0.0.1:11434",
     log: Callable[[str], None] = print,
+    tokenize_fn: Optional[Callable[[str], list]] = None,
+    preset_path_fn: Optional[Callable[[Path], Optional[Path]]] = None,
 ) -> int:
-    stores_dir = store.REPO_ROOT / "models"
-    presets = load_all(stores_dir)
-    base_preset = next((p for p in presets.values() if p.name == preset_name), None)
-    
-    if not base_preset:
-        log(f"error: base preset {preset_name} not found")
+    presets = load_all(MAIN_MODELS_DIR)
+    base = next((p for p in presets.values() if p.name == preset_name), None)
+    if base is None:
+        log(f"error: base preset {preset_name!r} not found")
         return 1
-    
-    log(f"Starting sweep for {preset_name} (ctx={ctx_sizes[0]}, occ={occupancies[0]})")
+
+    # Dry-run: print the plan, touch nothing.
+    log(f"Sweep plan: preset={preset_name} ctx={ctx_sizes} slots={slots} occ={occupancies} gen={gen_tokens}")
+    for ctx in ctx_sizes:
+        for frac in occupancies:
+            tgt = occupancy_target(ctx, frac, gen_tokens)
+            status = "skip" if tgt <= 0 else f"filler={tgt} tokens"
+            log(f"  ctx={ctx} occ={frac}: {status}")
     if dry_run:
-        log("[dry-run] mode enabled")
-    
+        log("[dry-run] no docker/proxy/preset changes made")
+        return 0
+
+    tokenize_fn = tokenize_fn or make_tokenizer(proxy)
     client = ProxyClient()
     rid = run_id()
-    
-    # Track original preset to rollback
-    original_preset = preset_name
-    
-    # Track created files for cleanup
-    created_files: list[Path] = []
-    
-    if not dry_run:
-        log("Performing real sweep (modulating environment)...")
-        client.set_lock(preset_name, owner="bench-context")
-    else:
-        log("[dry-run] would lock base preset")
+    max_fill = max((occupancy_target(c, f, gen_tokens) for c in ctx_sizes for f in occupancies), default=0)
+    corpus = build_corpus(tokenize_fn, max_fill, log) if max_fill > 0 else ""
 
+    created: list[Path] = []
     try:
-        # Load volumes to resolve GGUF
-        volumes = None
-        try:
-            volumes = load_volumes(store.REPO_ROOT / "../volumes.toml")
-        except:
-            log("warning: could not load volumes.toml, using fallback")
-
+        model_dir = _model_dir()
         for ctx in ctx_sizes:
-            if dry_run:
-                log(f"[dry-run] sweep ctx={ctx}")
-                continue
-
             sweep_id = f"ctx-sweep-{ctx}"
-            gguf_path = stores_dir / f"{sweep_id}.gguf"
-            toml_path = stores_dir / f"{sweep_id}.toml"
-            
-            # 1. Resolve real GGUF target
-            if volumes and "llmc-llama-models" in volumes.names():
-                model_dir = volumes.device_for("llmc-llama-models")
-                base_gguf_target = model_dir / base_preset.model.file
-            else:
-                # Fallback to current broken logic
-                base_gguf_target = stores_dir / base_preset.model.file
-            
-            if gguf_path.exists(): gguf_path.unlink()
-            os.symlink(base_gguf_target, gguf_path)
-            created_files.append(gguf_path)
+            gguf_link = model_dir / f"{sweep_id}.gguf"
+            toml_path = MAIN_MODELS_DIR / f"{sweep_id}.toml"
 
-            # 2. Create TOML
-            toml_str = f'name = "{sweep_id}"\n[model]\nrepo = "{base_preset.model.repo}"\nfile = "{sweep_id}.gguf"\n[runtime]\ncontext_size = {ctx}\nparallel_slots = {int(slots)}'
-            toml_path.write_text(toml_str)
-            created_files.append(toml_path)
+            # 1. Symlink the GGUF (unique stem => unique model_id).
+            if gguf_link.exists() or gguf_link.is_symlink():
+                gguf_link.unlink()
+            gguf_link.symlink_to(model_dir / base.model.file)
+            created.append(gguf_link)
 
-            # 3. Switch mode
-            client.set_lock(sweep_id, owner="bench-context")
-            client.set_mode("llm", model=sweep_id)
-            
-            # Trigger
-            body = json.dumps({"model": sweep_id, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}).encode()
-            urllib.request.urlopen(f"{proxy}/v1/chat/completions", data=body, timeout=60)
+            # 2. Throwaway TOML in the main models dir.
+            toml_path.write_text(
+                f'name = "{sweep_id}"\n'
+                f'description = "ctx sweep throwaway"\n'
+                f'vram_gb = {base.vram_gb}\n'
+                f'[model]\nrepo = "{base.model.repo}"\nfile = "{sweep_id}.gguf"\n'
+                f'[runtime]\ncontext_size = {ctx}\nparallel_slots = {int(slots)}\n')
+            created.append(toml_path)
 
-            for occ in occupancies:
-                target_tokens = int(ctx * occ) - gen_tokens - 64
-                if target_tokens <= 0: continue
-                
-                # Use prose filler
-                prompt_text = get_prose_chunk(stores_dir)
-                prompt = fill_to_tokens(target_tokens, prompt_text, lambda t: tokenize_fn_placeholder(t, proxy)) + "\n\n?"
-                
-                body = json.dumps({"model": sweep_id, "messages": [{"role": "user", "content": prompt}], "max_tokens": gen_tokens, "temperature": 0.0}).encode()
-                
+            # 3. Lock + switch to the throwaway preset.
+            client.set_lock(sweep_id, owner="bench-context", wait=True)
+            client.set_mode("llm", model=sweep_id, owner="bench-context")
+            log(f"switched to {sweep_id} (ctx={ctx})")
+
+            # 4. Warm-up trigger (drives the swap + load).
+            _chat(proxy, sweep_id, "hi", max_tokens=1, timeout=900)
+
+            for frac in occupancies:
+                tgt = occupancy_target(ctx, frac, gen_tokens)
+                if tgt <= 0:
+                    log(f"  occ={frac}: skipped (no headroom)")
+                    continue
+                filler = fill_to_tokens(tgt, corpus, tokenize_fn)
                 try:
-                    req = urllib.request.Request(f"{proxy}/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        r_data = json.loads(r.read())
-                    t = r_data.get("timings", {})
-                    gen_per_s = t.get("predicted_per_second", 0.0)
-                    
-                    vram = 0
-                    try:
-                        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5)
-                        if out.returncode == 0 and out.stdout.strip():
-                            vram = int(out.stdout.splitlines()[0].strip())
-                    except: pass
-
-                    metrics = {"gen_tok_s": gen_per_s, "vram_mib": vram, "ctx": ctx, "occupancy": occ}
-                    rec = store.make_record("context-occupancy", sweep_id, toml_path, metrics, rid, extra={"gen_tokens": gen_tokens})
-                    store.append(rec)
-                    log(f"  {sweep_id} | occ={occ} | gen={gen_per_s} tok/s | vram={vram} MiB")
+                    resp = _chat(proxy, sweep_id, filler + "\n\n?", gen_tokens, GEN_TIMEOUT)
+                    tg = resp.get("timings", {}).get("predicted_per_second", 0.0)
+                    usage = resp.get("usage", {})
+                    metrics = {
+                        "gen_tok_s": tg, "vram_mib": _vram_mib(),
+                        "ctx": ctx, "occupancy": frac, "slots": slots,
+                        "prompt_tokens": usage.get("prompt_tokens"),
+                        "completion_tokens": usage.get("completion_tokens"),
+                    }
+                    rec = store.make_record("context-occupancy", sweep_id, toml_path, metrics, rid,
+                                            extra={"gen_tokens": gen_tokens})
+                    store.append(rec, store=SWEEP_STORE)
+                    log(f"  occ={frac}: tg={tg} tok/s vram={metrics['vram_mib']} MiB prompt={metrics['prompt_tokens']}")
                 except Exception as e:
-                    log(f"  error: {e}")
-
+                    log(f"  occ={frac}: error {e}")
             client.set_lock(False, owner="bench-context")
-            # We don't unlink the files immediately to allow inspection, but the 'finally' block handles it if error.
-            
         return 0
     except Exception as e:
         log(f"error: {e}")
         return 1
     finally:
-        # Cleanup
-        for f in created_files:
-            if f.exists(): f.unlink()
-        if not dry_run:
-            client.set_lock(False, owner="bench-context")
-            # Rollback switch
+        for f in created:
             try:
-                client.set_mode("llm", model=original_preset)
-            except: pass
+                if f.exists() or f.is_symlink():
+                    f.unlink()
+            except OSError:
+                pass
+        if not dry_run:
+            try:
+                client.set_lock(False, owner="bench-context")
+                client.set_mode("llm", model=preset_name)  # restore
+            except Exception:
+                pass
 
-def tokenize_fn_placeholder(text: str, proxy: str) -> list[str]:
-    """In reality, this calls the proxy. For testing, we can mock it."""
-    try:
-        body = json.dumps({"content": text}).encode()
-        req = urllib.request.Request(f"{proxy}/tokenize", data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read())["tokens"]
-    except:
-        # Fall fallback for test/offline
-        return list(text)
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="llmc bench context")
     p.add_argument("--preset", required=True)
-    p.add_argument("--ctx", type=int, required=True)
-    p.add_argument("--occupancy", type=float, required=True)
+    p.add_argument("--ctx", required=True, help="comma-separated candidate context sizes")
+    p.add_argument("--occupancy", required=True, help="comma-separated occupancy fractions (0..1)")
     p.add_argument("--gen-tokens", type=int, default=200)
-    p.add_argument("--dry-run", action="store_true")
     p.add_argument("--slots", type=int, default=1)
+    p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
-    return run_context_sweep(args.preset, [args.ctx], args.slots, [args.occupancy], args.gen_tokens, args.dry_run)
+    ctx_sizes = [int(x) for x in args.ctx.split(",")]
+    occupancies = [float(x) for x in args.occupancy.split(",")]
+    return run_context_sweep(args.preset, ctx_sizes, args.slots, occupancies, args.gen_tokens, args.dry_run)
+
 
 if __name__ == "__main__":
     sys.exit(main())
