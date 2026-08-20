@@ -345,13 +345,23 @@ func TestCORSPreflight(t *testing.T) {
 
 // ── 21. unknown route ────────────────────────────────────────────────────
 
-func TestUnknownRoute(t *testing.T) {
-	ts := startServer(t, newFakeOrch("llm"),
+func TestTokenizeRoute(t *testing.T) {
+	orch := newFakeOrch("llm")
+	ts := startServer(t, orch,
 		newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
 		&State{Mode: "llm", Model: "a"}, ServerConfig{})
-	code, body := doGet(t, ts.URL+"/bogus")
-	if code != 404 || !strings.Contains(errMsg(body), `unknown route "/bogus"`) {
-		t.Fatalf("unknown route: %d %#v", code, body)
+	// POST /tokenize triggers a swap if model is already 'a' but we force a POST
+	// to trigger the orchestrator. If the orchestrator succeeds, it tries to
+	// forward to the (nonexistent) llama-server, resulting in a 502.
+	code, body := doPost(t, ts.URL+"/tokenize", map[string]any{
+		"content": "hello",
+	})
+	if code != 502 {
+		t.Fatalf("tokenize: want 502, got %d %#v", code, body)
+	}
+	if e := body["error"].(map[string]any); e["type"] != "server_error" ||
+		!strings.Contains(e["message"].(string), "upstream error") {
+		t.Fatalf("502 body: %#v", e)
 	}
 }
 

@@ -394,8 +394,8 @@ func classify(path string) (mode, target string, ok bool) {
 	if strings.HasPrefix(path, "/v1/") {
 		return "llm", path, true
 	}
-	if path == "/metrics" {
-		return "llm", "/metrics", true
+	if path == "/metrics" || path == "/tokenize" || path == "/detokenize" {
+		return "llm", path, true
 	}
 	if strings.HasPrefix(path, "/comfyui") {
 		stripped := strings.TrimPrefix(path, "/comfyui")

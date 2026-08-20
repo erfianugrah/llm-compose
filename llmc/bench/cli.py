@@ -5,9 +5,9 @@ import argparse
 from typing import Optional, Sequence
 
 from llmc.bench import eval as bench_eval
-from llmc.bench import gumshoe, perf, report, tasks, watch
+from llmc.bench import gumshoe, perf, report, tasks, watch, context
 
-NATIVE = {"perf", "report", "watch", "eval", "gumshoe", "tasks"}
+NATIVE = {"perf", "report", "watch", "eval", "gumint", "gumshoe", "tasks", "context"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tasks", help="comma-separated task names (default: all)")
     sp.add_argument("--verify-only", action="store_true",
                     help="run loop verify-sensors per task (canary gate), no model scoring")
+
+    sp = sub.add_parser("context", help="context occupancy sweep")
+    sp.add_argument("--preset", required=True, help="base preset name")
+    sp.add_argument("--ctx", type=int, required=True, help="context size")
+    sp.add_argument("--occupancy", type=float, required=True, help="occupancy fraction (0.0-1.0)")
+    sp.add_argument("--gen-tokens", type=int, default=200, help="generation tokens")
+    sp.add_argument("--dry-run", action="store_true", help="do not modify environment")
+    sp.add_argument("--slots", type=int, default=1, help="parallel slots")
 
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
@@ -76,6 +84,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             runs=args.runs,
             tasks=[t.strip() for t in args.tasks.split(",")] if args.tasks else None,
             verify_only=args.verify_only,
+        )
+    if args.bench_command == "context":
+        return context.run_context_sweep(
+            preset_name=args.preset,
+            ctx_sizes=[args.ctx],
+            slots=args.slots,
+            occupancies=[args.occupancy],
+            gen_tokens=args.gen_tokens,
+            dry_run=args.dry_run,
         )
     if args.bench_command == "watch":
         return watch.run_watch()
