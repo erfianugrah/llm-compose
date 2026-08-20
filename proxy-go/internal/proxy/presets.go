@@ -266,10 +266,14 @@ type PresetStore struct {
 	// Loaded via Reload; guarded by the scheduler loop in practice, but the
 	// HTTP layer reads it concurrently - treated as immutable snapshots.
 	presets map[string]*Preset
+	// ephemeral is the in-memory overlay (registered via the API, e.g. the
+	// context sweep's throwaway presets). Survives Reload (not on disk),
+	// dropped on proxy restart. TOML presets win on model_id collision.
+	ephemeral map[string]*Preset
 }
 
 func NewPresetStore(dir string) (*PresetStore, error) {
-	s := &PresetStore{Dir: dir}
+	s := &PresetStore{Dir: dir, ephemeral: map[string]*Preset{}}
 	return s, s.Reload()
 }
 
@@ -297,30 +301,63 @@ func (s *PresetStore) Reload() error {
 	return nil
 }
 
-// All returns the current snapshot keyed by model ID.
-func (s *PresetStore) All() map[string]*Preset { return s.presets }
+// All returns the current snapshot keyed by model ID (TOML + ephemeral).
+func (s *PresetStore) All() map[string]*Preset {
+	out := make(map[string]*Preset, len(s.presets)+len(s.ephemeral))
+	for k, v := range s.presets {
+		out[k] = v
+	}
+	for k, v := range s.ephemeral {
+		if _, taken := out[k]; !taken { // TOML wins on collision
+			out[k] = v
+		}
+	}
+	return out
+}
 
 // Names returns the sorted model IDs (for startup logging).
 func (s *PresetStore) Names() []string {
-	out := make([]string, 0, len(s.presets))
-	for id := range s.presets {
+	all := s.All()
+	out := make([]string, 0, len(all))
+	for id := range all {
 		out = append(out, id)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// ByName looks up by model ID or preset name (filename stem).
+// ByName looks up by model ID or preset name (filename stem). Ephemeral
+// presets are matched on their explicit Name too.
 func (s *PresetStore) ByName(name string) *Preset {
-	if p, ok := s.presets[name]; ok {
+	all := s.All()
+	if p, ok := all[name]; ok {
 		return p
 	}
-	for _, p := range s.presets {
+	for _, p := range all {
 		if p.Name == name {
 			return p
 		}
 	}
 	return nil
+}
+
+// RegisterEphemeral adds an in-memory preset. Rejects a model_id collision
+// with an existing TOML preset (TOML is authoritative). Idempotent for an
+// identical re-register.
+func (s *PresetStore) RegisterEphemeral(p *Preset) error {
+	if p == nil || p.ModelID() == "" {
+		return presetErr("ephemeral preset needs a model file")
+	}
+	if _, dup := s.presets[p.ModelID()]; dup {
+		return presetErr("model_id %q collides with an on-disk preset", p.ModelID())
+	}
+	s.ephemeral[p.ModelID()] = p
+	return nil
+}
+
+// DeleteEphemeral removes an ephemeral preset by model ID (no-op if absent).
+func (s *PresetStore) DeleteEphemeral(modelID string) {
+	delete(s.ephemeral, modelID)
 }
 
 // Env renders the preset as the environment variables expected by the

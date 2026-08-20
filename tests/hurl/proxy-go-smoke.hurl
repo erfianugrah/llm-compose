@@ -84,3 +84,22 @@ HTTP 200
 [Asserts]
 jsonpath "$.locked" == null
 jsonpath "$.lock_queue" count == 0
+
+# Ephemeral preset registry (Task 4b): register a throwaway, list shows it,
+# delete removes it. Never touches the live models/ dir.
+POST {{base}}/v1/presets
+Content-Type: application/json
+{"name":"smoke-ephemeral","vram_gb":1.0,"model":{"repo":"org/x","file":"smoke-ephemeral.gguf"},"runtime":{"context_size":4096,"parallel_slots":1}}
+HTTP 201
+[Asserts]
+jsonpath "$.registered" == "smoke-ephemeral"
+jsonpath "$.model_id" == "smoke-ephemeral"
+
+# Collision with an on-disk preset is rejected.
+POST {{base}}/v1/presets
+Content-Type: application/json
+{"name":"qwen38-dup","vram_gb":1.0,"model":{"repo":"org/x","file":"Qwen3.8-27B-Q4_K_M.gguf"},"runtime":{"context_size":4096}}
+HTTP 409
+
+DELETE {{base}}/v1/presets/smoke-ephemeral
+HTTP 204

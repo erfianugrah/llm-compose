@@ -144,6 +144,31 @@ def _model_dir() -> Path:
     return reg.device_for("llmc-llama-models")
 
 
+def _register_ephemeral(proxy: str, preset_name: str, base, ctx: int, slots: int) -> None:
+    """Register a throwaway preset with the proxy's ephemeral registry
+    (POST /v1/presets). In-memory only - never touches the live models/ dir."""
+    body = json.dumps({
+        "name": preset_name,
+        "display_name": preset_name,
+        "vram_gb": base.vram_gb,
+        "model": {"repo": base.model.repo, "file": f"{preset_name}.gguf"},
+        "runtime": {"context_size": ctx, "parallel_slots": int(slots)},
+    }).encode()
+    req = urllib.request.Request(
+        f"{proxy}/v1/presets", data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        r.read()
+
+
+def _delete_ephemeral(proxy: str, preset_name: str) -> None:
+    req = urllib.request.Request(f"{proxy}/v1/presets/{preset_name}", method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read()
+    except Exception:
+        pass
+
+
 # ── The sweep ──────────────────────────────────────────────────────────
 
 def run_context_sweep(
@@ -187,22 +212,17 @@ def run_context_sweep(
         for ctx in ctx_sizes:
             sweep_id = f"ctx-sweep-{ctx}"
             gguf_link = model_dir / f"{sweep_id}.gguf"
-            toml_path = MAIN_MODELS_DIR / f"{sweep_id}.toml"
 
-            # 1. Symlink the GGUF (unique stem => unique model_id).
+            # 1. Symlink the GGUF in the models VOLUME (unique stem => unique
+            #    model_id). No TOML is written - the preset is registered with
+            #    the proxy's ephemeral registry instead (no live-dir hazard).
             if gguf_link.exists() or gguf_link.is_symlink():
                 gguf_link.unlink()
             gguf_link.symlink_to(model_dir / base.model.file)
             created.append(gguf_link)
 
-            # 2. Throwaway TOML in the main models dir.
-            toml_path.write_text(
-                f'name = "{sweep_id}"\n'
-                f'description = "ctx sweep throwaway"\n'
-                f'vram_gb = {base.vram_gb}\n'
-                f'[model]\nrepo = "{base.model.repo}"\nfile = "{sweep_id}.gguf"\n'
-                f'[runtime]\ncontext_size = {ctx}\nparallel_slots = {int(slots)}\n')
-            created.append(toml_path)
+            # 2. Register the ephemeral preset with the proxy.
+            _register_ephemeral(proxy, sweep_id, base, ctx, slots)
 
             # 3. Lock + switch to the throwaway preset.
             client.set_lock(sweep_id, owner="bench-context", wait=True)
@@ -228,13 +248,14 @@ def run_context_sweep(
                         "prompt_tokens": usage.get("prompt_tokens"),
                         "completion_tokens": usage.get("completion_tokens"),
                     }
-                    rec = store.make_record("context-occupancy", sweep_id, toml_path, metrics, rid,
+                    rec = store.make_record("context-occupancy", sweep_id, None, metrics, rid,
                                             extra={"gen_tokens": gen_tokens})
                     store.append(rec, store=SWEEP_STORE)
                     log(f"  occ={frac}: tg={tg} tok/s vram={metrics['vram_mib']} MiB prompt={metrics['prompt_tokens']}")
                 except Exception as e:
                     log(f"  occ={frac}: error {e}")
             client.set_lock(False, owner="bench-context")
+            _delete_ephemeral(proxy, sweep_id)
         return 0
     except Exception as e:
         log(f"error: {e}")

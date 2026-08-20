@@ -83,6 +83,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealth(w)
 	case path == "/v1/models" && r.Method == "GET":
 		s.handleModels(w)
+	case path == "/v1/presets" && r.Method == "POST":
+		s.handlePresetRegister(w, r)
+	case strings.HasPrefix(path, "/v1/presets/") && r.Method == "DELETE":
+		s.handlePresetDelete(w, r)
 	case path == "/mode" && r.Method == "GET":
 		s.handleModeGet(w)
 	case path == "/mode" && r.Method == "POST":
@@ -502,6 +506,67 @@ func readBody(r *http.Request) []byte {
 	defer r.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<20))
 	return body
+}
+
+// ephemeralPresetBody is the JSON body for POST /v1/presets.
+type ephemeralPresetBody struct {
+	Name         string   `json:"name"`
+	DisplayName  string   `json:"display_name"`
+	VRAMGB       float64  `json:"vram_gb"`
+	Capabilities []string `json:"capabilities"`
+	Model        struct {
+		Repo string `json:"repo"`
+		File string `json:"file"`
+	} `json:"model"`
+	Runtime struct {
+		ContextSize   int `json:"context_size"`
+		ParallelSlots int `json:"parallel_slots"`
+	} `json:"runtime"`
+}
+
+// handlePresetRegister registers an in-memory (ephemeral) preset - the
+// context sweep's throwaway variants. Never touches disk; dropped on restart.
+func (s *Server) handlePresetRegister(w http.ResponseWriter, r *http.Request) {
+	var b ephemeralPresetBody
+	if err := json.Unmarshal(readBody(r), &b); err != nil {
+		jsonReply(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if b.Name == "" || b.Model.File == "" || b.Model.Repo == "" {
+		jsonReply(w, 422, map[string]any{"error": "name, model.repo and model.file are required"})
+		return
+	}
+	rt := defaultRuntime()
+	if b.Runtime.ContextSize > 0 {
+		rt.ContextSize = b.Runtime.ContextSize
+	}
+	if b.Runtime.ParallelSlots > 0 {
+		rt.ParallelSlots = b.Runtime.ParallelSlots
+	}
+	p := &Preset{
+		Name: b.Name, DisplayName: firstNonEmpty(b.DisplayName, b.Name),
+		VRAMGB: b.VRAMGB, Capabilities: b.Capabilities,
+		Model: ModelSpec{Repo: b.Model.Repo, File: b.Model.File},
+		Runtime: rt,
+	}
+	if err := s.presets.RegisterEphemeral(p); err != nil {
+		jsonReply(w, 409, map[string]any{"error": err.Error()})
+		return
+	}
+	s.log(fmt.Sprintf("ephemeral preset registered: %s (model_id %s)", p.Name, p.ModelID()))
+	jsonReply(w, 201, map[string]any{"registered": p.Name, "model_id": p.ModelID()})
+}
+
+// handlePresetDelete removes an ephemeral preset by model ID.
+func (s *Server) handlePresetDelete(w http.ResponseWriter, r *http.Request) {
+	modelID := strings.TrimPrefix(r.URL.Path, "/v1/presets/")
+	if modelID == "" {
+		jsonReply(w, 400, map[string]any{"error": "model id required"})
+		return
+	}
+	s.presets.DeleteEphemeral(modelID)
+	s.log(fmt.Sprintf("ephemeral preset deleted: %s", modelID))
+	w.WriteHeader(204)
 }
 
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
