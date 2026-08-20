@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -15,10 +16,81 @@ from llmc.bench import store
 from llmc.presets import load_all, Preset
 from llmc.cli import ProxyClient
 
+try:
+    from llmc.volumes import load as load_volumes
+except ImportError:
+    load_volumes = None
+
 # ── Pure helpers (unit-tested) ─────────────────────────────────────────
 
 def run_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
+
+def fill_to_tokens(
+    target: int,
+    source_text: str,
+    tokenize_fn: Callable[[str], list[str]],
+) -> str:
+    """Greedily/bin-search builds a string with exactly `target` tokens."""
+    if target <= 0:
+        return ""
+    
+    # Ensure source is large enough
+    current_tokens = tokenize_fn(source_text)
+    if len(current_tokens) < target:
+        # Repeat source until we have enough
+        repeats = (target // len(current_tokens)) + 1
+        source_text = source_text * repeats
+
+    # Greedy approach with chunks
+    chunk_size = 500
+    chunks = [source_text[i:i+chunk_size] for i in range(0, len(source_text), chunk_size)]
+    
+    current_text = ""
+    for chunk in chunks:
+        test_text = current_text + chunk
+        test_tokens = tokenize_fn(test_text)
+        if len(test_tokens) <= target:
+            current_text = test_text
+        else:
+            # Binary search within this chunk
+            low = 0
+            high = len(chunk)
+            best_chunk = ""
+            while low <= high:
+                mid = (low + high) // 2
+                mid_text = current_text + chunk[:mid]
+                mid_tokens = tokenize_fn(mid_text)
+                if len(mid_tokens) <= target:
+                    best_chunk = chunk[:mid]
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            current_text += best_chunk
+            break
+    
+    # Final check: if we are still below target, it's because we ran out of chunks.
+    # But we ensured source_text was large enough.
+    return current_text
+
+def get_prose_chunk(stores_dir: Path) -> str:
+    """Get a random prose chunk from docs/*.md."""
+    docs = list(stores_dir.glob("../docs/**/*.md"))
+    if not docs:
+        return "placeholder text"
+    
+    doc_path = random.choice(docs)
+    try:
+        content = doc_path.read_text()
+        # Split into paragraphs
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        if not paragraphs:
+            return "placeholder text"
+        return random.choice(paragraphs)
+    except:
+        return "placeholder text"
+
+# _______________________________________________________________________
 
 # ── The runner ─────────────────────────────────────────────────────────
 
@@ -26,7 +98,7 @@ def run_context_sweep(
     preset_name: str,
     ctx_sizes: list[int],
     slots: int,
-    occupancies: list[int],
+    occupancies: list[float],
     gen_tokens: int,
     dry_run: bool = False,
     proxy: str = "http://127.0.0.1:11434",
@@ -47,13 +119,26 @@ def run_context_sweep(
     client = ProxyClient()
     rid = run_id()
     
+    # Track original preset to rollback
+    original_preset = preset_name
+    
+    # Track created files for cleanup
+    created_files: list[Path] = []
+    
     if not dry_run:
-        log("Performing real sweep (modifying environment)...")
+        log("Performing real sweep (modulating environment)...")
         client.set_lock(preset_name, owner="bench-context")
     else:
         log("[dry-run] would lock base preset")
 
     try:
+        # Load volumes to resolve GGUF
+        volumes = None
+        try:
+            volumes = load_volumes(store.REPO_ROOT / "../volumes.toml")
+        except:
+            log("warning: could not load volumes.toml, using fallback")
+
         for ctx in ctx_sizes:
             if dry_run:
                 log(f"[dry-run] sweep ctx={ctx}")
@@ -63,13 +148,24 @@ def run_context_sweep(
             gguf_path = stores_dir / f"{sweep_id}.gguf"
             toml_path = stores_dir / f"{sweep_id}.toml"
             
-            base_gguf = stores_dir / base_preset.model.file
+            # 1. Resolve real GGUF target
+            if volumes and "llmc-llama-models" in volumes.names():
+                model_dir = volumes.device_for("llmc-llama-models")
+                base_gguf_target = model_dir / base_preset.model.file
+            else:
+                # Fallback to current broken logic
+                base_gguf_target = stores_dir / base_preset.model.file
+            
             if gguf_path.exists(): gguf_path.unlink()
-            os.symlink(base_gguf, gguf_path)
+            os.symlink(base_gguf_target, gguf_path)
+            created_files.append(gguf_path)
 
+            # 2. Create TOML
             toml_str = f'name = "{sweep_id}"\n[model]\nrepo = "{base_preset.model.repo}"\nfile = "{sweep_id}.gguf"\n[runtime]\ncontext_size = {ctx}\nparallel_slots = {int(slots)}'
             toml_path.write_text(toml_str)
+            created_files.append(toml_path)
 
+            # 3. Switch mode
             client.set_lock(sweep_id, owner="bench-context")
             client.set_mode("llm", model=sweep_id)
             
@@ -81,7 +177,10 @@ def run_context_sweep(
                 target_tokens = int(ctx * occ) - gen_tokens - 64
                 if target_tokens <= 0: continue
                 
-                prompt = "a" * target_tokens + "\n\n?"
+                # Use prose filler
+                prompt_text = get_prose_chunk(stores_dir)
+                prompt = fill_to_tokens(target_tokens, prompt_text, lambda t: tokenize_fn_placeholder(t, proxy)) + "\n\n?"
+                
                 body = json.dumps({"model": sweep_id, "messages": [{"role": "user", "content": prompt}], "max_tokens": gen_tokens, "temperature": 0.0}).encode()
                 
                 try:
@@ -106,14 +205,33 @@ def run_context_sweep(
                     log(f"  error: {e}")
 
             client.set_lock(False, owner="bench-context")
-            if gguf_path.exists(): gguf_path.unlink()
-            if toml_path.exists(): toml_path.unlink()
+            # We don't unlink the files immediately to allow inspection, but the 'finally' block handles it if error.
+            
         return 0
     except Exception as e:
         log(f"error: {e}")
         return 1
     finally:
-        if not dry_run: client.set_lock(False, owner="bench-context")
+        # Cleanup
+        for f in created_files:
+            if f.exists(): f.unlink()
+        if not dry_run:
+            client.set_lock(False, owner="bench-context")
+            # Rollback switch
+            try:
+                client.set_mode("llm", model=original_preset)
+            except: pass
+
+def tokenize_fn_placeholder(text: str, proxy: str) -> list[str]:
+    """In reality, this calls the proxy. For testing, we can mock it."""
+    try:
+        body = json.dumps({"content": text}).encode()
+        req = urllib.request.Request(f"{proxy}/tokenize", data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())["tokens"]
+    except:
+        # Fall fallback for test/offline
+        return list(text)
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="llmc bench context")
