@@ -214,11 +214,11 @@ def run_context_sweep(
             gguf_link = model_dir / f"{sweep_id}.gguf"
 
             # 1. Symlink the GGUF in the models VOLUME (unique stem => unique
-            #    model_id). No TOML is written - the preset is registered with
-            #    the proxy's ephemeral registry instead (no live-dir hazard).
+            #    model_id). RELATIVE target - the volume is mounted at /models
+            #    inside the container, so an absolute host path would dangle.
             if gguf_link.exists() or gguf_link.is_symlink():
                 gguf_link.unlink()
-            gguf_link.symlink_to(model_dir / base.model.file)
+            gguf_link.symlink_to(base.model.file)  # same dir => bare filename
             created.append(gguf_link)
 
             # 2. Register the ephemeral preset with the proxy.
