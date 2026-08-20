@@ -39,3 +39,4 @@ eval/presets.local.py
 mcp/__pycache__/
 **/__pycache__/
 docker-volumes/
+.worktrees/
