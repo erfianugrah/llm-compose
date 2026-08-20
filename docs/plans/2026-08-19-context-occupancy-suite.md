@@ -141,6 +141,28 @@ state.model dangling).
 - [ ] **Step 2: implement**; run `python3 -m unittest llmc.tests.test_bench_context`.
 - [ ] **Step 3: dry run with one point** (`--ctx 196608 --occupancy 0.25`) to validate end-to-end before the full sweep.
 
+### Task 4b: Ephemeral-preset registry (design fix for the live-dir hazard)
+
+The Task 4 sweep driver writes throwaway `ctx-sweep-<n>.toml` files into the
+live `models/` dir the proxy live-reloads. A proxy reload mid-sweep (or a
+crash between TOML write and symlink creation) can leave a dangling preset
+pointing at a missing GGUF, and the store's duplicate-model_id / missing-file
+validation then fails the whole reload - poisoning `/v1/models` for every
+client. Observed in practice: the 2026-08-19 trial left `ctx-sweep-196608.toml`
+in the live dir and the proxy logged reload failures until it was removed.
+
+Fix: the proxy owns ephemeral presets itself, in memory, never on disk.
+
+**Files:**
+- Modify: `proxy-go/internal/proxy/presets.go` (overlay map), `proxy-go/internal/proxy/server.go` (routes), `proxy-go/internal/proxy/scheduler.go` (no change if the store is the single source - register just adds to the store)
+- Test: `proxy-go/internal/proxy/presets_test.go`, `server_test.go`
+- Modify: `llmc/bench/context.py` (register via API instead of writing TOML)
+
+- [ ] **Step 1: failing tests** - `POST /v1/presets {"preset": {...full preset JSON...}}` -> 201 and the model appears in `GET /v1/models`; a second register with the same model_id -> 409; `DELETE /v1/presets/<model_id>` -> 204 and it's gone; ephemeral presets never appear on disk; a proxy restart drops them (they are not persisted).
+- [ ] **Step 2: implement** - `PresetStore` gains an `ephemeral map[string]*Preset` consulted by `ByName`/`All` after the TOML map (TOML wins on collision -> 409 the register). Routes: `POST /v1/presets` (validate via the same strict rules as LoadPreset - name/vram_gb/model.repo+file/capabilities, GGUF must exist in the models volume), `DELETE /v1/presets/<model_id>`. No TOML file is ever written.
+- [ ] **Step 3:** `llmc bench context` calls register/unregister instead of writing/removing TOMLs. The GGUF symlink in the volume is still needed (the container reads the file); that part stays - only the TOML-in-live-dir hazard is removed.
+- [ ] **Step 4:** `go test ./... -race -count=1` + a hurl entry registering/deleting an ephemeral preset. Rebuild + recreate `model-proxy-go`. Commit.
+
 ### Task 5: Run the full sweep + decide
 
 - [ ] **Step 1:** full sweep as a bg task, not interactively. Realistic estimate 2-4 hours: 4 ctx x 5 occupancies, where each high-occupancy point pays its filler prefill every time (224k tokens at ~400-2000 t/s prefill = 2-9 min per deep point) plus 4 model reloads (~3 min each).
