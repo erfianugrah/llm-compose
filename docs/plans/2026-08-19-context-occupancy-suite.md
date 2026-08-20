@@ -175,6 +175,50 @@ The Go scheduler trusts `state.Model`; if `llama_server` dies out-of-band
 - [ ] **Step 2: implement** - add `NoteUpstreamDead(mode string)` to Scheduler (new loop event): sets `st.Mode = "idle"` (keep `st.Model`), persists, logs. In `server.go` `forwardTo`, call it when `upstreamClient.Do` fails with a connection error (not on upstream 5xx - the container answered then).
 - [ ] **Step 3:** `go test ./... -race -count=1`, rebuild + recreate `model-proxy-go`, commit.
 
+### Task 8b: Lock renewal + expiry visibility (from the dispatch-run postmortem)
+
+Verified by inspection (2026-08-19): `LLMC_LOCK_TTL_S` defaults to 900s in
+`cmd/proxy/main.go` and `llmc lock --help` shows no renew/heartbeat verb.
+The postmortem's scenario follows: a leg running longer than the TTL has the
+lock expire mid-leg and the queue drains unprotected. The owner-refresh on
+granted requests only helps tenants that request continuously.
+
+**Files:**
+- Modify: `proxy-go/internal/proxy/scheduler.go` (renewLock event),
+  `proxy-go/internal/proxy/server.go` (route), `llmc/cli.py` (verb),
+  `llmc/state.py` (expose expires_at in status payload mapping if filtered)
+- Test: `proxy-go/internal/proxy/scheduler_test.go`, `llmc/tests/test_proxy.py`
+
+- [ ] **Step 1: failing tests** - scheduler: lock with TTL 1s, renew at 0.5s, still locked at 1.2s; renew by a non-owner -> 404/409 (decide: 409). CLI test: `lock --renew` maps to POST /mode {"renew": true, "owner": ...}.
+- [ ] **Step 2: implement renew** - scheduler event `evRenew{owner}`: owner in LockOwners (or holding a queue entry) -> LockExpiresAt = now+TTL, persist, 200; else 409. Route: `POST /mode {"renew": true, "owner": X}`. CLI: `llmc lock --renew [--owner id]`.
+- [ ] **Step 3: expiry visibility** - `GET /mode` payload gains `lock_expires_at` (unix) + `lock_ttl_seconds`; `llmc status` prints `Locked: <model> (expires in Ns)`.
+- [ ] **Step 4: hurl smoke entry** - renew flow in `tests/hurl/proxy-go-smoke.hurl` (lock, renew, verify expires_at moved).
+- [ ] **Step 5:** gates + commit.
+
+### Task 8c: Driver hardening lessons (recorded, not llm-compose code)
+
+From the postmortem - apply to the llmc loop harness when next touched
+(NOT this repo's scope today):
+- Treat `exit 0 + empty output` from `pi -p` as failure + one retry (observed:
+  silent NOOP dispatch, empty log, zero changes - mechanism undiagnosed;
+  candidate upstream report: pi -p should non-zero on an empty assistant
+  turn).
+- Lock renewal belongs IN the driver loop (heartbeat per iteration), not a
+  sidecar watchdog - Task 8b provides the verb.
+- Observation to validate in the context suite (Task 5), reported but not
+  measured this session: dispatch throughput per doc was several-fold faster
+  on a fresh llama-server container than a hot one (same model, same prompt
+  shape). No KV/slot metrics captured, so mechanism unknown - add one sweep
+  row measuring tg at container age T vs T+60min under identical occupancy
+  to confirm/deny before adding any periodic recycle knob.
+- Cosmetic: `llmc up` prints a compose "no configuration file provided"
+  error when run outside the repo dir; pipe it through or cd first.
+- Host-level flag (outside this repo): dmesg showed a JBD2 I/O error on sde
+  at boot + repeated loop0 read errors against the Docker Desktop VHDX
+  (pre-dating the resume). One occurrence may be a hard shutdown; if loop0
+  errors recur, decide chkdsk / Docker Desktop reset before the model cache
+  is at risk. Cannot be diagnosed from inside WSL.
+
 ### Task 9: Client verification against the Go proxy
 
 - [ ] **Step 1: bench harness** - `cd ~/infra/ai/llm-compose && export PATH="$PWD/bin:$PATH" && llmc bench perf --presets qwen38 --runs 1`. Verifies the lock/swap path the loop engine depends on. Expected: run completes, result row in `bench/results/runs.jsonl`.
