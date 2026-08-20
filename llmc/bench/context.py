@@ -153,6 +153,7 @@ def _register_ephemeral(proxy: str, preset_name: str, base, ctx: int, slots: int
         "vram_gb": base.vram_gb,
         "model": {"repo": base.model.repo, "file": f"{preset_name}.gguf"},
         "runtime": {"context_size": ctx, "parallel_slots": int(slots)},
+        "inherit_from": base.name,  # inherit full runtime + mmproj + template
     }).encode()
     req = urllib.request.Request(
         f"{proxy}/v1/presets", data=body, headers={"Content-Type": "application/json"})

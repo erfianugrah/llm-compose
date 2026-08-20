@@ -522,6 +522,10 @@ type ephemeralPresetBody struct {
 		ContextSize   int `json:"context_size"`
 		ParallelSlots int `json:"parallel_slots"`
 	} `json:"runtime"`
+	// Base preset to inherit the full runtime from (sampling, spec decode,
+	// reasoning, etc.) with context_size/parallel_slots overridden. Set by the
+	// sweep so the variant runs the base's real config, not bare defaults.
+	InheritFrom string `json:"inherit_from"`
 }
 
 // handlePresetRegister registers an in-memory (ephemeral) preset - the
@@ -537,6 +541,11 @@ func (s *Server) handlePresetRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt := defaultRuntime()
+	if b.InheritFrom != "" {
+		if bp := s.presets.ByName(b.InheritFrom); bp != nil {
+			rt = bp.Runtime // inherit full runtime (sampling, spec, reasoning)
+		}
+	}
 	if b.Runtime.ContextSize > 0 {
 		rt.ContextSize = b.Runtime.ContextSize
 	}
@@ -548,6 +557,18 @@ func (s *Server) handlePresetRegister(w http.ResponseWriter, r *http.Request) {
 		VRAMGB: b.VRAMGB, Capabilities: b.Capabilities,
 		Model: ModelSpec{Repo: b.Model.Repo, File: b.Model.File},
 		Runtime: rt,
+	}
+	if b.InheritFrom != "" {
+		if bp := s.presets.ByName(b.InheritFrom); bp != nil {
+			p.MMProj = bp.MMProj     // vision asset
+			p.Template = bp.Template // chat template
+			if p.VRAMGB == 0 {
+				p.VRAMGB = bp.VRAMGB
+			}
+			if len(p.Capabilities) == 0 {
+				p.Capabilities = bp.Capabilities
+			}
+		}
 	}
 	if err := s.presets.RegisterEphemeral(p); err != nil {
 		jsonReply(w, 409, map[string]any{"error": err.Error()})
