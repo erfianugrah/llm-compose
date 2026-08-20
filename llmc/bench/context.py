@@ -82,9 +82,11 @@ def occupancy_target(ctx: int, frac: float, gen_tokens: int) -> int:
 # ── Corpus ─────────────────────────────────────────────────────────────
 
 def build_corpus(tokenize_fn: Callable[[str], list], min_tokens: int, log) -> str:
-    """Rotating prose from docs/*.md, grown until it tokenizes to >= min_tokens.
+    """Rotating prose from docs/*.md, grown until it reaches >= min_tokens.
 
-    Real prose (not repeated single chars) so prefill exercises real attention.
+    Tokenizes each appended chunk once and tracks a running total (linear),
+    rather than re-tokenizing the whole growing corpus each step (quadratic -
+    that made a 235k-token corpus take many minutes).
     """
     paragraphs: list[str] = []
     for doc in sorted(MAIN_MODELS_DIR.parent.glob("docs/**/*.md")):
@@ -95,10 +97,13 @@ def build_corpus(tokenize_fn: Callable[[str], list], min_tokens: int, log) -> st
     if not paragraphs:
         paragraphs = ["The quick brown fox jumps over the lazy dog."] * 100
     rng = random.Random(42)
-    corpus = ""
-    while len(tokenize_fn(corpus)) < min_tokens:
-        corpus += rng.choice(paragraphs) + "\n\n"
-    return corpus
+    parts: list[str] = []
+    total = 0
+    while total < min_tokens:
+        chunk = rng.choice(paragraphs) + "\n\n"
+        total += len(tokenize_fn(chunk))
+        parts.append(chunk)
+    return "".join(parts)
 
 
 # ── Proxy / tokenizer plumbing ─────────────────────────────────────────
