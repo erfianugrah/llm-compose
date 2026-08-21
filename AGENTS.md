@@ -75,13 +75,15 @@ make test-integration   # + GPU end-to-end (~90s, stack up + GPU)
 ## Architecture (v2)
 
 ```
-OpenCode / Open WebUI
+OpenCode / Open WebUI / pi / Claude Code
        |
-  llmc-proxy :11434  ─── Python proxy, Docker SDK orchestrator
+  model-proxy-go :11434  --- Go proxy, scheduler event loop (proxy-go/)
        |
-       ├── /v1/*         → llama-server :8080   (LLM, GPU exclusive)
-       ├── /comfyui/*    → comfyui :8188        (image/video, GPU exclusive)
-       └── /train/*      → lora-train :8787     (LoRA training, GPU exclusive)
+       |-- /v1/*         -> llama-server :8080   (LLM, GPU exclusive)
+       |-- /v1/messages  -> Anthropic shim (Claude Code)
+       |-- /v1/presets   -> ephemeral preset registry (context sweep)
+       |-- /comfyui/*    -> comfyui :8188        (image/video, GPU exclusive)
+       |-- /train/*      -> lora-train :8787     (LoRA training, GPU exclusive)
 
   Only ONE of llama-server, comfyui, lora-train runs at a time.
   Proxy spawns GPU services via Docker Engine API (no compose for them).
@@ -90,8 +92,13 @@ OpenCode / Open WebUI
 ```
 
 Two services live in compose.yaml:
-- `model-proxy` (port 11434, static IP 172.29.0.4)
+- `model-proxy-go` (port 11434, static IP 172.29.0.4)
 - `open-webui` (port 3000)
+
+`model-proxy` (the legacy Python proxy) is behind the `rollback` profile -
+not started by `make up`. Rollback: swap the published ports
+(11434 <-> 11436), `docker compose --profile rollback up -d model-proxy`,
+restart webui.
 
 GPU services live OUTSIDE compose. The proxy spawns them via Docker SDK
 in `llmc/orchestrator.py` and labels them with `llmc.mode` so it can
@@ -397,9 +404,9 @@ networks:
     name: llmc
 ```
 
-The bot service then sets `LLM_API_URL=http://model_proxy:11434/v1`
+The bot service then sets `LLM_API_URL=http://model_proxy_go:11434/v1`
 (plus `LLM_VISION_API_URL` / `LLM_TEXT_API_URL`) and reaches the proxy by
-hostname over the shared network. Whisper uses the `model_proxy` form (the
+hostname over the shared network. Whisper uses the `model_proxy_go` form (the
 `container_name`); the compose service name `model-proxy` also resolves via
 Docker DNS, so either works.
 
@@ -417,7 +424,7 @@ side flags it. Confirm advertised IDs with `llmc models` after any edit.
 `external:` on this side; whisper marks it external). `make down` runs
 `docker compose down`, which tries to delete the network whisper is still
 attached to — the delete errors with "active endpoints" and the proxy
-container disappears regardless, so whisper loses `model_proxy` resolution.
+container disappears regardless, so whisper loses `model_proxy_go` resolution.
 Stop whisper first, or expect its bot to throw connection errors until the
 proxy is back up.
 

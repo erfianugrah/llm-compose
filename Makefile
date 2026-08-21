@@ -85,7 +85,7 @@ clean: down
 
 ## Follow proxy logs
 logs-proxy:
-	docker logs -f --tail=100 model_proxy
+	docker logs -f --tail=100 model_proxy_go
 
 ## Follow Open WebUI logs
 logs-webui:

@@ -166,7 +166,7 @@ affected component (`proxy:`, `cli:`, `comfyui:`, `train:`, `docs:`,
 Useful issue includes:
 - `llmc status` output
 - GPU model + driver version (`nvidia-smi`)
-- Relevant log excerpts (`docker logs model_proxy --tail 100`)
+- Relevant log excerpts (`docker logs model_proxy_go --tail 100`)
 - The active preset (visible in `llmc status`)
 - Reproduction steps
 

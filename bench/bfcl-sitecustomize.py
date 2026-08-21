@@ -5,7 +5,7 @@ hard KeyError for unknown names, and bfcl-eval 2026.3.23 ships no generic
 "local OpenAI endpoint" entry. run-evals.py sets BFCL_LOCAL_MODELS to the
 GGUF-stem model id it is about to benchmark; this shim maps each listed id to
 the OpenAICompletionsHandler (which reads OPENAI_API_KEY / OPENAI_BASE_URL),
-so any OpenAI-compatible local endpoint (llama-server via model_proxy) works.
+so any OpenAI-compatible local endpoint (llama-server via model_proxy_go) works.
 
 Installed into the bfcl venv's site-packages by Dockerfile.eval - Python
 auto-imports sitecustomize at startup, so both `bfcl generate` and
