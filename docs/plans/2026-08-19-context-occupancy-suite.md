@@ -163,7 +163,22 @@ Fix: the proxy owns ephemeral presets itself, in memory, never on disk.
 - [ ] **Step 3:** `llmc bench context` calls register/unregister instead of writing/removing TOMLs. The GGUF symlink in the volume is still needed (the container reads the file); that part stays - only the TOML-in-live-dir hazard is removed.
 - [ ] **Step 4:** `go test ./... -race -count=1` + a hurl entry registering/deleting an ephemeral preset. Rebuild + recreate `model-proxy-go`. Commit.
 
-### Task 5: Run the full sweep + decide
+### Task 5: Run the full sweep + decide (DONE 2026-08-20)
+
+Sweep ran through the ephemeral registry (Task 4b) - no live-dir writes.
+Results in bench/results/context-runs.jsonl:
+
+| ctx (1 slot) | tg tok/s @ occ 0.25 / 0.9 | verdict |
+|---|---|---|
+| 196608 | 59.8 / 42.2 | usable, degrades gracefully |
+| 229376 | 4.07 / 3.92 | 14x collapse, flat across occupancy |
+| 245760 | 0.31 / - | worse |
+
+DECISION: 196608 x 1 slot is the hard ceiling and the adopted config. The
+cliff is structural (kernel/graph) past 196608 - flat across occupancy and
+VRAM is equal (~31.8GB) at 196608 and 229376, so it is neither occupancy-
+nor VRAM-driven. (The 262144 point was killed early; 2026-08-19 spike
+already showed 0.37 t/s there.)
 
 - [ ] **Step 1:** full sweep as a bg task, not interactively. Realistic estimate 2-4 hours: 4 ctx x 5 occupancies, where each high-occupancy point pays its filler prefill every time (224k tokens at ~400-2000 t/s prefill = 2-9 min per deep point) plus 4 model reloads (~3 min each).
 - [ ] **Step 2:** decide final `context_size`: the largest ctx whose tg stays >= 20 t/s at 0.90 occupancy AND >= 40 t/s at 0.50 occupancy (floors from the 196608 baseline of 67 t/s; adjust if the baseline itself degrades at occupancy - that is a finding too).

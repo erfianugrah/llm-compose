@@ -9,10 +9,13 @@ Sampling = model card thinking-mode recommendation
 (temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0).
 
 context_size set from P0 spike (2026-08-15): 196608 x 2 slots fits
-# 2026-08-19 spike: 262144 (native max) x 1 slot is pathological -
-# 0.37 t/s gen, 0.88 t/s prefill from a FRESH container (cliff is in
-# ctx size, not usage; 97% VRAM). 196608 x 1 slot: 67 t/s, 29.4GB -
-# double per-conversation ctx vs 2 slots, no parallel generation.
+# 2026-08-20 occupancy sweep (llmc bench context, real KV fill, 1 slot):
+# 196608 is the HARD ceiling. tg tok/s by occupancy (0.25/0.5/0.75/0.9):
+#   196608 -> 59.8 / 46.9 / 42.5 / 42.2   (usable, degrades gracefully)
+#   229376 -> 4.07 / 4.04 / 4.02 / 3.92   (14x collapse, flat across occ)
+#   245760 -> 0.31 / 0.38 (worse)
+# Structural kernel/graph limit past 196608, NOT occupancy- or VRAM-driven
+# (vram ~31.8GB at both 196608 and 229376). Kept at 196608 x 1 slot.
 # (re-verified with MTP on in the P4 spike: 31948 MiB)
 at 31153 MiB (2x98304 effective per slot, ~1.4 GB headroom).
 Arch support on llama.cpp b10362 confirmed; vision smoke passed.
