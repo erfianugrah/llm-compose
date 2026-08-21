@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or implement this plan task-by-task in-session. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status (2026-08-21): COMPLETE.** Every task landed; the only open item is the deferred retirement of `llmc/proxy.py` + the rollback service after 2-4 weeks of stable Go-proxy operation (decision window ~2026-09-04 to 09-18). Task 8c's driver-hardening lessons are loop-harness scope, not this repo.
+
 **Goal:** empirically determine the maximum usable per-slot context for qwen38 (and any future preset) by measuring generation throughput at real KV occupancy - not at empty-prompt allocation - and land the remaining proxy-v2 cutover followups.
 
 **Architecture:** a new `llmc bench context` subcommand (Python, `llmc/bench/context.py`) drives occupancy sweeps through the Go proxy: stuff the KV to a target fraction of `context_size` with a deterministic filler corpus (sized via llama-server's `/tokenize`), then measure generation `predicted_per_second` from the response's `timings` object. Results append to `bench/results/runs.jsonl` under tag `context-occupancy`, following the bench-store conventions.
@@ -47,12 +49,12 @@ Open questions the suite answers:
 **Files:**
 - Modify: none (verification only)
 
-- [ ] **Step 1: Confirm `models/qwen38.toml` has `context_size = 196608` and `parallel_slots = 1`**
+- [x] **Step 1: Confirm `models/qwen38.toml` has `context_size = 196608` and `parallel_slots = 1`** (confirmed; TOML comment carries the sweep table)
 
 Run: `rg -n 'context_size|parallel_slots' ~/infra/ai/llm-compose/models/qwen38.toml`
 Expected: `context_size = 196608`, `parallel_slots = 1`
 
-- [ ] **Step 2: Trigger respawn and verify**
+- [x] **Step 2: Trigger respawn and verify**
 
 ```bash
 curl -s --max-time 880 http://127.0.0.1:11434/v1/chat/completions -H 'Content-Type: application/json' \
@@ -66,14 +68,14 @@ Expected: n_ctx = 196608.
 **Files:**
 - Modify: `proxy-go/internal/proxy/server.go` (only if needed)
 
-- [ ] **Step 1: Probe through the proxy**
+- [x] **Step 1: Probe through the proxy** (`/tokenize` + `/detokenize` routed through the proxy, server.go classify)
 
 ```bash
 curl -s -X POST http://127.0.0.1:11434/tokenize -H 'Content-Type: application/json' -d '{"content":"hello world"}' | head -c 200
 ```
 Expected: either a token list (routed) or 404 unknown route.
 
-- [ ] **Step 2: If 404, add `/tokenize` + `/detokenize` to the llm routes in `classify()` in `proxy-go/internal/proxy/server.go`:**
+- [x] **Step 2: If 404, add `/tokenize` + `/detokenize` to the llm routes in `classify()` in `proxy-go/internal/proxy/server.go`:** (added)
 
 ```go
 if path == "/tokenize" || path == "/detokenize" {
@@ -88,7 +90,7 @@ Add a unit test in `proxy-go/internal/proxy/server_test.go`: `POST /tokenize` wi
 **Files:**
 - Create: `llmc/bench/context.py`
 
-- [ ] **Step 1: Write the failing test** (`llmc/tests/test_bench_context.py`):
+- [x] **Step 1: Write the failing test** (`llmc/tests/test_bench_context.py`):
 
 ```python
 def test_fill_to_tokens_sizes_exactly():
@@ -98,7 +100,7 @@ def test_fill_to_tokens_sizes_exactly():
     assert len(tok(out)["tokens"]) == 1000
 ```
 
-- [ ] **Step 2: Implement `fill_to_tokens(target, source, tokenize)`** in `llmc/bench/context.py`: greedily append chunks of `source` (binary-search the final chunk) until the tokenized length == target. Filler source: a repeated, non-degenerate paragraph (rotate a few paragraphs from the repo's own docs to avoid the model collapsing into repetition loops).
+- [x] **Step 2: Implement `fill_to_tokens(target, source, tokenize)`** in `llmc/bench/context.py`: greedily append chunks of `source` (binary-search the final chunk) until the tokenized length == target. Filler source: a repeated, non-degenerate paragraph (rotate a few paragraphs from the repo's own docs to avoid the model collapsing into repetition loops).
 
 ### Task 4: The sweep driver
 
@@ -137,9 +139,9 @@ symlink. After the whole sweep: `llmc switch qwen38` to restore the parked
 config (deleting the active throwaway preset without switching back leaves
 state.model dangling).
 
-- [ ] **Step 1: failing test** - result envelope matches the bench store schema (mirror `test_bench.py` conventions; read it first).
-- [ ] **Step 2: implement**; run `python3 -m unittest llmc.tests.test_bench_context`.
-- [ ] **Step 3: dry run with one point** (`--ctx 196608 --occupancy 0.25`) to validate end-to-end before the full sweep.
+- [x] **Step 1: failing test** - result envelope matches the bench store schema.
+- [x] **Step 2: implement**; `llmc/bench/context.py` landed (16 tokenize/sweep refs), unittest green.
+- [x] **Step 3: dry run with one point** (validated before the full sweep).
 
 ### Task 4b: Ephemeral-preset registry (design fix for the live-dir hazard)
 
@@ -158,10 +160,10 @@ Fix: the proxy owns ephemeral presets itself, in memory, never on disk.
 - Test: `proxy-go/internal/proxy/presets_test.go`, `server_test.go`
 - Modify: `llmc/bench/context.py` (register via API instead of writing TOML)
 
-- [ ] **Step 1: failing tests** - `POST /v1/presets {"preset": {...full preset JSON...}}` -> 201 and the model appears in `GET /v1/models`; a second register with the same model_id -> 409; `DELETE /v1/presets/<model_id>` -> 204 and it's gone; ephemeral presets never appear on disk; a proxy restart drops them (they are not persisted).
-- [ ] **Step 2: implement** - `PresetStore` gains an `ephemeral map[string]*Preset` consulted by `ByName`/`All` after the TOML map (TOML wins on collision -> 409 the register). Routes: `POST /v1/presets` (validate via the same strict rules as LoadPreset - name/vram_gb/model.repo+file/capabilities, GGUF must exist in the models volume), `DELETE /v1/presets/<model_id>`. No TOML file is ever written.
-- [ ] **Step 3:** `llmc bench context` calls register/unregister instead of writing/removing TOMLs. The GGUF symlink in the volume is still needed (the container reads the file); that part stays - only the TOML-in-live-dir hazard is removed.
-- [ ] **Step 4:** `go test ./... -race -count=1` + a hurl entry registering/deleting an ephemeral preset. Rebuild + recreate `model-proxy-go`. Commit.
+- [x] **Step 1: failing tests** - `POST /v1/presets {"preset": {...full preset JSON...}}` -> 201 and the model appears in `GET /v1/models`; a second register with the same model_id -> 409; `DELETE /v1/presets/<model_id>` -> 204 and it's gone; ephemeral presets never appear on disk; a proxy restart drops them (they are not persisted).
+- [x] **Step 2: implement** - `PresetStore` gains an `ephemeral map[string]*Preset` consulted by `ByName`/`All` after the TOML map (TOML wins on collision -> 409 the register). Routes: `POST /v1/presets` (validate via the same strict rules as LoadPreset - name/vram_gb/model.repo+file/capabilities, GGUF must exist in the models volume), `DELETE /v1/presets/<model_id>`. No TOML file is ever written.
+- [x] **Step 3:** `llmc bench context` calls register/unregister instead of writing/removing TOMLs. The GGUF symlink in the volume is still needed (the container reads the file); that part stays - only the TOML-in-live-dir hazard is removed.
+- [x] **Step 4:** `go test ./... -race -count=1` + hurl entry (ephemeral registry block in proxy-go-smoke.hurl). Rebuilt + recreated + committed (2dee98c).
 
 ### Task 5: Run the full sweep + decide (DONE 2026-08-20)
 
@@ -180,10 +182,10 @@ VRAM is equal (~31.8GB) at 196608 and 229376, so it is neither occupancy-
 nor VRAM-driven. (The 262144 point was killed early; 2026-08-19 spike
 already showed 0.37 t/s there.)
 
-- [ ] **Step 1:** full sweep as a bg task, not interactively. Realistic estimate 2-4 hours: 4 ctx x 5 occupancies, where each high-occupancy point pays its filler prefill every time (224k tokens at ~400-2000 t/s prefill = 2-9 min per deep point) plus 4 model reloads (~3 min each).
-- [ ] **Step 2:** decide final `context_size`: the largest ctx whose tg stays >= 20 t/s at 0.90 occupancy AND >= 40 t/s at 0.50 occupancy (floors from the 196608 baseline of 67 t/s; adjust if the baseline itself degrades at occupancy - that is a finding too).
-- [ ] **Step 3:** if 262144 fails, capture `docker logs llama_server` for the failing run (look for CUDA graph capture failures / MTP acceptance rates) and record the mechanism in the TOML comment.
-- [ ] **Step 4:** set `models/qwen38.toml` to the winner with the spike table in the comment; commit.
+- [x] **Step 1:** full sweep ran (a4ee53d): 196608 -> 59.8/46.9/42.5/42.2 t/s at 0.25/0.5/0.75/0.9; 229376 -> 4 t/s (14x collapse); 245760 -> 0.31. Realistic estimate 2-4 hours: 4 ctx x 5 occupancies, where each high-occupancy point pays its filler prefill every time (224k tokens at ~400-2000 t/s prefill = 2-9 min per deep point) plus 4 model reloads (~3 min each).
+- [x] **Step 2:** decided: 196608 x 1 slot (structural ceiling past it, not occupancy/VRAM). the largest ctx whose tg stays >= 20 t/s at 0.90 occupancy AND >= 40 t/s at 0.50 occupancy (floors from the 196608 baseline of 67 t/s; adjust if the baseline itself degrades at occupancy - that is a finding too).
+- [x] **Step 3:** collapse mechanism recorded in the qwen38.toml comment. for the failing run (look for CUDA graph capture failures / MTP acceptance rates) and record the mechanism in the TOML comment.
+- [x] **Step 4:** `models/qwen38.toml` carries context_size = 196608 with the spike table (a51db69).
 
 ### Task 6: compose rollback profile
 
@@ -273,7 +275,7 @@ From the postmortem - apply to the llmc loop harness when next touched
 
 ### Task 11: Final gates + commit
 
-- [ ] `cd proxy-go && go test ./... -race -count=1`
-- [ ] `hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl` (now 17 requests)
-- [ ] `python3 -m unittest discover llmc.tests`
-- [ ] Commit llm-compose + dotfiles; commit messages per repo conventions (no AI attribution).
+- [x] `cd proxy-go && go test ./... -race -count=1` (17.8s green)
+- [x] `hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl` (17/17)
+- [x] `python3 -m unittest discover llmc.tests` (175 OK, 21 skipped)
+- [x] Committed llm-compose (551a10f, pushed) + dotfiles (61ea33c); image re-pushed (llmc-proxy-go:v1).

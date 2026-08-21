@@ -179,6 +179,13 @@ class TestParser(unittest.TestCase):
         ns = self.parser.parse_args(["--json", "status"])
         self.assertTrue(ns.json)
 
+    def test_lock_renew_flag_parses(self):
+        ns = self.parser.parse_args(["lock", "--renew", "--owner", "sess-1"])
+        self.assertEqual(ns.command, "lock")
+        self.assertTrue(ns.renew)
+        self.assertIsNone(ns.preset)
+        self.assertEqual(ns.owner, "sess-1")
+
 
 class TestStatusCommand(unittest.TestCase):
     def test_status_proxy_unreachable(self):

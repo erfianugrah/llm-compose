@@ -141,6 +141,10 @@ to `llmc-state` named volume so a proxy restart recovers cleanly.
 GET requests do NOT trigger auto-swap (read-only status polls can't
 accidentally stop the running service).
 
+If the active GPU service dies out-of-band (crash/OOM/`docker kill`), the
+proxy flips to `idle` on the first failed request and the next request
+respawns it automatically (no 502-loop, no proxy restart needed).
+
 ### Named volumes
 
 All data lives in named Docker volumes backed by host bind paths. See
@@ -163,6 +167,12 @@ llmc health                proxy health check
 llmc mode <m>              get / set GPU mode (llm | comfyui | train)
 llmc switch <preset>       hot-swap LLM model
 llmc models                list TOML presets
+
+llmc lock <preset> --owner <id> [--wait]   pin a preset against evicting swaps
+                           (--wait joins the FIFO queue on contention instead of 409)
+llmc lock --renew [--owner id]             heartbeat the lock TTL (900s; a leg
+                           that makes no requests for >TTL lapses without this)
+llmc unlock [--owner id]   release one owner; ownerless = force-clear all
 
 llmc up / down             stack lifecycle (or use `make up`/`down` for speed)
 llmc setup                 first-time: generate .env, create volumes
