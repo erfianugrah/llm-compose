@@ -163,6 +163,14 @@ class ProxyClient:
             body["wait"] = True
         return self._request("POST", "/mode", body=body, timeout=30)
 
+    def renew_lock(self, owner: Optional[str] = None) -> tuple[int, dict]:
+        """Heartbeat the lock TTL for an existing owner (or keep a queued
+        waiter's FIFO entry alive). 409 when the owner holds nothing."""
+        body = {"renew": True}
+        if owner:
+            body["owner"] = owner
+        return self._request("POST", "/mode", body=body, timeout=30)
+
 
 # ── Docker CLI wrappers (host-side, no SDK dep) ────────────────────────
 
@@ -217,6 +225,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     if locked:
         owners = mode_payload.get("lock_owners")
         lock_info = f"{locked} (owners: {', '.join(owners)})" if owners else str(locked)
+        expires_at = mode_payload.get("lock_expires_at")
+        if expires_at:
+            remaining = int(expires_at - time.time())
+            if remaining >= 0:
+                lock_info += f", expires in {remaining}s"
+            else:
+                lock_info += ", TTL lapsed (clears on next request)"
     _print_kv([
         ("Proxy:", f"{client.host}:{client.port}"),
         ("Health:", health_payload.get("status", "?")),
@@ -308,8 +323,32 @@ def cmd_lock(args: argparse.Namespace) -> int:
     A contended lock (another model pinned by live owners) is never hijacked:
     without --wait this fails fast with 409; with --wait it joins the proxy's
     FIFO queue and polls until the current owners drain and the grant lands.
+    --renew heartbeats the TTL for a lock you already hold.
     """
     client = ProxyClient()
+    if args.renew:
+        if args.preset:
+            _err("--renew takes no preset (it heartbeats the lock you already hold)")
+            return EXIT_USER_ERROR
+        try:
+            status, payload = client.renew_lock(owner=args.owner)
+        except (OSError, http.client.HTTPException) as exc:
+            _err(f"Proxy unreachable: {exc}")
+            return EXIT_TRANSIENT
+        if status == 200:
+            if args.json:
+                _print_json(payload)
+            else:
+                expires_at = payload.get("lock_expires_at")
+                ttl = f" (expires in {int(expires_at - time.time())}s)" if expires_at else ""
+                if payload.get("queued"):
+                    print(f"Queue entry renewed: position {payload.get('position')} "
+                          f"(waiting on {payload.get('locked')})")
+                else:
+                    print(f"Lock renewed: {payload.get('locked')}{ttl}")
+            return EXIT_OK
+        _err(f"Renew failed ({status}): {payload.get('error', payload)}")
+        return EXIT_BACKEND_ERROR
     lock_val = args.preset if args.preset else True
     deadline = (time.monotonic() + args.wait_timeout) if args.wait_timeout else None
     last_line = None
@@ -1100,6 +1139,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "and wait for the grant instead of failing (409)")
     sp.add_argument("--wait-timeout", type=float, default=0, metavar="SECONDS",
                     help="give up waiting after N seconds (default: wait forever)")
+    sp.add_argument("--renew", action="store_true",
+                    help="heartbeat the lock TTL for a lock you already hold "
+                         "(or keep your FIFO queue entry alive)")
     sp.set_defaults(func=cmd_lock)
 
     sp = sub.add_parser("unlock", help="clear the model lock (also drops your queue entry)")

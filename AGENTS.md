@@ -41,6 +41,10 @@ llmc lock [preset] [--owner id] [--wait]  # pin a preset: refuse GPU-evicting sw
 #   on first request after the grant). A contended lock NEVER hijacks the
 #   running model (pre-2026-08-17 it did - that bug killed a loop mid-iteration).
 llmc unlock [--owner id]        # release one owner (also drops its queue entry); no owner = force-clear all
+llmc lock --renew [--owner id]  # heartbeat the lock TTL (LLMC_LOCK_TTL_S, 900s). Grants under the
+#   lock refresh the TTL on their own; a leg that makes NO requests for >TTL (long local
+#   thinking, waiting in the FIFO queue) lapses the lock without this. `llmc status` and
+#   GET /mode show lock_expires_at.
 # Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); loops on DIFFERENT presets queue with --wait. When looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
 llmc mode <m>           # llm | comfyui | train
 llmc models             # list TOML presets
@@ -189,6 +193,21 @@ force-clears everything (admin escape hatch). `GET /mode` and
 (`loop` runs `parallel_slots = 2`, 2x98K ctx), one git worktree per
 loop when looping the same repo, and never let a loop's sensors
 rebuild/restart the stack that serves them.
+
+The lock has a TTL (`LLMC_LOCK_TTL_S`, default 900s) so a crashed
+consumer can't pin the GPU forever: every granted request under the
+lock refreshes it, and `llmc lock --renew` (POST /mode `{"renew": true,
+"owner": X}`) extends it explicitly - heartbeat this from any leg that
+goes >TTL without a request (2026-08-19 postmortem: a 30-min leg found
+the lock silently lapsed). Renewing a queued wait works too (keeps the
+FIFO entry alive). `GET /mode` / `llmc status` show `lock_expires_at`.
+
+**Liveness recovery (2026-08-21):** a connection-level upstream death
+(container crash/OOM/kill out-of-band) flips the proxy to `idle`
+(keeping the model name); the next acquire respawns instead of
+502-looping. Reports from grants on a since-swapped-away model are
+ignored as stale. Verified live: `docker kill llama_server` -> 502 +
+mode idle -> next request respawned + served in ~7s.
 
 Contended lock requests QUEUE instead of hijacking (2026-08-17): a
 `lock M` while another preset is pinned fails fast with 409, or with

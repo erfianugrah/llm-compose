@@ -60,13 +60,15 @@ type QueuePayload struct {
 }
 
 type StatusSnapshot struct {
-	Mode       string
-	Switching  bool
-	Model      string
-	Locked     string
-	LockOwners []string
-	LockQueue  []QueuePayload
-	Inflight   map[string]int
+	Mode          string
+	Switching     bool
+	Model         string
+	Locked        string
+	LockOwners    []string
+	LockQueue     []QueuePayload
+	LockExpiresAt int64 // unix seconds; 0 when unlocked
+	LockTTLSec    int64
+	Inflight      map[string]int
 }
 
 // ── events ──────────────────────────────────────────────────────────
@@ -84,6 +86,18 @@ type evDrainTimeout struct{ gen int64 }
 type evSwapDone struct {
 	gen int64
 	err error
+}
+
+// evUpstreamDead reports that the upstream backing a granted request died at
+// the connection level (container crash/OOM/kill out-of-band).
+type evUpstreamDead struct {
+	mode string
+	key  string // in-flight key the request was granted under (model name / mode)
+}
+
+type evRenew struct {
+	owner string
+	reply chan LockResult
 }
 
 type evLock struct {
@@ -210,6 +224,10 @@ func (s *Scheduler) handle(ev any) {
 		}
 	case *evSwapDone:
 		s.handleSwapDone(e)
+	case *evUpstreamDead:
+		s.handleUpstreamDead(e)
+	case *evRenew:
+		s.handleRenew(e)
 	case *evLock:
 		s.handleLock(e)
 	case *evUnlock:
@@ -256,6 +274,20 @@ func (s *Scheduler) Unlock(owner string) LockResult {
 	ev := &evUnlock{owner: owner, reply: make(chan LockResult, 1)}
 	s.events <- ev
 	return <-ev.reply
+}
+
+// RenewLock extends the lock TTL for an existing owner (or keeps a queued
+// waiter's FIFO entry alive). 409 when the owner holds nothing.
+func (s *Scheduler) RenewLock(owner string) LockResult {
+	ev := &evRenew{owner: owner, reply: make(chan LockResult, 1)}
+	s.events <- ev
+	return <-ev.reply
+}
+
+// NoteUpstreamDead reports a connection-level upstream death for a granted
+// request. Fire-and-forget; the loop decides whether state needs flipping.
+func (s *Scheduler) NoteUpstreamDead(mode, key string) {
+	s.events <- &evUpstreamDead{mode: mode, key: key}
 }
 
 func (s *Scheduler) Status() StatusSnapshot {
@@ -622,6 +654,77 @@ func (s *Scheduler) handleAbandon(ev *evAcquire) {
 	}
 }
 
+// ── upstream liveness recovery ──────────────────────────────────────
+
+// handleUpstreamDead flips the proxy back to idle when the upstream backing
+// the current mode died out-of-band (container crash/OOM/kill), so the next
+// acquire respawns it instead of 502-looping against a corpse. The model
+// name is kept so the follow-up acquire knows what to respawn.
+//
+// Two staleness guards: a death report from a grant on a model that is no
+// longer resident (drained by a completed swap) is ignored, and a report
+// arriving while a swap is pending is ignored (the swap's completion
+// reconciles state either way).
+func (s *Scheduler) handleUpstreamDead(e *evUpstreamDead) {
+	if s.st.Mode != e.mode {
+		return // a swap already moved us on; nothing to recover
+	}
+	if s.pending != nil {
+		return // a swap is draining/running; its completion reconciles state
+	}
+	if e.mode == "llm" && e.key != "" && e.key != "llm" && s.st.Model != "" && e.key != s.st.Model {
+		return // the dead upstream belonged to a previous model (stale grant)
+	}
+	s.logf("upstream for mode %q reported dead; marking idle (model %q kept) so the next acquire respawns",
+		e.mode, s.st.Model)
+	s.st.Mode = "idle"
+	s.persist()
+}
+
+// ── lock renewal ────────────────────────────────────────────────────
+
+// handleRenew extends the lock TTL for a current owner, or refreshes a
+// queued waiter's FIFO entry so it survives pruning. Consumers holding
+// locks across legs longer than the TTL heartbeat this.
+func (s *Scheduler) handleRenew(ev *evRenew) {
+	now := time.Now()
+	s.expireLockIfNeeded(now)
+	s.pruneQueue(now)
+	owner := ev.owner
+	if owner == "" {
+		owner = "default"
+	}
+	for _, o := range s.st.LockOwners {
+		if o == owner {
+			s.st.LockExpiresAt = now.Add(s.cfg.LockTTL).Unix()
+			s.persist()
+			s.logf("model lock on %q renewed by %s (TTL %s)", s.st.Locked, owner, s.cfg.LockTTL)
+			body := s.lockBody()
+			body["renewed"] = true
+			ev.reply <- LockResult{200, body}
+			return
+		}
+	}
+	for i, e := range s.st.LockQueue {
+		if e.Owner == owner {
+			s.st.LockQueue[i].TS = now.Unix()
+			s.persist()
+			body := s.lockBody()
+			body["renewed"] = true
+			body["queued"] = true
+			body["position"] = i + 1
+			ev.reply <- LockResult{200, body}
+			return
+		}
+	}
+	ev.reply <- LockResult{409, map[string]any{
+		"error":       fmt.Sprintf("owner %q holds no lock or queue entry to renew", owner),
+		"locked":      nilIfEmpty(s.st.Locked),
+		"lock_owners": s.st.SortedOwners(),
+		"lock_queue":  s.queuePayload(),
+	}}
+}
+
 // ── lock / queue (R1) ───────────────────────────────────────────────
 
 func (s *Scheduler) queuePayload() []QueuePayload {
@@ -633,7 +736,12 @@ func (s *Scheduler) queuePayload() []QueuePayload {
 }
 
 func (s *Scheduler) lockBody() map[string]any {
-	return map[string]any{"locked": nilIfEmpty(s.st.Locked), "lock_owners": s.st.SortedOwners()}
+	return map[string]any{
+		"locked":           nilIfEmpty(s.st.Locked),
+		"lock_owners":      s.st.SortedOwners(),
+		"lock_expires_at":  nilIfZero(s.st.LockExpiresAt),
+		"lock_ttl_seconds": int64(s.cfg.LockTTL.Seconds()),
+	}
 }
 
 func (s *Scheduler) handleLock(ev *evLock) {
@@ -797,13 +905,15 @@ func (s *Scheduler) pruneQueue(now time.Time) {
 
 func (s *Scheduler) snapshot() StatusSnapshot {
 	return StatusSnapshot{
-		Mode:       s.st.Mode,
-		Switching:  s.pending != nil,
-		Model:      s.st.Model,
-		Locked:     s.st.Locked,
-		LockOwners: s.st.SortedOwners(),
-		LockQueue:  s.queuePayload(),
-		Inflight:   copyMap(s.inflight),
+		Mode:          s.st.Mode,
+		Switching:     s.pending != nil,
+		Model:         s.st.Model,
+		Locked:        s.st.Locked,
+		LockOwners:    s.st.SortedOwners(),
+		LockQueue:     s.queuePayload(),
+		LockExpiresAt: s.st.LockExpiresAt,
+		LockTTLSec:    int64(s.cfg.LockTTL.Seconds()),
+		Inflight:      copyMap(s.inflight),
 	}
 }
 
@@ -815,6 +925,13 @@ func (s *Scheduler) persist() {
 
 func nilIfEmpty(v string) any {
 	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func nilIfZero(v int64) any {
+	if v == 0 {
 		return nil
 	}
 	return v

@@ -761,3 +761,189 @@ func TestPassthroughUnknownModel(t *testing.T) {
 		t.Fatalf("unknown model under lock: want 422, got %+v", res)
 	}
 }
+
+// ── 15. upstream liveness recovery ───────────────────────────────────────
+
+func TestUpstreamDeadMarksIdleAndRespawns(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	pA := e.s.presets.ByName("a")
+
+	// Resident grant: no spawn yet.
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !res.OK || !res.Granted || res.Key != "a" {
+		t.Fatalf("resident acquire: %+v", res)
+	}
+	e.s.Release(res.Key)
+	if got := e.orch.llamaCount(); got != 0 {
+		t.Fatalf("resident grant must not spawn, got %d", got)
+	}
+
+	// The upstream dies out-of-band; the report flips the proxy to idle.
+	e.s.NoteUpstreamDead("llm", "a")
+	waitFor(t, 2*time.Second, "mode to become idle", func() bool {
+		return e.s.Status().Mode == "idle"
+	})
+	if st := e.loadedState(t); st.Mode != "idle" || st.Model != "a" {
+		t.Fatalf("state should be idle with model kept, got mode=%q model=%q", st.Mode, st.Model)
+	}
+
+	// The next acquire for the same model respawns it instead of 502-looping.
+	res2 := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !res2.OK || !res2.Granted || res2.Key != "a" {
+		t.Fatalf("post-death acquire: %+v", res2)
+	}
+	e.s.Release(res2.Key)
+	if got := e.orch.llamaNames(); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("expected exactly one SpawnLlama(a) after death report, got %v", got)
+	}
+	if got := e.s.Status().Mode; got != "llm" {
+		t.Fatalf("mode should be llm after respawn, got %q", got)
+	}
+}
+
+func TestUpstreamDeadStaleGrantIgnored(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	pA, pB := e.s.presets.ByName("a"), e.s.presets.ByName("b")
+
+	// Hold a in-flight, start a swap to b, then report a's upstream dead
+	// mid-swap: the pending swap reconciles state, the report is a no-op.
+	resA := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !resA.OK {
+		t.Fatalf("acquire a: %+v", resA)
+	}
+	resCh := make(chan AcqResult, 1)
+	go func() { resCh <- e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pB}) }()
+	waitFor(t, 2*time.Second, "pending swap to register", func() bool {
+		return e.s.Status().Switching
+	})
+	e.s.NoteUpstreamDead("llm", "a")
+	time.Sleep(100 * time.Millisecond) // let the event process
+	if got := e.s.Status().Mode; got != "llm" {
+		t.Fatalf("death report during a pending swap must not clobber mode, got %q", got)
+	}
+
+	// Let the swap through; it completes to model b.
+	e.s.Release(resA.Key)
+	select {
+	case res := <-resCh:
+		if !res.OK || res.Key != "b" {
+			t.Fatalf("swap acquire: %+v", res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("swap to b did not grant after release")
+	}
+
+	// A LATE death report from the drained a grant is stale now that b is
+	// resident: it must not flip a healthy llm/b back to idle.
+	e.s.NoteUpstreamDead("llm", "a")
+	// Status is FIFO-ordered after the death event on the loop, so when it
+	// returns the event has been processed.
+	if snap := e.s.Status(); snap.Mode != "llm" || snap.Model != "b" {
+		t.Fatalf("stale death report must not clobber state: %+v", snap)
+	}
+
+	// Death reports for a different mode are likewise ignored.
+	e.s.NoteUpstreamDead("comfyui", "comfyui")
+	if snap := e.s.Status(); snap.Mode != "llm" || snap.Model != "b" {
+		t.Fatalf("cross-mode death report must not clobber state: %+v", snap)
+	}
+}
+
+// ── 16. lock renew ───────────────────────────────────────────────────────
+
+func TestLockRenewExtendsExpiry(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{LockTTL: 2 * time.Second})
+
+	r := e.s.Lock("a", false, "A", false)
+	if r.Status != 200 {
+		t.Fatalf("lock a/A: %d %#v", r.Status, r.Body)
+	}
+	exp0, _ := r.Body["lock_expires_at"].(int64)
+	if exp0 <= 0 {
+		t.Fatalf("lock reply should carry lock_expires_at, got %#v", r.Body)
+	}
+
+	// Renew halfway through the TTL; expiry must move out by a full TTL.
+	time.Sleep(1200 * time.Millisecond)
+	r = e.s.RenewLock("A")
+	if r.Status != 200 || r.Body["renewed"] != true {
+		t.Fatalf("renew: %d %#v", r.Status, r.Body)
+	}
+	exp1, _ := r.Body["lock_expires_at"].(int64)
+	if exp1 <= exp0 {
+		t.Fatalf("renew should extend expiry: before=%d after=%d", exp0, exp1)
+	}
+
+	// At 2.4s past the original lock the un-renewed TTL has lapsed, but the
+	// renewed one (>= ~3.2s) has not: a competing lock must still 409.
+	time.Sleep(1200 * time.Millisecond)
+	if r := e.s.Lock("b", false, "B", false); r.Status != 409 {
+		t.Fatalf("lock after renew-extended TTL: want 409, got %d %#v", r.Status, r.Body)
+	}
+}
+
+func TestLockRenewNonOwner409(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	if r := e.s.Lock("a", false, "A", false); r.Status != 200 {
+		t.Fatalf("lock a/A: %d %#v", r.Status, r.Body)
+	}
+	if r := e.s.RenewLock("B"); r.Status != 409 {
+		t.Fatalf("renew by non-owner: want 409, got %d %#v", r.Status, r.Body)
+	}
+	// An unnamed renew maps to owner "default", which holds nothing.
+	if r := e.s.RenewLock(""); r.Status != 409 {
+		t.Fatalf("renew by default (non-owner): want 409, got %d %#v", r.Status, r.Body)
+	}
+	// Nothing locked at all: even the real owner has nothing to renew.
+	if r := e.s.Unlock("A"); r.Status != 200 {
+		t.Fatalf("unlock A: %d %#v", r.Status, r.Body)
+	}
+	if r := e.s.RenewLock("A"); r.Status != 409 {
+		t.Fatalf("renew with no lock: want 409, got %d %#v", r.Status, r.Body)
+	}
+}
+
+func TestLockRenewQueuedWaiterKeepsEntry(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	if r := e.s.Lock("a", false, "A", false); r.Status != 200 {
+		t.Fatalf("lock a/A: %d %#v", r.Status, r.Body)
+	}
+	if r := e.s.Lock("b", false, "B", true); r.Status != 202 || bodyPosition(r) != 1 {
+		t.Fatalf("B queue: %d %#v", r.Status, r.Body)
+	}
+	// A queued waiter renews to keep its FIFO entry alive past the prune TTL.
+	r := e.s.RenewLock("B")
+	if r.Status != 200 || r.Body["renewed"] != true || r.Body["queued"] != true || bodyPosition(r) != 1 {
+		t.Fatalf("queued renew: %d %#v", r.Status, r.Body)
+	}
+	if got := e.s.Status().LockQueue; len(got) != 1 || got[0].Owner != "B" {
+		t.Fatalf("queue entry should survive the renew: %#v", got)
+	}
+}
+
+func TestStatusExposesLockExpiry(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{LockTTL: 900 * time.Second})
+
+	snap := e.s.Status()
+	if snap.LockExpiresAt != 0 {
+		t.Fatalf("unlocked snapshot should have no expiry, got %d", snap.LockExpiresAt)
+	}
+	if snap.LockTTLSec != 900 {
+		t.Fatalf("snapshot should expose the TTL, got %d", snap.LockTTLSec)
+	}
+	if r := e.s.Lock("a", false, "A", false); r.Status != 200 {
+		t.Fatalf("lock a/A: %d %#v", r.Status, r.Body)
+	}
+	snap = e.s.Status()
+	if snap.LockExpiresAt <= time.Now().Unix() {
+		t.Fatalf("locked snapshot should carry a future expiry, got %d", snap.LockExpiresAt)
+	}
+}

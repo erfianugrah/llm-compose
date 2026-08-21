@@ -8,6 +8,15 @@
 
 All requirements implemented and cut over. The Go proxy owns :11434 (pi, llmc, Open WebUI, Claude Code via the Anthropic shim). Python proxy retired behind the `rollback` compose profile (:11436). Ephemeral-preset registry (POST/DELETE /v1/presets) added for the context sweep. qwen38 context ceiling established empirically: 196608 x 1 slot (229376 collapses 14x, structural limit). Smoke suite 14/14; 171 py + go -race tests green; image zero-CVE (7.2MB), pushed to Docker Hub.
 
+## Addendum (2026-08-21)
+
+Two hardening items from the cutover-day gap list + dispatch-run postmortem landed:
+
+- **Liveness recovery**: a connection-level upstream death (container crash/OOM/kill out-of-band) flips the scheduler to `idle` while keeping the model name, so the next acquire respawns instead of 502-looping. `NoteUpstreamDead(mode, key)` is reported from `forwardTo` and the Anthropic shim on `Do` failure with a live client; stale reports (grant on a since-swapped model, or a pending swap) are ignored. Verified live: `docker kill llama_server` -> 502 + idle -> respawn + serve in ~7s.
+- **Lock renewal + expiry visibility**: `POST /mode {"renew": true, "owner": X}` extends the lock TTL for a current owner (or keeps a queued waiter's FIFO entry alive); 409 when the owner holds nothing. `GET /mode` / `GET /status` and lock replies carry `lock_expires_at` + `lock_ttl_seconds`; `llmc lock --renew` and `llmc status` (expires-in) expose it. Fixes the TTL-lapsed-mid-leg failure from the postmortem.
+
+Client verification closed: `llmc bench perf --presets qwen38 --runs 1` through the proxy (TTFT p50 180.6ms, gen 75.9 t/s), and a real Claude Code 2.1.233 session with a bash tool_use round-trip via the shim. Smoke suite now 17 requests.
+
 ## Context and motivation
 
 Current proxy (`llmc/proxy.py`, Python, threaded): routes by exact model name, swaps presets unconditionally (stopping the old container with a 10s timeout, killing in-flight streams), and coordinates tenants via an in-memory lock + FIFO queue. Observed failure modes this week:

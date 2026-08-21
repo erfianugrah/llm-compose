@@ -16,6 +16,7 @@ import io
 import json
 import socket
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -58,6 +59,12 @@ class _StubHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _record_and_respond(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        self.server.requests.append((self.command, self.path, raw))  # type: ignore[attr-defined]
+        self._respond()
+
     do_GET = _respond
     do_POST = _respond
 
@@ -84,6 +91,30 @@ def _stub_proxy(responses: dict[tuple[str, str], tuple[int, dict]]):
             patch.object(cli, "DEFAULT_PROXY_PORT", port):
         try:
             yield ("127.0.0.1", port)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+@contextlib.contextmanager
+def _stub_proxy_recording(responses: dict[tuple[str, str], tuple[int, dict]]):
+    """Like _stub_proxy, but also captures request bodies.
+    Yields (host, port, requests) where requests is a list of
+    (method, path, raw_body) tuples."""
+    port = _free_port()
+
+    class Handler(_StubHandler):
+        do_POST = _StubHandler._record_and_respond
+
+    Handler.responses = responses
+    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server.requests = []  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    with patch.object(cli, "DEFAULT_PROXY_HOST", "127.0.0.1"), \
+            patch.object(cli, "DEFAULT_PROXY_PORT", port):
+        try:
+            yield ("127.0.0.1", port, server.requests)
         finally:
             server.shutdown()
             server.server_close()
@@ -275,6 +306,61 @@ class TestModeCommand(unittest.TestCase):
                 rc = main(["mode", "comfyui"])
         self.assertEqual(rc, EXIT_OK)
         self.assertIn("Mode: comfyui", out.getvalue())
+
+
+class TestLockCommand(unittest.TestCase):
+    """lock --renew heartbeats the proxy TTL; status shows the expiry."""
+
+    def test_lock_renew_posts_renew_true(self):
+        expiry = int(time.time()) + 900
+        responses = {
+            ("POST", "/mode"): (200, {
+                "locked": "qwen38", "lock_owners": ["sess-1"],
+                "renewed": True, "lock_expires_at": expiry, "lock_ttl_seconds": 900,
+            }),
+        }
+        with _stub_proxy_recording(responses) as (_, _, requests):
+            with _capture() as (out, _):
+                rc = main(["lock", "--renew", "--owner", "sess-1"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("Lock renewed: qwen38", out.getvalue())
+        self.assertEqual(len(requests), 1)
+        method, path, raw = requests[0]
+        self.assertEqual((method, path), ("POST", "/mode"))
+        self.assertEqual(json.loads(raw), {"renew": True, "owner": "sess-1"})
+
+    def test_lock_renew_rejects_preset_arg(self):
+        with _capture() as (_, err):
+            rc = main(["lock", "qwen38", "--renew"])
+        self.assertEqual(rc, EXIT_USER_ERROR)
+        self.assertIn("--renew takes no preset", err.getvalue())
+
+    def test_lock_renew_non_holder_409s(self):
+        responses = {
+            ("POST", "/mode"): (409, {"error": 'owner "sess-9" holds no lock or queue entry to renew'}),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (_, err):
+                rc = main(["lock", "--renew", "--owner", "sess-9"])
+        self.assertEqual(rc, EXIT_BACKEND_ERROR)
+        self.assertIn("holds no lock", err.getvalue())
+
+    def test_status_shows_lock_expiry(self):
+        expiry = int(time.time()) + 900
+        responses = {
+            ("GET", "/health"): (200, {"status": "ok", "mode": "llm"}),
+            ("GET", "/mode"): (200, {
+                "mode": "llm", "model": "qwen38", "switching": False,
+                "locked": "qwen38", "lock_owners": ["sess-1"],
+                "lock_expires_at": expiry, "lock_ttl_seconds": 900,
+            }),
+            ("GET", "/v1/models"): (200, {"data": []}),
+        }
+        with _stub_proxy(responses):
+            with _capture() as (out, _):
+                rc = main(["status"])
+        self.assertEqual(rc, EXIT_OK)
+        self.assertIn("qwen38 (owners: sess-1), expires in", out.getvalue())
 
 
 class TestVolumesCommand(unittest.TestCase):

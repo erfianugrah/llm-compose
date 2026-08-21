@@ -31,6 +31,30 @@ HTTP 200
 jsonpath "$.locked" == "qwen38"
 jsonpath "$.lock_owners" count == 1
 jsonpath "$.lock_owners[0]" == "smoke-a"
+jsonpath "$.lock_expires_at" isInteger
+jsonpath "$.lock_ttl_seconds" isInteger
+
+# Lock renewal: the owner heartbeats the TTL; non-holders get 409.
+POST {{base}}/mode
+Content-Type: application/json
+{"renew":true,"owner":"smoke-a"}
+HTTP 200
+[Asserts]
+jsonpath "$.renewed" == true
+jsonpath "$.locked" == "qwen38"
+jsonpath "$.lock_expires_at" isInteger
+
+POST {{base}}/mode
+Content-Type: application/json
+{"renew":true,"owner":"smoke-nobody"}
+HTTP 409
+
+# GET /mode exposes the lock expiry.
+GET {{base}}/mode
+HTTP 200
+[Asserts]
+jsonpath "$.locked" == "qwen38"
+jsonpath "$.lock_expires_at" isInteger
 
 # Contended lock without wait: 409, no hijack.
 POST {{base}}/mode
@@ -83,6 +107,7 @@ GET {{base}}/mode
 HTTP 200
 [Asserts]
 jsonpath "$.locked" == null
+jsonpath "$.lock_expires_at" == null
 jsonpath "$.lock_queue" count == 0
 
 # Ephemeral preset registry (Task 4b): register a throwaway, list shows it,

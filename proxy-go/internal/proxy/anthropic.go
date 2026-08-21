@@ -623,6 +623,9 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	client := upstreamClient // no total timeout; see forwardTo
 	resp, err := client.Do(upReq)
 	if err != nil {
+		if r.Context().Err() == nil {
+			s.sched.NoteUpstreamDead("llm", res.Key)
+		}
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream error: %v", err))
 		return
 	}

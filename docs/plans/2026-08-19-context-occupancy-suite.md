@@ -190,12 +190,12 @@ already showed 0.37 t/s there.)
 **Files:**
 - Modify: `compose.yaml` (model-proxy service)
 
-- [ ] **Step 1:** add `profiles: ["rollback"]` to `model-proxy` so `make up` / `docker compose up -d` never starts the Python proxy. Rollback procedure becomes: `docker compose --profile rollback up -d model-proxy` + swap the two published ports (11434 <-> 11436) + restart webui.
-- [ ] **Step 2:** verify `docker compose config --quiet` and `docker compose config --services` lists model-proxy-go + open-webui by default, model-proxy only with `--profile rollback`.
+- [x] **Step 1:** added `profiles: ["rollback"]` to `model-proxy` (verified in compose.yaml; AGENTS.md documents the rollback procedure).
+- [x] **Step 2:** verified: default services are model-proxy-go + open-webui; model-proxy only with `--profile rollback`.
 
 ### Task 7: Push the Go proxy image
 
-- [ ] **Step 1:** `cd ~/infra/ai/llm-compose && make push-proxy-go` (pushes `erfianugrah/llmc-proxy-go:v1` to Docker Hub; requires `docker login` already done - verify with `docker info | rg Username`).
+- [x] **Step 1:** pushed `erfianugrah/llmc-proxy-go:v1` to Docker Hub (zero-CVE, 7.2MB; spec status 2026-08-20). Rebuild with the Task 8/8b changes lands a fresh push alongside the commit.
 
 ### Task 8: Proxy liveness recovery (known gap from cutover day)
 
@@ -208,9 +208,9 @@ The Go scheduler trusts `state.Model`; if `llama_server` dies out-of-band
 - Modify: `proxy-go/internal/proxy/scheduler.go` (new event), `proxy-go/internal/proxy/server.go` (notify on connection failure)
 - Test: `proxy-go/internal/proxy/scheduler_test.go`
 
-- [ ] **Step 1: failing test** - grant resident acquire, `NoteUpstreamDead("llm")`, next acquire for the same model must trigger a spawn (fake orchestrator records SpawnLlama).
-- [ ] **Step 2: implement** - add `NoteUpstreamDead(mode string)` to Scheduler (new loop event): sets `st.Mode = "idle"` (keep `st.Model`), persists, logs. In `server.go` `forwardTo`, call it when `upstreamClient.Do` fails with a connection error (not on upstream 5xx - the container answered then).
-- [ ] **Step 3:** `go test ./... -race -count=1`, rebuild + recreate `model-proxy-go`, commit.
+- [x] **Step 1: failing test** - grant resident acquire, `NoteUpstreamDead("llm", key)`, next acquire for the same model must trigger a spawn (fake orchestrator records SpawnLlama).
+- [x] **Step 2: implement** - added `NoteUpstreamDead(mode, key string)` to Scheduler (new loop event): sets `st.Mode = "idle"` (keep `st.Model`), persists, logs. Staleness guards: ignored when a swap is pending, when the mode moved on, or when the key names a model no longer resident. In `server.go` `forwardTo` and the Anthropic shim, called when `upstreamClient.Do` fails with a connection error and the client is still connected (not on upstream 5xx - the container answered then).
+- [x] **Step 3:** `go test ./... -race -count=1` green; rebuilt + recreated `model-proxy-go`. Verified LIVE (2026-08-21): `docker kill llama_server` -> 502 with mode flipped to idle (model kept) -> next request respawned and served in ~7s.
 
 ### Task 8b: Lock renewal + expiry visibility (from the dispatch-run postmortem)
 
@@ -226,11 +226,11 @@ granted requests only helps tenants that request continuously.
   `llmc/state.py` (expose expires_at in status payload mapping if filtered)
 - Test: `proxy-go/internal/proxy/scheduler_test.go`, `llmc/tests/test_proxy.py`
 
-- [ ] **Step 1: failing tests** - scheduler: lock with TTL 1s, renew at 0.5s, still locked at 1.2s; renew by a non-owner -> 404/409 (decide: 409). CLI test: `lock --renew` maps to POST /mode {"renew": true, "owner": ...}.
-- [ ] **Step 2: implement renew** - scheduler event `evRenew{owner}`: owner in LockOwners (or holding a queue entry) -> LockExpiresAt = now+TTL, persist, 200; else 409. Route: `POST /mode {"renew": true, "owner": X}`. CLI: `llmc lock --renew [--owner id]`.
-- [ ] **Step 3: expiry visibility** - `GET /mode` payload gains `lock_expires_at` (unix) + `lock_ttl_seconds`; `llmc status` prints `Locked: <model> (expires in Ns)`.
-- [ ] **Step 4: hurl smoke entry** - renew flow in `tests/hurl/proxy-go-smoke.hurl` (lock, renew, verify expires_at moved).
-- [ ] **Step 5:** gates + commit.
+- [x] **Step 1: failing tests** - scheduler: lock with TTL 2s, renew at ~1.2s, still locked at ~2.4s (competing lock 409s); renew by a non-owner -> 409; renew by a queued waiter keeps the FIFO entry. CLI test: `lock --renew` maps to POST /mode {"renew": true, "owner": ...}.
+- [x] **Step 2: implement renew** - scheduler event `evRenew{owner}`: owner in LockOwners -> LockExpiresAt = now+TTL, persist, 200; queued waiter -> TS refreshed, 200; else 409. Route: `POST /mode {"renew": true, "owner": X}`. CLI: `llmc lock --renew [--owner id]`.
+- [x] **Step 3: expiry visibility** - `GET /mode` + `GET /status` payload gained `lock_expires_at` (unix) + `lock_ttl_seconds`; lock/unlock replies carry them too; `llmc status` prints `Locked: <model> (owners: ..., expires in Ns)`.
+- [x] **Step 4: hurl smoke entry** - renew flow in `tests/hurl/proxy-go-smoke.hurl` (lock asserts expires_at present, renew 200 + renewed flag, non-holder 409, unlocked state shows null expiry).
+- [x] **Step 5:** gates green; verified LIVE via CLI: lock -> `Lock renewed: qwen38 (expires in 899s)` -> status shows expires-in -> unlock.
 
 ### Task 8c: Driver hardening lessons (recorded, not llm-compose code)
 
@@ -258,22 +258,22 @@ From the postmortem - apply to the llmc loop harness when next touched
 
 ### Task 9: Client verification against the Go proxy
 
-- [ ] **Step 1: bench harness** - `cd ~/infra/ai/llm-compose && export PATH="$PWD/bin:$PATH" && llmc bench perf --presets qwen38 --runs 1`. Verifies the lock/swap path the loop engine depends on. Expected: run completes, result row in `bench/results/runs.jsonl`.
-- [ ] **Step 2: real Claude Code session** - `ANTHROPIC_BASE_URL=http://127.0.0.1:11434 claude -p "read the file /etc/hostname and tell me its content"` (forces a tool_use round-trip + streaming). Expected: completes with the hostname; check `docker logs model_proxy_go` for clean translation (no dropped-block warnings beyond acceptable ones).
+- [x] **Step 1: bench harness** - `llmc bench perf --presets qwen38 --runs 1` completed against the Go proxy (48s): TTFT p50=180.6ms p95=190.2ms, gen=75.9 t/s, VRAM peak 27527 MiB; whisper stop/restart cycle clean.
+- [x] **Step 2: real Claude Code session** - `ANTHROPIC_BASE_URL=http://127.0.0.1:11434 claude -p` with a forced bash tool_use round-trip (cat a probe file, reply with its contents). Model issued the tool call, the tool result round-tripped, final answer correct (Claude Code 2.1.233; its native binary needed the install.cjs postinstall re-run first - it was broken on this box).
 
 ### Task 10: Docs sweep (after Task 5 decides the final number)
 
-- [ ] `README.md` - make-target table has `ship-proxy-go`; architecture line mentions proxy-go.
-- [ ] `AGENTS.md` - proxy-go section: final ctx number, rollback-profile procedure; **fix the architecture diagram** (still says `llmc-proxy :11434 --- Python proxy`).
-- [ ] `docs/specs/2026-08-19-model-proxy-v2.md` - status section: suite results + final ctx.
-- [ ] dotfiles skill `.pi/agent/skills/llm-compose/SKILL.md` - final ctx number + suite one-liner.
-- [ ] Lexicanum: `rg -l 'llm-compose|model.proxy' ~/lexicanum/src/content/docs`, update the proxy/stack doc with the v2 rewrite (drain-before-swap, capability routing, lock TTL, Anthropic shim) - follow `~/lexicanum/AGENTS.md` conventions (frontmatter unchanged, sentence-case headings, `bun run build` must pass).
+- [x] `README.md` - make-target table has `ship-proxy-go`; architecture line mentions proxy-go.
+- [x] `AGENTS.md` - proxy-go section: final ctx number, rollback-profile procedure; architecture diagram fixed (proxy-go on :11434). Extended 2026-08-21 with the lock TTL/renewal + liveness-recovery paragraphs.
+- [x] `docs/specs/2026-08-19-model-proxy-v2.md` - status section: suite results + final ctx (2026-08-20); 2026-08-21 addendum for Task 8/8b below.
+- [x] dotfiles skill `.pi/agent/skills/llm-compose/SKILL.md` - final ctx number + suite one-liner; 2026-08-21: renew verb + liveness recovery.
+- [x] Lexicanum: `reference/local-model-bench.mdx` + `reference/qwen38-agentic-tuning.mdx` carry the v2 rewrite (drain-before-swap, capability routing, lock TTL, Anthropic shim).
 
 **Deferred (not a task now):** retire `llmc/proxy.py` + the `model-proxy` rollback service after 2-4 weeks of stable Go-proxy operation. Note it in the spec status when Task 10 lands.
 
 ### Task 11: Final gates + commit
 
 - [ ] `cd proxy-go && go test ./... -race -count=1`
-- [ ] `hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl` (11/11)
+- [ ] `hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl` (now 17 requests)
 - [ ] `python3 -m unittest discover llmc.tests`
 - [ ] Commit llm-compose + dotfiles; commit messages per repo conventions (no AI attribution).

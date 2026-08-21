@@ -116,25 +116,29 @@ func (s *Server) handleHealth(w http.ResponseWriter) {
 func (s *Server) handleStatus(w http.ResponseWriter) {
 	snap := s.sched.Status()
 	jsonReply(w, 200, map[string]any{
-		"mode":        snap.Mode,
-		"switching":   snap.Switching,
-		"model":       snap.Model,
-		"locked":      nilIfEmpty(snap.Locked),
-		"lock_owners": snap.LockOwners,
-		"lock_queue":  snap.LockQueue,
-		"inflight":    snap.Inflight,
+		"mode":             snap.Mode,
+		"switching":        snap.Switching,
+		"model":            snap.Model,
+		"locked":           nilIfEmpty(snap.Locked),
+		"lock_owners":      snap.LockOwners,
+		"lock_queue":       snap.LockQueue,
+		"lock_expires_at":  nilIfZero(snap.LockExpiresAt),
+		"lock_ttl_seconds": snap.LockTTLSec,
+		"inflight":         snap.Inflight,
 	})
 }
 
 func (s *Server) handleModeGet(w http.ResponseWriter) {
 	snap := s.sched.Status()
 	jsonReply(w, 200, map[string]any{
-		"mode":        snap.Mode,
-		"switching":   snap.Switching,
-		"model":       nilIfEmpty(snap.Model),
-		"locked":      nilIfEmpty(snap.Locked),
-		"lock_owners": snap.LockOwners,
-		"lock_queue":  snap.LockQueue,
+		"mode":             snap.Mode,
+		"switching":        snap.Switching,
+		"model":            nilIfEmpty(snap.Model),
+		"locked":           nilIfEmpty(snap.Locked),
+		"lock_owners":      snap.LockOwners,
+		"lock_queue":       snap.LockQueue,
+		"lock_expires_at":  nilIfZero(snap.LockExpiresAt),
+		"lock_ttl_seconds": snap.LockTTLSec,
 	})
 }
 
@@ -208,7 +212,20 @@ func (s *Server) handleModePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lock management first: {"lock": <preset|true|false|null>} (+owner,+wait)
+	// Lock renewal first: {"renew": true, "owner": X} heartbeats the TTL.
+	if rawRenew, has := payload["renew"]; has {
+		renew, ok := rawRenew.(bool)
+		if !ok || !renew {
+			jsonReply(w, 400, map[string]any{"error": "renew must be true"})
+			return
+		}
+		owner, _ := payload["owner"].(string)
+		res := s.sched.RenewLock(owner)
+		jsonReply(w, res.Status, res.Body)
+		return
+	}
+
+	// Lock management: {"lock": <preset|true|false|null>} (+owner,+wait)
 	if rawLock, has := payload["lock"]; has {
 		owner, _ := payload["owner"].(string)
 		wait, _ := payload["wait"].(bool)
@@ -325,7 +342,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 				mode, snap.Mode, mode), 503, "service_inactive")
 			return
 		}
-		s.forwardTo(w, r, mode, targetPath, body)
+		s.forwardTo(w, r, mode, targetPath, body, "")
 		return
 	}
 
@@ -355,7 +372,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.forwardTo(w, r, mode, targetPath, body)
+	s.forwardTo(w, r, mode, targetPath, body, res.Key)
 }
 
 func (s *Server) prepLLM(r *http.Request, req *AcquireRequest, payload map[string]any) {
@@ -421,8 +438,11 @@ func orRoot(p string) string {
 
 // forwardTo proxies to the GPU backend, streaming SSE chunk-by-chunk. On
 // upstream mid-stream death it injects an error event (an unattended agent
-// must not consume a truncated stream as a full answer).
-func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetPath string, body []byte) {
+// must not consume a truncated stream as a full answer). A connection-level
+// failure (the container died out-of-band) is reported to the scheduler so
+// the next acquire respawns instead of 502-looping; key identifies the
+// grant so stale reports from an already-drained model are ignored.
+func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetPath string, body []byte, key string) {
 	svc, ok := Services[mode]
 	if !ok {
 		jsonReply(w, 500, map[string]any{"error": "unknown mode"})
@@ -455,6 +475,11 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 	// healthcheck; the dial is the only bounded phase.
 	resp, err := upstreamClient.Do(upstream)
 	if err != nil {
+		// Client disconnects also surface here; only a live client means the
+		// upstream itself is gone.
+		if r.Context().Err() == nil {
+			s.sched.NoteUpstreamDead(mode, key)
+		}
 		errPlain(w, 502, fmt.Sprintf("upstream error: %v", err), 502, "server_error")
 		return
 	}
