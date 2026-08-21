@@ -4,9 +4,9 @@
 **Workflow:** design-first (technically constrained: single GPU timeshare, porting an existing Python design to Go).
 **Non-goals:** the two-resident-model VRAM split (deferred to the 3080 Ti decision); priority/preemption policies beyond FIFO+drain; multi-GPU scheduling; any change to the llmc bench CLI surface.
 
-## Status (2026-08-19)
+## Status (2026-08-20)
 
-Implemented in `proxy-go/` (R1-R5); cut over 2026-08-19: owns 127.0.0.1:11434 (pi provider, llmc CLI default, Open WebUI envs all land there). Python proxy kept stopped on :11436 as rollback. R6 soak completed the same day (smoke suite green post-cutover). 34 Go tests, `-race` clean; live smoke suite `tests/hurl/proxy-go-smoke.hurl` (11 requests) green; `make build-proxy-go` / `test-proxy-go` / `smoke-proxy-go`. Claude Code path: `ANTHROPIC_BASE_URL=http://127.0.0.1:11435`. Cutover (repoint clients, retire `llmc/proxy.py`) pending soak. Python-side schema compat (`capabilities` preset key, lock state keys) shipped in the same series.
+All requirements implemented and cut over. The Go proxy owns :11434 (pi, llmc, Open WebUI, Claude Code via the Anthropic shim). Python proxy retired behind the `rollback` compose profile (:11436). Ephemeral-preset registry (POST/DELETE /v1/presets) added for the context sweep. qwen38 context ceiling established empirically: 196608 x 1 slot (229376 collapses 14x, structural limit). Smoke suite 14/14; 171 py + go -race tests green; image zero-CVE (7.2MB), pushed to Docker Hub.
 
 ## Context and motivation
 

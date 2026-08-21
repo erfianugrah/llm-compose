@@ -20,9 +20,12 @@ services:
   # Routes /v1/* → llama-server, /comfyui/* → comfyui, /train/* → lora-train.
   # Spawns each GPU service via Docker SDK when its route is hit; stops
   # the previous one first (mutual exclusion on a single GPU).
-  # model-proxy (Python): LEGACY since 2026-08-19, kept stopped for
-  # rollback (swap published ports back). :11436 is the rollback lane.
+  # model-proxy (Python): LEGACY since 2026-08-19, kept for rollback only.
+  # Behind the 'rollback' profile so `make up` / `docker compose up -d` never
+  # starts it. Rollback: swap the two published ports (11434 <-> 11436),
+  # `docker compose --profile rollback up -d model-proxy`, restart webui.
   model-proxy:
+    profiles: ["rollback"]
     build:
       context: .
       dockerfile: images/proxy.Dockerfile
