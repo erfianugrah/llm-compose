@@ -442,9 +442,49 @@ func orRoot(p string) string {
 // failure (the container died out-of-band) is reported to the scheduler so
 // the next acquire respawns instead of 502-looping; key identifies the
 // grant so stale reports from an already-drained model are ignored.
+// peekModel best-effort extracts the "model" field from a JSON request body.
+// Access logging only; routing never depends on it.
+func peekModel(body []byte) string {
+	var v struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &v) != nil {
+		return ""
+	}
+	return v.Model
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// forwardTo proxies to the GPU backend, streaming SSE chunk-by-chunk. On
+// upstream mid-stream death it injects an error event (an unattended agent
+// must not consume a truncated stream as a full answer). A connection-level
+// failure (the container died out-of-band) is reported to the scheduler so
+// the next acquire respawns instead of 502-looping; key identifies the
+// grant so stale reports from an already-drained model are ignored.
+//
+// Every request logs a start line on entry and a done line on exit. The
+// start line matters: a request queued at a busy llama.cpp slot sits silent
+// for minutes, and without it there is no way to tell "request never
+// arrived" from "request in flight" (2026-08-22 pi-abort forensics).
 func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetPath string, body []byte, key string) {
+	start := time.Now()
+	status := 0
+	note := ""
+	model := peekModel(body)
+	s.log(fmt.Sprintf("req start %s %s model=%s body=%dB", r.Method, targetPath, orDash(model), len(body)))
+	defer func() {
+		s.log(fmt.Sprintf("req done %s %s model=%s status=%d dur=%s%s",
+			r.Method, targetPath, orDash(model), status, time.Since(start).Round(time.Millisecond), note))
+	}()
 	svc, ok := Services[mode]
 	if !ok {
+		status = 500
 		jsonReply(w, 500, map[string]any{"error": "unknown mode"})
 		return
 	}
@@ -458,6 +498,8 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		upstream, err = http.NewRequestWithContext(ctx, r.Method, url, nil)
 	}
 	if err != nil {
+		status = 502
+		note = " conn_init"
 		errPlain(w, 502, fmt.Sprintf("connection failed: %v", err), 502, "server_error")
 		return
 	}
@@ -477,8 +519,12 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 	if err != nil {
 		// Client disconnects also surface here; only a live client means the
 		// upstream itself is gone.
+		status = 502
 		if r.Context().Err() == nil {
+			note = " upstream_dead"
 			s.sched.NoteUpstreamDead(mode, key)
+		} else {
+			note = " client_gone"
 		}
 		errPlain(w, 502, fmt.Sprintf("upstream error: %v", err), 502, "server_error")
 		return
@@ -496,6 +542,7 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
+	status = resp.StatusCode
 
 	buf := make([]byte, 4096)
 	flush := w.(http.Flusher)
@@ -503,7 +550,8 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return // client disconnected mid-stream
+				note = " client_disconnect_midstream"
+				return
 			}
 			if isStream {
 				flush.Flush()
@@ -511,6 +559,7 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		}
 		if readErr != nil {
 			if readErr != io.EOF {
+				note = " upstream_died_midstream"
 				s.log(fmt.Sprintf("upstream %s died mid-stream: %v", svc.Hostname, readErr))
 				if isStream {
 					w.Write([]byte(`data: {"error":{"message":"upstream terminated mid-stream","type":"upstream_error"}}` + "\n\n"))

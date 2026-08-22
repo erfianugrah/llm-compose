@@ -3,9 +3,11 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -432,5 +434,59 @@ func TestForwardVRAM422(t *testing.T) {
 	e := body["error"].(map[string]any)
 	if e["type"] != "model_unavailable" || !strings.Contains(e["message"].(string), "VRAM") {
 		t.Fatalf("422 body: %#v", e)
+	}
+}
+
+// TestForwardAccessLog: every proxied request must emit a start line on
+// arrival and a done line with status + duration + outcome note. The start
+// line is what distinguishes "request never reached the proxy" from
+// "request in flight" during incident forensics (2026-08-22 pi abort: the
+// proxy logged nothing for the dying request and the blind spot cost an
+// hour).
+func TestForwardAccessLog(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	logf := func(f string, a ...any) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(f, a...))
+		mu.Unlock()
+	}
+
+	statePath := t.TempDir() + "/state.toml"
+	if err := SaveState(statePath, &State{Mode: "llm", Model: "a"}); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	store := newTestStore(t, map[string]string{"a": tomlA, "b": tomlB})
+	scfg := SchedulerConfig{StatePath: statePath, DrainGrace: 3 * time.Second,
+		LockTTL: 900 * time.Second, HealthTimeout: time.Second}
+	s, err := NewScheduler(scfg, newFakeOrch("llm"), store, logf)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	go s.Run()
+	t.Cleanup(s.Close)
+	ts := httptest.NewServer(NewServer(s, store, ServerConfig{VRAMLimitGB: 24, VRAMReserveGB: 4}, logf))
+	t.Cleanup(ts.Close)
+
+	// Upstream llama-server does not exist in the test env: 502 after swap.
+	code, _ := doPost(t, ts.URL+"/v1/chat/completions", map[string]any{
+		"model":    "beta",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if code != 502 {
+		t.Fatalf("want 502, got %d", code)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := "\n" + strings.Join(lines, "\n")
+	if !strings.Contains(joined, "req start POST /v1/chat/completions model=beta") {
+		t.Fatalf("missing start line, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "req done POST /v1/chat/completions model=beta status=502") {
+		t.Fatalf("missing done line, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "upstream_dead") {
+		t.Fatalf("done line must note upstream death, got:\n%s", joined)
 	}
 }

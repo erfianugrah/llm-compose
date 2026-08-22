@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type AnthropicTranslator struct {
@@ -544,17 +545,28 @@ func (st *streamState) serveStream(w http.ResponseWriter, resp *http.Response, e
 // Serve handles POST /v1/messages: parse the Anthropic request, translate
 // to OpenAI, run the scheduler, forward, and translate the response back.
 func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := 0
+	note := ""
 	body := readBody(r)
 	var req map[string]any
+	defer func() {
+		model, _ := req["model"].(string)
+		a.logf("req done POST /v1/messages model=%s status=%d dur=%s%s",
+			orDash(model), status, time.Since(start).Round(time.Millisecond), note)
+	}()
 	if len(body) == 0 {
+		status = 400
 		anthropicErr(w, 400, "invalid_request_error", "empty request body")
 		return
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
+		status = 400
 		anthropicErr(w, 400, "invalid_request_error", fmt.Sprintf("invalid JSON: %v", err))
 		return
 	}
 	model, _ := req["model"].(string)
+	a.logf("req start POST /v1/messages model=%s body=%dB", orDash(model), len(body))
 	payload := a.translateRequest(req)
 
 	var preset *Preset
@@ -566,6 +578,7 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	}
 	if preset != nil {
 		if ok, msg := CheckVRAMBudget(preset, s.cfg.VRAMLimitGB, s.cfg.VRAMReserveGB); !ok {
+			status = 422
 			anthropicErr(w, 422, "overloaded_error", msg)
 			return
 		}
@@ -573,7 +586,7 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 
 	res := s.sched.Acquire(r.Context(), AcquireRequest{Mode: "llm", Preset: preset, RawModel: model})
 	if !res.OK {
-		status := res.Status
+		status = res.Status
 		if status == 0 {
 			status = 503
 		}
@@ -598,17 +611,21 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 
 	svc, ok := Services["llm"]
 	if !ok {
+		status = 500
 		anthropicErr(w, 500, "api_error", "llm service not configured")
 		return
 	}
 	outBody, err := json.Marshal(payload)
 	if err != nil {
+		status = 500
 		anthropicErr(w, 500, "api_error", "internal encode error")
 		return
 	}
 	url := fmt.Sprintf("http://%s:%d/v1/chat/completions", svc.Hostname, svc.InternalPort)
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(outBody))
 	if err != nil {
+		status = 502
+		note = " conn_init"
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("connection failed: %v", err))
 		return
 	}
@@ -623,8 +640,12 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	client := upstreamClient // no total timeout; see forwardTo
 	resp, err := client.Do(upReq)
 	if err != nil {
+		status = 502
 		if r.Context().Err() == nil {
+			note = " upstream_dead"
 			s.sched.NoteUpstreamDead("llm", res.Key)
+		} else {
+			note = " client_gone"
 		}
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream error: %v", err))
 		return
@@ -634,6 +655,8 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	stream, _ := req["stream"].(bool)
 	if stream && resp.StatusCode == 200 &&
 		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		status = 200
+		note = " stream"
 		st := &streamState{
 			logf:      a.logf,
 			model:     firstNonEmpty(model, "unknown"),
@@ -649,17 +672,22 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	// Non-stream (or a non-SSE upstream answer to a stream request).
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		status = 502
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream read error: %v", err))
 		return
 	}
 	if resp.StatusCode != 200 {
+		status = resp.StatusCode
+		note = " upstream_error"
 		a.upstreamError(w, resp.StatusCode, respBody)
 		return
 	}
 	var om map[string]any
 	if err := json.Unmarshal(respBody, &om); err != nil {
+		status = 502
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream returned invalid JSON: %v", err))
 		return
 	}
+	status = 200
 	jsonReply(w, 200, a.translateResponse(model, om))
 }
