@@ -114,6 +114,9 @@ file = "Qwen3.6-27B-UD-Q4_K_XL.gguf"
 [mmproj]                          # optional, for multimodal
 url = "https://huggingface.co/.../mmproj-BF16.gguf"
 
+[template]                        # optional, custom chat template
+file = "qwen38-fixed.jinja"
+
 [runtime]
 context_size = 163840
 reasoning = "on"
@@ -195,7 +198,7 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 
 ## Available models
 
-10 presets in `models/`:
+12 presets in `models/`:
 
 | Preset                  | Model                     | Active | VRAM   | Vision | Best for                                |
 |-------------------------|---------------------------|--------|--------|--------|-----------------------------------------|
@@ -206,6 +209,8 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 | `qwen3`                 | Qwen3 32B Dense           | 32B    | 20.0GB | no     | Research, reasoning, tools              |
 | `qwen3-coder`           | Qwen3 Coder 30B-A3B MoE   | 3.3B   | 18.6GB | no     | Fast code gen                           |
 | `qwen3-vl`              | Qwen3-VL 2B               | 2B     | 4.5GB  | yes    | Lightweight image/video description     |
+| `qwen38`                | Qwen3.8 27B Dense         | 27B    | 21.0GB | yes    | Daily driver: coding, vision, thinking  |
+| `qwen38-xhigh`          | Qwen3.8 27B + MTP + xhigh | 27B    | 21.0GB | yes    | Interactive quality ceiling             |
 | `summarizer`            | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | TL;DW bot, 256K context summarization   |
 | `loop`                  | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | no     | Loop-engine worker (agentic coding, 131072 ctx, text-only; same weights as summarizer via symlink) |
 | `erfi`                  | Qwen3-4B fine-tune        | 4B     | 3.5GB  | no     | Personal-voice bot (local GGUF)         |
