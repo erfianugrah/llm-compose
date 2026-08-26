@@ -176,9 +176,9 @@
     {%- endfor %}
     {{- '\n</tools>' }}
     {%- if _tool_format == 'json' %}
-        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n thinking\nBrief explanation of tool call\n response\n<tool_call>\n{"name": "example_function_name", "arguments": {"example_parameter_1": "value_1", "example_parameter_2": "This is the value for the second parameter"}}\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- You can use the  thinking response block to plan your next tool call OR to synthesize data and formulate your final response to the user.\n- ALL explanation and reasoning MUST be placed strictly inside the  thinking response block.\n- Function calls MUST follow the specified format: a single JSON object with "name" and "arguments" keys inside <tool_call></tool_call> XML tags.\n- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY after thinking, with NO conversational text before it.\n- The <tool_call> tag MUST be at the very beginning of a new line, with NO spaces or indentation before it.\n- To call multiple functions, output a separate, completely closed <tool_call></tool_call> block for EACH function. Do NOT nest <tool_call> blocks.\n- If you have all necessary data, provide your final answer directly to the user without any tool call.\n</IMPORTANT>' }}
+        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<think>\nBrief explanation of tool call\n</think>\n<tool_call>\n{"name": "example_function_name", "arguments": {"example_parameter_1": "value_1", "example_parameter_2": "This is the value for the second parameter"}}\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- You can use the <think></think> block to plan your next tool call OR to synthesize data and formulate your final response to the user.\n- ALL explanation and reasoning MUST be placed strictly inside the <think></think> block.\n- Function calls MUST follow the specified format: a single JSON object with "name" and "arguments" keys inside <tool_call></tool_call> XML tags.\n- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY after thinking, with NO conversational text before it.\n- The <tool_call> tag MUST be at the very beginning of a new line, with NO spaces or indentation before it.\n- To call multiple functions, output a separate, completely closed <tool_call></tool_call> block for EACH function. Do NOT nest <tool_call> blocks.\n- If you have all necessary data, provide your final answer directly to the user without any tool call.\n</IMPORTANT>' }}
     {%- else %}
-        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n thinking\nBrief explanation of tool call\n response\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- You can use the  thinking response block to plan your next tool call OR to synthesize data and formulate your final response to the user.\n- ALL explanation and reasoning MUST be placed strictly inside the  thinking response block.\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags.\n- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY after thinking, with NO conversational text before it.\n- The <tool_call> and <function> tags MUST be at the very beginning of a new line, with NO spaces or indentation before them.\n- To call multiple functions, output a separate, completely closed <tool_call></tool_call> block for EACH function. Do NOT nest <tool_call> blocks.\n- If you have all necessary data, provide your final answer directly to the user without any tool call.\n</IMPORTANT>' }}
+        {{- '\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<think>\nBrief explanation of tool call\n</think>\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- You can use the <think></think> block to plan your next tool call OR to synthesize data and formulate your final response to the user.\n- ALL explanation and reasoning MUST be placed strictly inside the <think></think> block.\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags.\n- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY after thinking, with NO conversational text before it.\n- The <tool_call> and <function> tags MUST be at the very beginning of a new line, with NO spaces or indentation before them.\n- To call multiple functions, output a separate, completely closed <tool_call></tool_call> block for EACH function. Do NOT nest <tool_call> blocks.\n- If you have all necessary data, provide your final answer directly to the user without any tool call.\n</IMPORTANT>' }}
     {%- endif %}
     {%- if _sc %}
         {{- '\n\n' + _sc }}
@@ -249,12 +249,12 @@
         {%- endif %}
         {%- if _explicit_reasoning %}
             {%- set _lead_end = '' %}
-            {%- if content.startswith(' thinking') and ' response' in content %}
-                {%- set _lead_end = ' response' %}
+            {%- if content.startswith('<think>') and '</think>' in content %}
+                {%- set _lead_end = '</think>' %}
             {%- elif content.startswith('<thinking>') and '</thinking>' in content %}
                 {%- set _lead_end = '</thinking>' %}
-            {%- elif content.startswith(' response') %}
-                {%- set _lead_end = ' response' %}
+            {%- elif content.startswith('</think>') %}
+                {%- set _lead_end = '</think>' %}
             {%- elif content.startswith('</thinking>') %}
                 {%- set _lead_end = '</thinking>' %}
             {%- endif %}
@@ -264,20 +264,20 @@
             {%- set reasoning_content = _explicit_reasoning %}
         {%- else %}
             {%- set _think_end = '' %}
-            {%- if content.startswith(' response') %}
-                {%- set _think_end = ' response' %}
+            {%- if content.startswith('</think>') %}
+                {%- set _think_end = '</think>' %}
             {%- elif content.startswith('</thinking>') %}
                 {%- set _think_end = '</thinking>' %}
-            {%- elif '\n response' in content %}
-                {%- set _think_end = '\n response' %}
+            {%- elif '\n</think>' in content %}
+                {%- set _think_end = '\n</think>' %}
             {%- elif '\n</thinking>' in content %}
                 {%- set _think_end = '\n</thinking>' %}
             {%- elif '\n</ think>' in content %}
                 {%- set _think_end = '\n</ think>' %}
             {%- elif '\n</think >' in content %}
                 {%- set _think_end = '\n</think >' %}
-            {%- elif content.startswith(' thinking') and ' response' in content %}
-                {%- set _think_end = ' response' %}
+            {%- elif content.startswith('<think>') and '</think>' in content %}
+                {%- set _think_end = '</think>' %}
             {%- elif content.startswith('<thinking>') and '</thinking>' in content %}
                 {%- set _think_end = '</thinking>' %}
             {%- endif %}
@@ -285,7 +285,7 @@
                 {%- if 'thinking' in _think_end %}
                     {%- set _think_start = '<thinking>' %}
                 {%- else %}
-                    {%- set _think_start = ' thinking' %}
+                    {%- set _think_start = '<think>' %}
                 {%- endif %}
                 {%- set reasoning_content = content.split(_think_end)[0].rstrip('\n') %}
                 {%- if _think_start in reasoning_content %}
@@ -296,7 +296,7 @@
         {%- endif %}
         {%- set reasoning_content = reasoning_content | trim %}
         {%- if (_preserve_thinking or loop.index0 > ns.last_query_index) %}
-            {{- '<|im_start|>assistant\n thinking\n' + reasoning_content + '\n response\n\n' + content }}
+            {{- '<|im_start|>assistant\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}
             {{- '<|im_start|>assistant\n' + content }}
         {%- endif %}
@@ -414,8 +414,8 @@
 {%- if add_generation_prompt %}
     {{- '<|im_start|>assistant\n' }}
     {%- if not ns_state.thinking %}
-        {{- ' thinking\n\n response\n\n' }}
+        {{- '<think>\n\n</think>\n\n' }}
     {%- else %}
-        {{- ' thinking\n' }}
+        {{- '<think>\n' }}
     {%- endif %}
 {%- endif %}
