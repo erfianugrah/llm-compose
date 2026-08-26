@@ -12,8 +12,26 @@ Fixes empty-think poisoning, tool-call crash on JSON-string args,
 mid-dialogue system-message drops, hallucinated user instructions
 in thinking, and KV-preserving chronological thought.
 
-context_size set from P0 spike (2026-08-15): 196608 hard ceiling
-(229376 = 14x collapse). Kept at 196608 x 1 slot.
+context_size = 262144 (the model's native max) since 2026-08-26.
+
+The old 196608 "hard ceiling" was a MEASUREMENT ARTIFACT, not a limit of
+this model or GPU. The 2026-08-20 occupancy sweep ran while whisper-live
+held ~4 GB of the same GPU (it eagerly loaded large-v3 at boot and never
+released it), so every candidate above 196608 spilled out of VRAM and the
+"14x collapse" was host-RAM fallback. Tell: the 245760 row recorded LOWER
+vram_mib (28638) than the 196608 row (31632) while throughput dropped
+100x - an allocation failure, which a kernel/graph limit cannot produce.
+
+Measured KV cost is 45.1 KiB/token (65536 -> 25859 MiB vs 196608 -> 31632
+MiB), so 196608 was already scraping the wall with ~50 MiB spare. After
+whisper-live got lazy-load + idle-unload (whisper-transcribe
+LIVE_MODEL_IDLE_TIMEOUT), 262144 measured 63.7 tok/s with the whole
+whisper stack up (29699 MiB) and 27.7 tok/s at 230k real occupancy
+(1302 tok/s prefill).
+
+262144 is the model's native context_length - this is the true ceiling,
+not a VRAM one. A bigger card would buy a larger quant or more slots,
+not more context.
 
 """
 vram_gb = 21.0
@@ -32,7 +50,7 @@ file = "qwen38-fixed.jinja"
 
 [runtime]
 reasoning = "on"
-context_size = 196608
+context_size = 262144  # native max; see the note above re: the old 196608 artifact
 parallel_slots = 1  # whole budget to one conversation (see above)
 temperature = 1.0
 top_p = 0.95
