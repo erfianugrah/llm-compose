@@ -25,7 +25,7 @@ LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
-.PHONY: help setup up down restart status shell test test-docker test-integration test-proxy-go smoke-proxy-go \
+.PHONY: help setup up verify _poll-health down restart status shell test test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
         pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train \
@@ -43,13 +43,68 @@ setup:
 ## Start proxy + Open WebUI. Pre-flights .env and bind directories so the
 ## error message points at `make setup` instead of compose's cryptic
 ## "${WEBUI_SECRET_KEY:?...}" or a daemon-side "source path not found".
+## Then VERIFIES the proxy actually answers - `docker compose up -d`
+## returning 0 only means the daemon accepted the request, not that the
+## container survived init (see `verify` below).
 up:
 	@if [ ! -f .env ]; then \
 		echo "Missing .env. Run: make setup"; exit 1; fi
 	@if [ ! -d $$HOME/docker-volumes/state ]; then \
 		echo "Bind directories not created. Run: make setup"; exit 1; fi
 	docker compose up -d
-	@echo "Stack ready. Proxy at http://localhost:11434"
+	@$(MAKE) --no-print-directory verify
+
+## Verify the proxy is actually serving, and self-heal the one failure mode
+## that `restart: unless-stopped` provably does NOT cover.
+##
+## Docker's restart policy only retries a container that STARTED and then
+## exited. An OCI *init* failure (exit 127, "error mounting ... /volumes.toml
+## ... not a directory") never reaches running state, so RestartCount stays 0
+## and the proxy stays down until someone notices by hand.
+##
+## Observed 2026-08-25 14:48: model_proxy_go exited 127 on a stale Docker
+## Desktop bind-mount handle (/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/...)
+## while ./volumes.toml on the host was a perfectly normal 2.5KB file. It sat
+## dead for ~12h; pi surfaced only "Connection error" (connection refused at
+## ~1.3s, 3 retries, ~19s to give up) with nothing pointing at the proxy.
+##
+## Recreating the container re-resolves the bind handle, which is why the
+## documented "Docker Desktop bind-mount fix" (llmc volumes refresh) works.
+## Here we do the cheap, targeted version: one force-recreate, then re-poll.
+verify:
+	@printf 'Verifying proxy on http://localhost:11434 ... '
+	@if $(MAKE) --no-print-directory -s _poll-health 2>/dev/null; then \
+		echo "ok"; \
+		echo "Stack ready. Proxy at http://localhost:11434"; \
+		exit 0; \
+	fi; \
+	echo "NOT SERVING"; \
+	state=$$(docker inspect model_proxy_go --format '{{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' 2>/dev/null | tr -d '\n'); \
+	echo "  model_proxy_go: $${state:-absent (never created)}"; \
+	err=$$(docker inspect model_proxy_go --format '{{.State.Error}}' 2>/dev/null | tr -d '\n' | head -c 300); \
+	if [ -n "$$err" ]; then echo "  error: $$err"; fi; \
+	echo "  -> container init failure is NOT covered by restart: unless-stopped; force-recreating once"; \
+	docker compose up -d --force-recreate model-proxy-go >/dev/null 2>&1 || true; \
+	printf '  re-checking ... '; \
+	if $(MAKE) --no-print-directory -s _poll-health 2>/dev/null; then \
+		echo "recovered"; \
+		echo "Stack ready. Proxy at http://localhost:11434"; \
+		exit 0; \
+	fi; \
+	echo "still down"; \
+	echo ""; \
+	echo "Proxy is not serving. Next steps:"; \
+	echo "  make logs-proxy-go        # what it said before dying"; \
+	echo "  llmc volumes refresh      # full Docker Desktop bind-mount fix"; \
+	exit 1
+
+## Poll /health for up to ~30s. Internal helper for `verify`.
+_poll-health:
+	@for i in $$(seq 1 15); do \
+		if curl -fsS -m 2 http://localhost:11434/health >/dev/null 2>&1; then exit 0; fi; \
+		sleep 2; \
+	done; \
+	exit 1
 
 ## Stop the stack and any running GPU service (labelled llmc.mode=...)
 down:
@@ -64,6 +119,7 @@ down:
 ## Force-recreate proxy + Open WebUI (keep any running GPU service)
 restart:
 	docker compose up -d --force-recreate model-proxy-go open-webui
+	@$(MAKE) --no-print-directory verify
 
 ## Show stack + active mode + active model.
 ## Uses llmc because it queries the proxy's mode endpoint and renders a table.
