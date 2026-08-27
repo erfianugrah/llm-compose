@@ -11,7 +11,7 @@ State lives at /state/active.toml inside the proxy container - bind-mounted
 from $HOME/docker-volumes/state on the host (see volumes.toml). Schema:
 
     mode = "llm"            # "llm" | "comfyui" | "train" | "idle"
-    model = "qwen36"        # Active preset name (only set when mode = "llm")
+    model = "qwen38"        # Active preset name (only set when mode = "llm")
     lock_owners = ["a", "b"] # List of owners holding the lock
     updated_at = 1747162456 # Unix timestamp of last update
 

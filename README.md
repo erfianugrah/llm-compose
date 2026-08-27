@@ -103,13 +103,13 @@ Each LLM is defined in `models/<name>.toml`. Schema is strict and
 validated at load time:
 
 ```toml
-name = "Qwen3.6 27B Dense — coding, vision, thinking"
-description = "Flagship coding model. 27B dense params, SWE-bench 77.2."
-vram_gb = 17.5
+name = "Qwen3.8 27B Dense - coding, vision, thinking"
+description = "Daily driver coding model. 27B dense params, 262144 ctx."
+vram_gb = 21.0
 
 [model]
-repo = "unsloth/Qwen3.6-27B-GGUF"
-file = "Qwen3.6-27B-UD-Q4_K_XL.gguf"
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-Q4_K_M.gguf"
 
 [mmproj]                          # optional, for multimodal
 url = "https://huggingface.co/.../mmproj-BF16.gguf"

@@ -103,7 +103,7 @@ class TestModelSwapCorrectness(unittest.TestCase):
     MODEL_A = "gemma4"
     MODEL_A_FILE = "gemma-4-31B-it-Q4_K_M.gguf"
     MODEL_B = "qwen38"
-    MODEL_B_FILE = "Qwen3.6-27B-UD-Q4_K_XL.gguf"
+    MODEL_B_FILE = "Qwen3.8-27B-Q4_K_M.gguf"
 
     @classmethod
     def setUpClass(cls):
