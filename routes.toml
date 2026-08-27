@@ -1,0 +1,18 @@
+# Task-routing alias table. model: "auto" -> default, "auto:<name>" -> <name>.
+# chain is ordered by preference; empty chain = "whatever is resident".
+
+[default]
+description = "general chat: big model if loaded, small otherwise"
+chain = ["qwen38", "qwen35-9b"]
+
+[code]
+description = "coding tasks"
+chain = ["qwen3-coder", "qwen38"]
+
+[cheap]
+description = "cheap tasks: 9b then summarizer"
+chain = ["qwen35-9b", "summarizer"]
+
+[resident]
+description = "never swap: whatever is loaded"
+chain = []

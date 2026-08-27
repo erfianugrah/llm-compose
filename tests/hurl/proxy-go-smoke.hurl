@@ -128,3 +128,24 @@ HTTP 409
 
 DELETE {{base}}/v1/presets/smoke-ephemeral
 HTTP 204
+
+# Task routing (R2/R5): unknown alias 404; resident alias served in place.
+POST {{base}}/v1/chat/completions
+Content-Type: application/json
+{"model":"auto:nope","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":false}
+HTTP 404
+
+# "auto" resolves to the default chain. With qwen38 resident (first in the
+# default chain) it serves in place - no swap.
+POST {{base}}/v1/chat/completions
+Content-Type: application/json
+{"model":"auto","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"stream":false}
+HTTP 200
+[Asserts]
+jsonpath "$.model" contains "Qwen3.8"
+
+# Aliases appear in the model listing (exactly one entry with id "auto").
+GET {{base}}/v1/models
+HTTP 200
+[Asserts]
+jsonpath "$.data[?(@.id == 'auto')]" count == 1

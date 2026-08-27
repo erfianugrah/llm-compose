@@ -107,6 +107,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./models:/presets:ro
+      - ./routes.toml:/routes.toml:ro
       - ./volumes.toml:/volumes.toml:ro
       - ${HOME}/docker-volumes/state-go:/state
       - ${HOME}/docker-volumes/llama-server/models:/assets
