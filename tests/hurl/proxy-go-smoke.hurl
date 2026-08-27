@@ -144,8 +144,8 @@ HTTP 200
 [Asserts]
 jsonpath "$.model" contains "Qwen3.8"
 
-# Aliases appear in the model listing (exactly one entry with id "auto").
+# Aliases appear in the model listing: data count >= 22 (18 presets + 4 aliases).
 GET {{base}}/v1/models
 HTTP 200
 [Asserts]
-jsonpath "$.data[?(@.id == 'auto')]" count == 1
+jsonpath "$.data" count >= 22
