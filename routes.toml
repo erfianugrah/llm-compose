@@ -1,17 +1,23 @@
 # Task-routing alias table. model: "auto" -> default, "auto:<name>" -> <name>.
 # chain is ordered by preference; empty chain = "whatever is resident".
+#
+# Model roles:
+#   qwen38 (Qwen3.8 27B)  -> coding
+#   gemma4 (Gemma 4 31B)   -> generic tasks + writing
+#   summarizer             -> MoE summarization
+#   gemma4-12b             -> small/fast fallback
 
 [default]
-description = "general chat: big model if loaded, small otherwise"
-chain = ["qwen38", "qwen35-9b"]
+description = "generic tasks + writing: Gemma 4 if loaded, Qwen3.8 otherwise"
+chain = ["gemma4", "qwen38"]
 
 [code]
-description = "coding tasks"
-chain = ["qwen3-coder", "qwen38"]
+description = "coding: Qwen3.8"
+chain = ["qwen38"]
 
 [cheap]
-description = "cheap tasks: 9b then summarizer"
-chain = ["qwen35-9b", "summarizer"]
+description = "cheap tasks: summarizer then gemma4-12b"
+chain = ["summarizer", "gemma4-12b"]
 
 [resident]
 description = "never swap: whatever is loaded"

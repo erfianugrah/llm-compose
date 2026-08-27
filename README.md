@@ -198,17 +198,11 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 
 ## Available models
 
-12 presets in `models/`:
+10 presets in `models/`:
 
 | Preset                  | Model                     | Active | VRAM   | Vision | Best for                                |
 |-------------------------|---------------------------|--------|--------|--------|-----------------------------------------|
-| `gemma4`                | Gemma 4 31B Dense         | 31B    | 20.2GB | yes    | Coding + image input, agentic           |
-| `qwen36`                | Qwen3.6 27B Dense         | 27B    | 17.5GB | yes    | Agentic coding, SWE-bench 77.2          |
-| `qwen36-moe`            | Qwen3.6 35B-A3B MoE       | 3B     | 22.0GB | yes    | Fast agentic coding                     |
-| `qwen36-moe-uncensored` | Qwen3.6 35B Uncensored    | 3B     | 23.0GB | yes    | Creative writing, RP                    |
-| `qwen3`                 | Qwen3 32B Dense           | 32B    | 20.0GB | no     | Research, reasoning, tools              |
-| `qwen3-coder`           | Qwen3 Coder 30B-A3B MoE   | 3.3B   | 18.6GB | no     | Fast code gen                           |
-| `qwen3-vl`              | Qwen3-VL 2B               | 2B     | 4.5GB  | yes    | Lightweight image/video description     |
+| `gemma4`                | Gemma 4 31B Dense         | 31B    | 20.2GB | yes    | Generic tasks, writing, image input     |
 | `qwen38`                | Qwen3.8 27B Dense         | 27B    | 21.0GB | yes    | Daily driver: coding, vision, thinking  |
 | `qwen38-xhigh`          | Qwen3.8 27B + MTP + xhigh | 27B    | 21.0GB | yes    | Interactive quality ceiling             |
 | `summarizer`            | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | TL;DW bot, 256K context summarization   |

@@ -43,8 +43,7 @@ class TestPresetLoading(unittest.TestCase):
         presets = load_all(MODELS_DIR)
         # Don't hardcode a count - presets come and go. Assert the core set
         # is present and everything parsed (load_all raises on bad TOML).
-        expected = {"qwen3", "qwen3-coder", "qwen36", "qwen36-moe", "gemma4",
-                    "summarizer", "loop", "erfi", "qwen3-vl"}
+        expected = {"gemma4", "summarizer", "loop", "erfi"}
         names = {p.name for p in presets.values()}
         missing = expected - names
         self.assertFalse(missing, f"missing presets: {missing}; got {sorted(names)}")
@@ -247,15 +246,15 @@ class TestAssetDerivation(unittest.TestCase):
 
     def test_mmproj_url_derives_filename(self):
         spec = AssetSpec(url="https://example.com/x")
-        self.assertEqual(spec.derived_filename("qwen36", "-mmproj.gguf"), "qwen36-mmproj.gguf")
+        self.assertEqual(spec.derived_filename("qwen38", "-mmproj.gguf"), "qwen38-mmproj.gguf")
 
     def test_mmproj_file_used_as_is(self):
         spec = AssetSpec(file="custom-name.gguf")
-        self.assertEqual(spec.derived_filename("qwen36", "-mmproj.gguf"), "custom-name.gguf")
+        self.assertEqual(spec.derived_filename("qwen38", "-mmproj.gguf"), "custom-name.gguf")
 
     def test_unset_asset_returns_none(self):
         spec = AssetSpec()
-        self.assertIsNone(spec.derived_filename("qwen36", "-mmproj.gguf"))
+        self.assertIsNone(spec.derived_filename("qwen38", "-mmproj.gguf"))
         self.assertFalse(spec.is_set)
 
 

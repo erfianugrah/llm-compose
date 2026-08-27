@@ -96,7 +96,7 @@ Smoke-test the live stack after changes:
 
 ```bash
 llmc status                              # health + active mode
-llmc switch qwen3-vl                     # cheap model swap (~5GB, fastest)
+llmc switch gemma4-12b                   # cheap model swap (fastest)
 curl http://localhost:11434/v1/models    # list presets via the proxy
 ```
 
@@ -125,7 +125,7 @@ llmc bench quants                        # quantization comparison
 1. Create `models/<id>.toml` based on an existing preset:
 
    ```bash
-   cp models/qwen36.toml models/my-model.toml
+   cp models/qwen38.toml models/my-model.toml
    $EDITOR models/my-model.toml
    ```
 

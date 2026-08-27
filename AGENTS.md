@@ -190,9 +190,10 @@ distinct `--owner` (e.g. the pi session id) and releases only itself;
 the preset stays pinned until the last owner releases. Ownerless unlock
 force-clears everything (admin escape hatch). `GET /mode` and
 `llmc status` show `lock_owners`. Concurrent loops: share ONE preset
-(`loop` runs `parallel_slots = 2`, 2x98K ctx), one git worktree per
-loop when looping the same repo, and never let a loop's sensors
-rebuild/restart the stack that serves them.
+(`loop` runs `parallel_slots = 1`, 262144 ctx - Qwen3.8 Dense KV is
+45.1 KiB/token so 2 wide slots no longer fit the 32 GB card), one git
+worktree per loop when looping the same repo, and never let a loop's
+sensors rebuild/restart the stack that serves them.
 
 The lock has a TTL (`LLMC_LOCK_TTL_S`, default 900s) so a crashed
 consumer can't pin the GPU forever: every granted request under the

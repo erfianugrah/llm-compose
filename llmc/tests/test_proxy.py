@@ -241,7 +241,7 @@ class TestProxyEndpoints(unittest.TestCase):
     def test_health_during_swap(self):
         ctx = self._make_ctx()
         ctx.switching = True
-        ctx.state = State(mode="llm", model="qwen36")
+        ctx.state = State(mode="llm", model="qwen38")
         with _ProxyServer(ctx) as srv:
             status, _, payload = _http_get(srv.port, "/health")
         self.assertEqual(status, 200)
@@ -305,13 +305,13 @@ class TestProxyEndpoints(unittest.TestCase):
         judge requires: if /metrics is deleted, forwarding never happens,
         and this test fails immediately (not a false-green).
         """
-        ctx = self._make_ctx(current_mode="llm", state=State(mode="llm", model="qwen36"))
+        ctx = self._make_ctx(current_mode="llm", state=State(mode="llm", model="qwen38"))
 
         # Prometheus-style metric lines from the llama backend
         fake_body = (
             b"# HELP llama_prompt_count Total number of prompts.\n"
             b"# TYPE llama_prompt_count counter\n"
-            b'llama_prompt_count{model="qwen36"} 42.0\n'
+            b'llama_prompt_count{model="qwen38"} 42.0\n'
         )
 
         # List to record _forward calls: (host, port, path)
@@ -376,7 +376,7 @@ class TestProxyEndpoints(unittest.TestCase):
         with _ProxyServer(ctx) as srv:
             status, _, payload = _http_post(srv.port, "/mode", {
                 "mode": "llm",
-                "model": "qwen36",  # 17.5 GB
+                "model": "qwen38",  # 17.5 GB
             })
         self.assertEqual(status, 422)
         self.assertIn("VRAM", payload["error"])
@@ -414,7 +414,7 @@ class TestModelLock(unittest.TestCase):
     Protects unattended multi-hour runs (loop engine) from cross-client
     GPU eviction."""
 
-    def _make_ctx(self, *, current_mode="llm", model="qwen36"):
+    def _make_ctx(self, *, current_mode="llm", model="qwen38"):
         orch = MagicMock()
         orch.current_mode.return_value = current_mode
         from llmc.presets import load_all
@@ -429,21 +429,21 @@ class TestModelLock(unittest.TestCase):
     def test_lock_and_unlock_roundtrip(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38"})
             self.assertEqual(status, 200)
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             status, _, payload = _http_get(srv.port, "/mode")
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             status, _, payload = _http_post(srv.port, "/mode", {"lock": False})
             self.assertEqual(status, 200)
             self.assertIsNone(payload["locked"])
 
     def test_lock_true_locks_current_model(self):
-        ctx = self._make_ctx(model="qwen36")
+        ctx = self._make_ctx(model="qwen38")
         with _ProxyServer(ctx) as srv:
             status, _, payload = _http_post(srv.port, "/mode", {"lock": True})
         self.assertEqual(status, 200)
-        self.assertEqual(payload["locked"], "qwen36")
+        self.assertEqual(payload["locked"], "qwen38")
 
     def test_lock_unknown_preset_404s(self):
         ctx = self._make_ctx()
@@ -454,7 +454,7 @@ class TestModelLock(unittest.TestCase):
     def test_locked_rejects_other_model_swap(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38"})
             status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
                 "model": "summarizer", "messages": [{"role": "user", "content": "hi"}],
             })
@@ -465,7 +465,7 @@ class TestModelLock(unittest.TestCase):
     def test_locked_rejects_unknown_model_passthrough(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38"})
             status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
                 "model": "no-such-model", "messages": [{"role": "user", "content": "hi"}],
             })
@@ -475,7 +475,7 @@ class TestModelLock(unittest.TestCase):
     def test_locked_rejects_mode_swap(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38"})
             status, _, payload = _http_post(srv.port, "/mode", {"mode": "comfyui"})
         self.assertEqual(status, 503)
         self.assertIn("lock", payload["error"])  # /mode 503s use a plain-string error
@@ -487,9 +487,9 @@ class TestModelLock(unittest.TestCase):
         passed the lock gate and forwarding was attempted."""
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38"})
             status, _, _ = _http_post(srv.port, "/v1/chat/completions", {
-                "model": "qwen36", "messages": [{"role": "user", "content": "hi"}],
+                "model": "qwen38", "messages": [{"role": "user", "content": "hi"}],
             })
         self.assertEqual(status, 502)
 
@@ -501,13 +501,13 @@ class TestModelLock(unittest.TestCase):
         stay rejected."""
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38"})
             # Simulate the TOML disappearing + live reload dropping it.
             # reload_presets would undo the deletion from disk, so pin it.
-            ctx.presets = {k: p for k, p in ctx.presets.items() if p.name != "qwen36"}
+            ctx.presets = {k: p for k, p in ctx.presets.items() if p.name != "qwen38"}
             ctx.reload_presets = lambda: None
             status, _, _ = _http_post(srv.port, "/v1/chat/completions", {
-                "model": "qwen36", "messages": [{"role": "user", "content": "hi"}],
+                "model": "qwen38", "messages": [{"role": "user", "content": "hi"}],
             })
             self.assertEqual(status, 502)  # forwarded, not rejected
             status, _, payload = _http_post(srv.port, "/v1/chat/completions", {
@@ -520,7 +520,7 @@ class TestModelLock(unittest.TestCase):
 class TestLockPersistence(unittest.TestCase):
     """Restart-safe lock: lock state round-trips through the state file."""
 
-    def _make_ctx(self, state_dir, *, model="qwen36"):
+    def _make_ctx(self, state_dir, *, model="qwen38"):
         orch = MagicMock()
         orch.current_mode.return_value = "llm"
         from llmc.presets import load_all
@@ -537,9 +537,9 @@ class TestLockPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._make_ctx(tmp)
             with _ProxyServer(ctx) as srv:
-                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "a"})
+                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "a"})
                 self.assertEqual(status, 200)
-                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "b"})
+                status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "b"})
                 self.assertEqual(status, 200)
 
             # Simulate a proxy restart: fresh context from the same state dir
@@ -547,7 +547,7 @@ class TestLockPersistence(unittest.TestCase):
             with _ProxyServer(ctx2) as srv2:
                 status, _, payload = _http_get(srv2.port, "/mode")
                 self.assertEqual(status, 200)
-                self.assertEqual(payload["locked"], "qwen36")
+                self.assertEqual(payload["locked"], "qwen38")
                 self.assertEqual(payload["lock_owners"], ["a", "b"])
                 # Enforcement survives too
                 status, _, _ = _http_post(srv2.port, "/v1/chat/completions", {
@@ -561,7 +561,7 @@ class TestLockPersistence(unittest.TestCase):
             ctx3 = self._make_ctx(tmp)
             with _ProxyServer(ctx3) as srv3:
                 _, _, payload = _http_get(srv3.port, "/mode")
-                self.assertEqual(payload["locked"], "qwen36")
+                self.assertEqual(payload["locked"], "qwen38")
                 self.assertEqual(payload["lock_owners"], ["b"])
 
     def test_lock_works_with_unwritable_state_dir(self):
@@ -569,10 +569,10 @@ class TestLockPersistence(unittest.TestCase):
         in-memory with a log line, never 500."""
         ctx = self._make_ctx("/state")
         with _ProxyServer(ctx) as srv:
-            status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "x"})
+            status, _, _ = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "x"})
             self.assertEqual(status, 200)
             _, _, payload = _http_get(srv.port, "/mode")
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             status, _, _ = _http_post(srv.port, "/mode", {"lock": False})
             self.assertEqual(status, 200)
 
@@ -631,7 +631,7 @@ class TestSwapLockSerializesEnsureModel(unittest.TestCase):
                     status, _, _ = _http_post(
                         srv.port,
                         "/v1/chat/completions",
-                        {"model": "qwen36", "messages": [{"role": "user", "content": "hi"}]},
+                        {"model": "qwen38", "messages": [{"role": "user", "content": "hi"}]},
                         timeout=10.0,
                     )
                     with results_lock:
@@ -677,7 +677,7 @@ class TestSwapLockSerializesEnsureModel(unittest.TestCase):
                     _http_post(
                         srv.port,
                         "/mode",
-                        {"mode": "llm", "model": "qwen36"},
+                        {"mode": "llm", "model": "qwen38"},
                         timeout=10.0,
                     )
 
@@ -698,7 +698,7 @@ class TestBuildContext(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             (state_dir / "active.toml").write_text(
-                'mode = "llm"\nmodel = "qwen36"\nupdated_at = 1000\n'
+                'mode = "llm"\nmodel = "qwen38"\nupdated_at = 1000\n'
             )
             # build_context loads volumes.toml — point at the repo's copy
             # so the proxy can resolve logical volume names to host paths.
@@ -712,7 +712,7 @@ class TestBuildContext(unittest.TestCase):
                 MockOrch.return_value.current_mode.return_value = "llm"
                 ctx = build_context(config)
         self.assertEqual(ctx.state.mode, "llm")
-        self.assertEqual(ctx.state.model, "qwen36")
+        self.assertEqual(ctx.state.model, "qwen38")
         self.assertGreater(len(ctx.presets), 0)
 
     def test_reconciliation_trusts_running_container(self):
@@ -721,7 +721,7 @@ class TestBuildContext(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             (state_dir / "active.toml").write_text(
-                'mode = "llm"\nmodel = "qwen36"\nupdated_at = 1000\n'
+                'mode = "llm"\nmodel = "qwen38"\nupdated_at = 1000\n'
             )
             config = ProxyConfig(
                 presets_dir=REPO_ROOT / "models",
@@ -734,12 +734,12 @@ class TestBuildContext(unittest.TestCase):
         self.assertEqual(ctx.state.mode, "idle")
         # Model is retained even when mode reconciles to idle (so the next
         # /v1 request can resume)
-        self.assertEqual(ctx.state.model, "qwen36")
+        self.assertEqual(ctx.state.model, "qwen38")
 
 class TestOwnerSemantics(unittest.TestCase):
     """Shared lock with named owners: concurrent loops holding one preset."""
 
-    def _make_ctx(self, *, current_mode="llm", model="qwen36"):
+    def _make_ctx(self, *, current_mode="llm", model="qwen38"):
         orch = MagicMock()
         orch.current_mode.return_value = current_mode
         from llmc.presets import load_all
@@ -754,11 +754,11 @@ class TestOwnerSemantics(unittest.TestCase):
     def test_lock_with_owner_semantics(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            # Owner A locks qwen36
-            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            # Owner A locks qwen38
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
             self.assertEqual(status, 200)
-            # Owner B locks qwen36
-            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "B"})
+            # Owner B locks qwen38
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B"})
             self.assertEqual(status, 200)
             self.assertEqual(payload["lock_owners"], ["A", "B"])
             # Owner A unlocks
@@ -774,19 +774,19 @@ class TestOwnerSemantics(unittest.TestCase):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
             # Lock with A and B
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "B"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B"})
             # Clear with A
             status, _, payload = _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
             self.assertEqual(status, 200)
             # Still locked by B
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             self.assertEqual(payload["lock_owners"], ["B"])
 
     def test_lock_owners_appears_in_mode_payload(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
             status, _, payload = _http_get(srv.port, "/mode")
             self.assertEqual(status, 200)
             self.assertIn("lock_owners", payload)
@@ -799,41 +799,41 @@ class TestOwnerSemantics(unittest.TestCase):
         lock (evicting L's model mid-run). It must now fail fast."""
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B"})
             self.assertEqual(status, 409)
             self.assertIn("wait", payload["error"])
             status, _, payload = _http_get(srv.port, "/mode")
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             self.assertEqual(payload["lock_owners"], ["A"])
             self.assertEqual(payload["lock_queue"], [])
 
     def test_contended_lock_with_wait_queues_202(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
             status, _, payload = _http_post(srv.port, "/mode",
-                                            {"lock": "qwen38", "owner": "B", "wait": True})
+                                            {"lock": "gemma4", "owner": "B", "wait": True})
             self.assertEqual(status, 202)
             self.assertTrue(payload["queued"])
             self.assertEqual(payload["position"], 1)
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
             # Queue visible in status
             status, _, payload = _http_get(srv.port, "/mode")
             self.assertEqual(payload["lock_queue"],
-                             [{"owner": "B", "model": "qwen38", "position": 1}])
+                             [{"owner": "B", "model": "gemma4", "position": 1}])
 
     def test_queue_head_acquires_after_drain(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B", "wait": True})
             _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
             # B's next poll acquires and dequeues
             status, _, payload = _http_post(srv.port, "/mode",
-                                            {"lock": "qwen38", "owner": "B", "wait": True})
+                                            {"lock": "gemma4", "owner": "B", "wait": True})
             self.assertEqual(status, 200)
-            self.assertEqual(payload["locked"], "qwen38")
+            self.assertEqual(payload["locked"], "gemma4")
             self.assertEqual(payload["lock_owners"], ["B"])
             status, _, payload = _http_get(srv.port, "/mode")
             self.assertEqual(payload["lock_queue"], [])
@@ -842,8 +842,8 @@ class TestOwnerSemantics(unittest.TestCase):
         """C queues behind B; when the lock drains, C cannot jump B's grant."""
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B", "wait": True})
             _http_post(srv.port, "/mode", {"lock": "summarizer", "owner": "C", "wait": True})
             _http_post(srv.port, "/mode", {"lock": False, "owner": "A"})
             # C polls first but is not head: stays queued at position 2
@@ -853,9 +853,9 @@ class TestOwnerSemantics(unittest.TestCase):
             self.assertEqual(payload["position"], 2)
             # B (head) acquires
             status, _, payload = _http_post(srv.port, "/mode",
-                                            {"lock": "qwen38", "owner": "B", "wait": True})
+                                            {"lock": "gemma4", "owner": "B", "wait": True})
             self.assertEqual(status, 200)
-            self.assertEqual(payload["locked"], "qwen38")
+            self.assertEqual(payload["locked"], "gemma4")
             # B drains; C (now head) acquires
             _http_post(srv.port, "/mode", {"lock": False, "owner": "B"})
             status, _, payload = _http_post(srv.port, "/mode",
@@ -868,20 +868,20 @@ class TestOwnerSemantics(unittest.TestCase):
         the queue must not gate it."""
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
-            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "C"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B", "wait": True})
+            status, _, payload = _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "C"})
             self.assertEqual(status, 200)
             self.assertEqual(payload["lock_owners"], ["A", "C"])
 
     def test_enqueue_is_idempotent_and_model_updates_in_place(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B", "wait": True})
             # B polls again (same model): still one entry, position 1
             status, _, payload = _http_post(srv.port, "/mode",
-                                            {"lock": "qwen38", "owner": "B", "wait": True})
+                                            {"lock": "gemma4", "owner": "B", "wait": True})
             self.assertEqual(status, 202)
             self.assertEqual(len(payload["lock_queue"]), 1)
             # B changes its mind: model updates, position kept
@@ -894,18 +894,18 @@ class TestOwnerSemantics(unittest.TestCase):
     def test_unlock_removes_owner_from_queue(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
-            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "B", "wait": True})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "gemma4", "owner": "B", "wait": True})
             # B gives up waiting
             _http_post(srv.port, "/mode", {"lock": False, "owner": "B"})
             status, _, payload = _http_get(srv.port, "/mode")
             self.assertEqual(payload["lock_queue"], [])
-            self.assertEqual(payload["locked"], "qwen36")
+            self.assertEqual(payload["locked"], "qwen38")
 
     def test_unknown_preset_does_not_enqueue(self):
         ctx = self._make_ctx()
         with _ProxyServer(ctx) as srv:
-            _http_post(srv.port, "/mode", {"lock": "qwen36", "owner": "A"})
+            _http_post(srv.port, "/mode", {"lock": "qwen38", "owner": "A"})
             status, _, _ = _http_post(srv.port, "/mode",
                                       {"lock": "nope", "owner": "B", "wait": True})
             self.assertEqual(status, 404)

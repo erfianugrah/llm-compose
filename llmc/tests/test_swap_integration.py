@@ -3,7 +3,7 @@
 Requires:
     1. The v2 stack running (proxy at localhost:11434, network 'llmc')
     2. GPU available
-    3. gemma4 and qwen36 GGUFs already on disk under the llama-models
+    3. gemma4 and qwen38 GGUFs already on disk under the llama-models
        bind path (default: $HOME/docker-volumes/llama-server/models) —
        these are 17-20 GB each.
 
@@ -102,7 +102,7 @@ class TestModelSwapCorrectness(unittest.TestCase):
 
     MODEL_A = "gemma4"
     MODEL_A_FILE = "gemma-4-31B-it-Q4_K_M.gguf"
-    MODEL_B = "qwen36"
+    MODEL_B = "qwen38"
     MODEL_B_FILE = "Qwen3.6-27B-UD-Q4_K_XL.gguf"
 
     @classmethod
@@ -195,16 +195,16 @@ class TestModelSwapTiming(unittest.TestCase):
         self.assertEqual(status, 200, f"swap to {model} failed: HTTP {status}")
         return elapsed
 
-    def test_measure_gemma4_to_qwen36_to_gemma4(self):
+    def test_measure_gemma4_to_qwen38_to_gemma4(self):
         # Ensure starting state
         _post_mode("llm", model="gemma4", timeout=cls_timeout())
 
-        t1 = self._time_swap("qwen36")
+        t1 = self._time_swap("qwen38")
         t2 = self._time_swap("gemma4")
 
         print(f"\nSwap timings:")
-        print(f"  gemma4 → qwen36: {t1:.1f}s")
-        print(f"  qwen36 → gemma4: {t2:.1f}s")
+        print(f"  gemma4 → qwen38: {t1:.1f}s")
+        print(f"  qwen38 → gemma4: {t2:.1f}s")
 
         self.assertLess(t1, self.MAX_SWAP_SECONDS)
         self.assertLess(t2, self.MAX_SWAP_SECONDS)

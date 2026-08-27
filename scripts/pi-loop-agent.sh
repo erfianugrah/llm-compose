@@ -14,7 +14,6 @@ done
 LOCK_PRESET=""
 case "$MODEL" in
   llama-server/loop)        LOCK_PRESET="loop-gemma-4-26B-A4B-it-Q4_K_M" ;;
-  llama-server/qwen3-coder) LOCK_PRESET="qwen3-coder-30b-a3b-instruct-q4_k_m" ;;
 esac
 
 unlock() {

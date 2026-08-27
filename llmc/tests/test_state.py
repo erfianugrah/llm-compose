@@ -26,9 +26,9 @@ class TestStateValidation(unittest.TestCase):
             State(mode=mode)  # should not raise
 
     def test_to_toml_includes_model_when_set(self):
-        toml = State(mode="llm", model="qwen36", updated_at=42).to_toml()
+        toml = State(mode="llm", model="qwen38", updated_at=42).to_toml()
         self.assertIn('mode = "llm"', toml)
-        self.assertIn('model = "qwen36"', toml)
+        self.assertIn('model = "qwen38"', toml)
         self.assertIn("updated_at = 42", toml)
 
     def test_to_toml_omits_model_when_none(self):
@@ -56,23 +56,23 @@ class TestStatePersistence(unittest.TestCase):
         self.assertIsNone(s.model)
 
     def test_save_and_load_roundtrip(self):
-        save(self.path, State(mode="llm", model="qwen36", updated_at=1000))
+        save(self.path, State(mode="llm", model="qwen38", updated_at=1000))
         loaded = load(self.path)
         self.assertEqual(loaded.mode, "llm")
-        self.assertEqual(loaded.model, "qwen36")
+        self.assertEqual(loaded.model, "qwen38")
         self.assertEqual(loaded.updated_at, 1000)
 
     def test_lock_roundtrip(self):
         save(self.path, State(
             mode="llm",
-            model="qwen36",
+            model="qwen38",
             locked="loop",
             lock_owners=["a", "b"],
             updated_at=1000
         ))
         loaded = load(self.path)
         self.assertEqual(loaded.mode, "llm")
-        self.assertEqual(loaded.model, "qwen36")
+        self.assertEqual(loaded.model, "qwen38")
         self.assertEqual(loaded.locked, "loop")
         self.assertEqual(loaded.lock_owners, ["a", "b"])
         self.assertEqual(loaded.updated_at, 1000)
@@ -84,12 +84,12 @@ class TestStatePersistence(unittest.TestCase):
         self.assertFalse(tmp_path.exists())
 
     def test_save_stamps_timestamp_when_zero(self):
-        save(self.path, State(mode="llm", model="qwen36", updated_at=0))
+        save(self.path, State(mode="llm", model="qwen38", updated_at=0))
         loaded = load(self.path)
         self.assertGreater(loaded.updated_at, 0)
 
     def test_update_is_atomic_rmw(self):
-        save(self.path, State(mode="llm", model="qwen36", updated_at=1000))
+        save(self.path, State(mode="llm", model="qwen38", updated_at=1000))
         new = update(self.path, mode="comfyui", model=None)
         self.assertEqual(new.mode, "comfyui")
         self.assertIsNone(new.model)
@@ -101,14 +101,14 @@ class TestStatePersistence(unittest.TestCase):
         self.assertIsNone(loaded.model)
 
     def test_update_preserves_unchanged_fields(self):
-        save(self.path, State(mode="llm", model="qwen36", updated_at=1000))
+        save(self.path, State(mode="llm", model="qwen38", updated_at=1000))
         # Only update mode; model should stay
         update(self.path, mode="idle")
         loaded = load(self.path)
         self.assertEqual(loaded.mode, "idle")
         # When transitioning to idle the model is intentionally retained
         # so the next /v1 request remembers the last preset to load
-        self.assertEqual(loaded.model, "qwen36")
+        self.assertEqual(loaded.model, "qwen38")
 
 
 class TestStateLoadValidation(unittest.TestCase):

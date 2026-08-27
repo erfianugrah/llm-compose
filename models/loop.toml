@@ -1,55 +1,66 @@
-name = "Loop Engine - Gemma 4 26B-A4B MoE, agentic coding"
+name = "Loop Engine - Qwen3.8 27B Dense, agentic coding"
 description = """
-Loop-engine preset: Gemma 4 26B-A4B MoE tuned for unattended agentic
+Loop-engine preset: Qwen3.8 27B Dense tuned for unattended agentic
 coding (self-correcting-loop worker: fresh pi -p per iteration, heavy
 tool-calling, frontier model as judge).
 
-Same weights as summarizer.toml via a symlinked GGUF (loop-<name>.gguf)
+Same weights as qwen38.toml via a symlinked GGUF (loop-<name>.gguf)
 because preset model_id derives from the file stem and duplicate stems
-are rejected. Text-only: no mmproj (frees ~0.8 GB KV headroom; the loop
-worker never sees images - visual judging runs on the enough).
+are rejected. Text-only: no mmproj (frees ~0.9 GB KV headroom; the loop
+worker never sees images - visual judging runs elsewhere).
 
-Tuning rationale:
-- reasoning on: thinking helps multi-step tool use; per-request clients
-  can still override via chat_template_kwargs when --jinja is on.
-- temp 1.0 / top_p 0.95 / top_k 64 / min_p 0.05: matches the published
-  Gemma 4 agentic config (pgi.dev RTX 5090 head-to-head, where this
-  model won on tool-calling reliability + instruction following).
-- presence_penalty 0: penalising already-seen tokens breaks tool-call
-  JSON keys and repeated syntax over long agentic transcripts.
-- 196608 ctx, 2 slots (concurrent loops share the preset; 2x98K ctx): KV q8_0
-  (entrypoint default). Measured footprint 21598 MiB at 131072 ctx
-  (nvidia-smi, 2026-08-12); 196608 adds ~1 GB KV. The wide window is
-  load-bearing: loop iterations read large files and the model emits
-  10K+ token thinking traces - at 131072 the 85% auto-compact threshold
-  (~111K) killed every iteration of the concurrency-build run.
-  Do NOT enable q4_1 KV on Gemma 4 (-19% gen speed).
+Tuning rationale (inherited from qwen38.toml, the agentic-churn-proven
+daily driver):
+- reasoning on + reasoning_effort medium: thinking helps multi-step tool
+  use, but xhigh binges (1308s think on a 19.7s task) are fatal to an
+  unattended loop - medium is quality-neutral at 10-20x fewer thinking
+  tokens (2026-08-19 task suite A/B).
+- spec NONE: both speculators collapse under agentic churn on this hybrid
+  Gated DeltaNet model (llama.cpp #27151/#27296). No spec = no
+  rejected-draft rollback of the recurrent state.
+- temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0:
+  the Qwen3.8 model-card thinking config. presence_penalty 0 keeps
+  tool-call JSON keys + repeated syntax intact over long transcripts.
+- fixed template (qwen38-fixed.jinja): required for reasoning parse;
+  a hand-written template silently eats the <think> tags and the whole
+  trace lands in content.
+
+Context: 262144 x 1 slot (the model's native max, same total KV as
+qwen38). This drops concurrent-loop support (2 slots) - Qwen3.8 Dense KV
+is 45.1 KiB/token, so 2 wide-context slots (2x196608) would need 33.6 GB
+and does not fit the 32 GB card. The wide single window is the
+load-bearing property: at 131072 ctx the loop's 85% auto-compact
+threshold (~111K) killed every iteration of the concurrency-build run
+(2026-08-12). 262144 -> ~222K threshold, and medium effort keeps the
+thinking traces far leaner than Gemma 4's 10K+ xhigh binges.
 
 """
-vram_gb = 23.0
+vram_gb = 21.0
 
 capabilities = ["code"]
 
 [model]
-# Local symlink -> gemma-4-26B-A4B-it-Q4_K_M.gguf (see description).
+# Local symlink -> Qwen3.8-27B-Q4_K_M.gguf (see description).
 # repo is a placeholder to satisfy preset validation; entrypoint
 # prefers the local file.
 repo = "local/loop-engine"
-file = "loop-gemma-4-26B-A4B-it-Q4_K_M.gguf"
+file = "loop-qwen3.8-27B-Q4_K_M.gguf"
+
+[template]
+file = "qwen38-fixed.jinja"
 
 [runtime]
 reasoning = "on"
+reasoning_effort = "medium"
 
-context_size = 196608
-parallel_slots = 2
+context_size = 262144
+parallel_slots = 1
 temperature = 1.0
 top_p = 0.95
-top_k = 64
-min_p = 0.05
+top_k = 20
+min_p = 0.0
 presence_penalty = 0.0
 repeat_penalty = 1.0
 
 [bench]
-# tokenizer for loglikelihood evals (HellaSwag); GGUF repos carry tokenizer.json
-# and are NOT license-gated (google/gemma-* repos 401 without an accepted license)
-tokenizer = "unsloth/gemma-4-26b-a4b-it-GGUF"
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"

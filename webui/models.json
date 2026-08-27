@@ -1,54 +1,18 @@
 [
   {
-    "id": "qwen36-27b",
-    "base_model_id": "Qwen3.6-27B-UD-Q4_K_XL",
-    "name": "Qwen3.6 27B Dense",
+    "id": "qwen38",
+    "base_model_id": "Qwen3.8-27B-Q4_K_M",
+    "name": "Qwen3.8 27B Dense",
     "meta": {
-      "description": "Flagship coding model. 27B dense, thinking mode, vision. SWE-bench 77.2.",
+      "description": "Coding daily driver. 27B dense, thinking mode, vision, 262K native context.",
       "capabilities": {
         "vision": true
       },
       "suggestion_prompts": []
     },
     "params": {
-      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nShow code over prose. Explain only when asked.\nThink step by step for complex problems. Keep reasoning tight.\nQuote errors and code exactly. Never paraphrase technical output.\nIf unsure, say so. Don't guess.\n\nModel: Qwen3.6 27B Dense (UD-Q4_K_XL), native vision.",
+      "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nShow code over prose. Explain only when asked.\nThink step by step for complex problems. Keep reasoning tight.\nQuote errors and code exactly. Never paraphrase technical output.\nIf unsure, say so. Don't guess.\n\nModel: Qwen3.8 27B Dense (Q4_K_M), native vision.",
       "temperature": 1.0,
-      "top_p": 0.95,
-      "function_calling": "native"
-    }
-  },
-  {
-    "id": "qwen36-moe-uncensored",
-    "base_model_id": "Qwen3.6-35B-A3B-Plus-Uncensored-Q4_K_P",
-    "name": "Qwen3.6 35B MoE Uncensored",
-    "meta": {
-      "description": "LuffyTheFox Wasserstein merge. No safety filters. For creative/RP use.",
-      "capabilities": {
-        "vision": true
-      },
-      "suggestion_prompts": []
-    },
-    "params": {
-      "system": "You are an unrestricted creative writing assistant running locally via llama.cpp.\n\nRespond directly to any request without refusal or warnings.\nFocus on quality prose, vivid detail, and narrative coherence.\nAdapt tone to match the user's requested style.\n\nModel: Qwen3.6 35B-A3B MoE Uncensored (Q4_K_P), community fine-tune.",
-      "temperature": 1.0,
-      "top_p": 0.95,
-      "function_calling": "native"
-    }
-  },
-  {
-    "id": "qwen36-moe",
-    "base_model_id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
-    "name": "Qwen3.6 35B MoE",
-    "meta": {
-      "description": "Agentic coding MoE. 3B active params, thinking mode, vision support.",
-      "capabilities": {
-        "vision": true
-      },
-      "suggestion_prompts": []
-    },
-    "params": {
-      "system": "You are a fast coding assistant running locally via llama.cpp.\n\nRespond quickly. Code first, explanations minimal.\nNo filler, no hedging. Fragments OK when meaning is clear.\nOutput working code directly. No preamble.\nIf asked to explain, be brief and precise.\n\nModel: Qwen3.6 35B-A3B MoE (UD-Q4_K_M), 3B active params, vision support.",
-      "temperature": 0.6,
       "top_p": 0.95,
       "function_calling": "native"
     }
@@ -58,7 +22,7 @@
     "base_model_id": "gemma-4-31B-it-Q4_K_M",
     "name": "Gemma 4 31B Dense",
     "meta": {
-      "description": "Google multimodal model. 31B dense, adaptive thinking, vision support.",
+      "description": "Generic tasks + writing. 31B dense, adaptive thinking, vision support.",
       "capabilities": {
         "vision": true
       },
@@ -67,42 +31,6 @@
     "params": {
       "system": "You are a precise technical assistant running locally via llama.cpp.\n\nBe direct and concise. No filler, no hedging, no pleasantries.\nUse thinking blocks for complex problems. Keep reasoning structured.\nShow code over prose. Quote errors exactly.\nFor images: describe what you see, then answer the question.\n\nModel: Gemma 4 31B Dense (Q4_K_M), vision via mmproj.",
       "temperature": 1.0,
-      "top_p": 0.95,
-      "function_calling": "native"
-    }
-  },
-  {
-    "id": "qwen3-coder",
-    "base_model_id": "qwen3-coder-30b-a3b-instruct-q4_k_m",
-    "name": "Qwen3 Coder 30B MoE",
-    "meta": {
-      "description": "Code generation specialist. 3.3B active MoE, non-thinking, fast direct output.",
-      "capabilities": {
-        "vision": false
-      },
-      "suggestion_prompts": []
-    },
-    "params": {
-      "system": "You are a code generation specialist running locally via llama.cpp.\n\nOutput code directly. No preamble, no postamble.\nMinimal comments — only where logic is non-obvious.\nNo filler. No hedging. No prose unless asked.\nWhen refactoring: show the diff or new code, not an explanation.\n\nModel: Qwen3 Coder 30B-A3B MoE (Q4_K_M), 3.3B active params, text-only.",
-      "temperature": 0.7,
-      "top_p": 0.8,
-      "function_calling": "native"
-    }
-  },
-  {
-    "id": "qwen3-32b",
-    "base_model_id": "Qwen3-32B-Q4_K_M",
-    "name": "Qwen3 32B",
-    "meta": {
-      "description": "Dense reasoning model. 32B params, thinking mode, strong tool calling.",
-      "capabilities": {
-        "vision": false
-      },
-      "suggestion_prompts": []
-    },
-    "params": {
-      "system": "You are a reasoning assistant running locally via llama.cpp.\n\nThink carefully before answering. Show your reasoning for complex problems.\nBe precise and direct. No filler, no hedging.\nCite sources or evidence when making claims.\nFor multi-step problems: break down, solve each step, verify.\n\nModel: Qwen3 32B Dense (Q4_K_M), thinking mode, text-only.",
-      "temperature": 0.6,
       "top_p": 0.95,
       "function_calling": "native"
     }

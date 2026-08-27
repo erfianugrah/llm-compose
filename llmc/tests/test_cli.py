@@ -149,17 +149,17 @@ class TestParser(unittest.TestCase):
         self.assertIsNone(ns.target)
 
     def test_mode_with_target_and_model(self):
-        ns = self.parser.parse_args(["mode", "llm", "--model", "qwen36"])
+        ns = self.parser.parse_args(["mode", "llm", "--model", "qwen38"])
         self.assertEqual(ns.target, "llm")
-        self.assertEqual(ns.model, "qwen36")
+        self.assertEqual(ns.model, "qwen38")
 
     def test_mode_rejects_bogus_target(self):
         with self.assertRaises(SystemExit):
             self.parser.parse_args(["mode", "totally-fake"])
 
     def test_switch_requires_preset(self):
-        ns = self.parser.parse_args(["switch", "qwen36"])
-        self.assertEqual(ns.preset, "qwen36")
+        ns = self.parser.parse_args(["switch", "qwen38"])
+        self.assertEqual(ns.preset, "qwen38")
 
     def test_volumes_subcommands(self):
         for sub in ("ls", "ensure", "shell"):
@@ -213,7 +213,7 @@ class TestStatusCommand(unittest.TestCase):
     def test_status_json(self):
         responses = {
             ("GET", "/health"): (200, {"status": "ok", "mode": "llm"}),
-            ("GET", "/mode"): (200, {"mode": "llm", "model": "qwen36", "switching": False}),
+            ("GET", "/mode"): (200, {"mode": "llm", "model": "qwen38", "switching": False}),
             ("GET", "/v1/models"): (200, {"data": [{"id": "x"}]}),
         }
         with _stub_proxy(responses):
@@ -222,7 +222,7 @@ class TestStatusCommand(unittest.TestCase):
         self.assertEqual(rc, EXIT_OK)
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["reachable"])
-        self.assertEqual(payload["active_model"], "qwen36")
+        self.assertEqual(payload["active_model"], "qwen38")
         self.assertEqual(payload["preset_count"], 1)
 
 
@@ -233,8 +233,8 @@ class TestModelsCommand(unittest.TestCase):
                 rc = main(["models"])
         self.assertEqual(rc, EXIT_OK)
         self.assertIn("proxy unreachable", out.getvalue())
-        # All 8 presets should be listed
-        for preset in ("gemma4", "qwen3", "qwen36", "summarizer"):
+        # Surviving presets should be listed
+        for preset in ("gemma4", "qwen38", "summarizer", "loop"):
             self.assertIn(preset, out.getvalue())
 
     def test_models_from_proxy(self):
@@ -264,13 +264,13 @@ class TestModelsCommand(unittest.TestCase):
 class TestSwitchCommand(unittest.TestCase):
     def test_switch_success(self):
         responses = {
-            ("POST", "/mode"): (200, {"mode": "llm", "model": "qwen36", "switched": True}),
+            ("POST", "/mode"): (200, {"mode": "llm", "model": "qwen38", "switched": True}),
         }
         with _stub_proxy(responses):
             with _capture() as (out, _):
-                rc = main(["switch", "qwen36"])
+                rc = main(["switch", "qwen38"])
         self.assertEqual(rc, EXIT_OK)
-        self.assertIn("Loaded: qwen36", out.getvalue())
+        self.assertIn("Loaded: qwen38", out.getvalue())
 
     def test_switch_unknown_preset(self):
         responses = {
@@ -552,9 +552,9 @@ class TestProxyClient(unittest.TestCase):
         thread.start()
         try:
             client = ProxyClient(host="127.0.0.1", port=port)
-            status, _ = client.set_mode("llm", model="qwen36")
+            status, _ = client.set_mode("llm", model="qwen38")
             self.assertEqual(status, 200)
-            self.assertEqual(captured["body"], {"mode": "llm", "model": "qwen36"})
+            self.assertEqual(captured["body"], {"mode": "llm", "model": "qwen38"})
         finally:
             server.shutdown()
             server.server_close()
