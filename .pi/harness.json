@@ -1,20 +1,19 @@
 {
-  "task": "Implement the remaining task-routing code. routes.go, AcquireRequest.Route, and SchedulerConfig VRAM fields are ALREADY committed and correct. Do NOT touch routes.go, do NOT re-add struct fields. Do NOT touch any test file. Your job: (1) scheduler.go - add containsPreset, acquireRoute, greedyServe funcs, the acquireLLM route branch, the handleAcquire greedy-serve branch, and the handleSwapDone ServeAs grant (see docs/loop/scheduler-slice.md for exact code); (2) server.go - 5-arg NewServer, routes field, resolveModel, prepLLM returning error, forward 404, handleModels alias listing (see docs/loop/wiring-slice.md); (3) anthropic.go - alias resolution in Serve via resolveModel, 404 on unknown, Route on AcquireRequest; (4) main.go - NewRouteStore + 5-arg NewServer call + VRAM in SchedulerConfig. Skip all test-writing and git-commit steps. Verify with `cd proxy-go && go build ./...` after every edit. FINAL target: `cd proxy-go && go test ./... -race -count=1` must PASS - the committed contract tests are the source of truth.",
-  "guide": ["docs/loop/scheduler-slice.md", "docs/loop/wiring-slice.md"],
+  "task": "Implement the remaining task-routing HTTP wiring. routes.go AND scheduler.go are ALREADY done and committed (Route/RouteStore/AcquireRequest.Route/SchedulerConfig VRAM fields + acquireRoute/greedyServe/containsPreset). Do NOT touch routes.go or scheduler.go. Do NOT touch any test file. Your job is ONLY: (1) server.go - 5-arg NewServer, Server.routes field, resolveModel, prepLLM returning error, forward 404 on unknown alias, handleModels alias listing; (2) anthropic.go - alias resolution in Serve via resolveModel, 404 on unknown, Route on the AcquireRequest; (3) main.go - NewRouteStore + 5-arg NewServer call + VRAM in SchedulerConfig. Read docs/loop/wiring-slice.md for the exact code. Verify with `cd proxy-go && go build ./...` after every edit. FINAL target: `cd proxy-go && go test ./... -race -count=1` must PASS - the committed contract tests are the source of truth.",
+  "guide": ["docs/loop/wiring-slice.md"],
   "maxIterations": 10,
-  "models": ["opencode/deepseek-v4-pro", "llama-server/loop"],
+  "models": ["openrouter/deepseek/deepseek-v4-pro", "llama-server/loop"],
   "stallPatience": 3,
   "agentTimeoutMs": 3600000,
   "timeoutMs": 600000,
   "writeScope": [
-    "proxy-go/internal/proxy/scheduler.go",
     "proxy-go/internal/proxy/server.go",
     "proxy-go/internal/proxy/anthropic.go",
     "proxy-go/cmd/proxy/main.go"
   ],
   "rules": [
-    "Never modify or weaken any test file, and never touch routes.go - they are outside writeScope.",
-    "Make the smallest change that satisfies the guides; do not stub out functions - a stub is a FAILED iteration.",
+    "Never modify or weaken any test file, and never touch routes.go or scheduler.go - they are outside writeScope.",
+    "Make the smallest change that satisfies the guide; do not stub out functions - a stub is a FAILED iteration.",
     "Edit discipline: no whole-file rewrites; use exact oldText from a fresh read; run `cd proxy-go && go build ./...` after every edit.",
     "If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong - fix the code."
   ],
@@ -29,7 +28,7 @@
       "cmd": "cd proxy-go && go test ./... -race -count=1",
       "timeoutMs": 300000,
       "expect": "fail",
-      "hint": "the committed contract tests fail until the full feature (scheduler.go funcs + server.go wiring + anthropic.go + main.go) is implemented. Read both slice guides."
+      "hint": "the committed contract tests fail until the HTTP wiring (server.go resolveModel/5-arg NewServer + anthropic.go alias resolution + main.go NewRouteStore) is implemented. Read docs/loop/wiring-slice.md."
     }
   ]
 }
