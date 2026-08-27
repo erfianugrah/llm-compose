@@ -40,3 +40,8 @@ mcp/__pycache__/
 **/__pycache__/
 docker-volumes/
 .worktrees/
+
+# self-correcting-loop artifacts
+.pi/harness-prompts/
+.pi/harness-report.json
+.pi/harness-run.log
