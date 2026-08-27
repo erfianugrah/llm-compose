@@ -1,15 +1,20 @@
 {
-  "task": "Implement the scheduler.go task-routing logic ONLY. Read docs/loop/scheduler-slice.md first - it has the exact code. routes.go and the AcquireRequest.Route field are ALREADY committed; do NOT touch routes.go, do NOT re-add the Route field. Do NOT touch any test file. Make these edits to proxy-go/internal/proxy/scheduler.go only: (1) add VRAMLimitGB + VRAMReserveGB float64 fields to SchedulerConfig; (2) add the containsPreset func; (3) insert the route branch at the top of acquireLLM; (4) add the acquireRoute method; (5) add the greedyServe method; (6) replace the pending branch in handleAcquire with the greedyServe version; (7) in handleSwapDone, replace the waiters grant loop and delete the standalone serveAs declaration. Verify with `cd proxy-go && go build ./...` after every edit. The go-test contract is NOT your target yet (that is the next slice); your target is go build green + the three functions present.",
-  "guide": ["docs/loop/scheduler-slice.md"],
-  "maxIterations": 6,
-  "models": ["llama-server/loop", "opencode/deepseek-v4-pro"],
+  "task": "Implement the remaining task-routing code. routes.go, AcquireRequest.Route, and SchedulerConfig VRAM fields are ALREADY committed and correct. Do NOT touch routes.go, do NOT re-add struct fields. Do NOT touch any test file. Your job: (1) scheduler.go - add containsPreset, acquireRoute, greedyServe funcs, the acquireLLM route branch, the handleAcquire greedy-serve branch, and the handleSwapDone ServeAs grant (see docs/loop/scheduler-slice.md for exact code); (2) server.go - 5-arg NewServer, routes field, resolveModel, prepLLM returning error, forward 404, handleModels alias listing (see docs/loop/wiring-slice.md); (3) anthropic.go - alias resolution in Serve via resolveModel, 404 on unknown, Route on AcquireRequest; (4) main.go - NewRouteStore + 5-arg NewServer call + VRAM in SchedulerConfig. Skip all test-writing and git-commit steps. Verify with `cd proxy-go && go build ./...` after every edit. FINAL target: `cd proxy-go && go test ./... -race -count=1` must PASS - the committed contract tests are the source of truth.",
+  "guide": ["docs/loop/scheduler-slice.md", "docs/loop/wiring-slice.md"],
+  "maxIterations": 10,
+  "models": ["opencode/deepseek-v4-pro", "llama-server/loop"],
   "stallPatience": 3,
   "agentTimeoutMs": 3600000,
   "timeoutMs": 600000,
-  "writeScope": ["proxy-go/internal/proxy/scheduler.go"],
+  "writeScope": [
+    "proxy-go/internal/proxy/scheduler.go",
+    "proxy-go/internal/proxy/server.go",
+    "proxy-go/internal/proxy/anthropic.go",
+    "proxy-go/cmd/proxy/main.go"
+  ],
   "rules": [
-    "Never modify or weaken any test file, and never touch routes.go or any file except scheduler.go - everything else is outside writeScope.",
-    "Make the smallest change that satisfies the guide; do not stub out functions - a stub is a FAILED iteration.",
+    "Never modify or weaken any test file, and never touch routes.go - they are outside writeScope.",
+    "Make the smallest change that satisfies the guides; do not stub out functions - a stub is a FAILED iteration.",
     "Edit discipline: no whole-file rewrites; use exact oldText from a fresh read; run `cd proxy-go && go build ./...` after every edit.",
     "If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong - fix the code."
   ],
@@ -20,10 +25,11 @@
       "timeoutMs": 120000
     },
     {
-      "name": "acquireRoute-present",
-      "cmd": "rg -Fq 'func (s *Scheduler) acquireRoute' proxy-go/internal/proxy/scheduler.go && rg -Fq 'func (s *Scheduler) greedyServe' proxy-go/internal/proxy/scheduler.go && rg -Fq 'func containsPreset' proxy-go/internal/proxy/scheduler.go",
+      "name": "go-test",
+      "cmd": "cd proxy-go && go test ./... -race -count=1",
+      "timeoutMs": 300000,
       "expect": "fail",
-      "hint": "scheduler.go must define acquireRoute, greedyServe, and containsPreset exactly as in docs/loop/scheduler-slice.md."
+      "hint": "the committed contract tests fail until the full feature (scheduler.go funcs + server.go wiring + anthropic.go + main.go) is implemented. Read both slice guides."
     }
   ]
 }
