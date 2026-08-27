@@ -1,15 +1,36 @@
 {
-  "models": ["llama-server/loop"],
-  "task": "Add a `context` subcommand to the llmc bench framework, per docs/plans/2026-08-19-context-occupancy-suite.md Tasks 3-4 (read the plan file first; it defines the sweep design, the symlinked-GGUF throwaway-preset pattern, occupancy headroom math, and result envelope). THE CHANGE: (1) llmc/bench/context.py - new module with fill_to_tokens(target, source, tokenize) plus the sweep driver: for each --ctx candidate, symlink the source preset's GGUF as ctx-sweep-<n>.gguf in the models volume, write models/ctx-sweep-<n>.toml (copy with overridden name/context_size/parallel_slots/[model].file), lock+spawn via the proxy, then for each occupancy fraction measure generation tokens/sec with filler sized to int(ctx*frac) - gen_tokens - 64 tokens via POST /tokenize, record a JSONL row {tag: context-occupancy, preset, ctx, slots, occupancy, prompt_tokens, completion_tokens, tg, vram_mib, llama_cpp pin, gpu, ts} to bench/results/runs.jsonl, then cleanup (unlock, delete TOML + symlink), and llmc switch back to the source preset at the end. (2) Register `context` in llmc/bench/cli.py NATIVE so `llmc bench context --preset qwen38 --ctx 196608 --occupancy 0.25 --gen-tokens 200 --dry-run` works; --dry-run prints the plan without touching docker. (3) llmc/tests/test_bench_context.py - unit tests: fill_to_tokens exact sizing with a fake tokenizer, throwaway TOML generation produces a unique model_id and parses via llmc.presets.load_preset, occupancy headroom math, cleanup ordering. ADD ONLY: do not modify existing tests or bench modules except the NATIVE registration line. CONVENTIONS: read llmc/bench/perf.py first and mirror its result-envelope + lock/unlock patterns exactly. The proxy at 127.0.0.1:11434 is the Go proxy (spec docs/specs/2026-08-19-model-proxy-v2.md).",
-  "sensors": [
-    {"name": "py-tests", "cmd": "python3 -m unittest discover llmc.tests 2>&1", "timeoutMs": 300000},
-    {"name": "go-gates", "cmd": "cd proxy-go && go build ./... && go vet ./... && go test ./... -race -count=1 2>&1", "timeoutMs": 300000},
-    {"name": "context-dry-run", "cmd": "export PATH=\"$PWD/bin:$PATH\" && llmc bench context --preset qwen38 --ctx 196608 --occupancy 0.25 --gen-tokens 200 --dry-run", "timeoutMs": 60000}
-  ],
-  "judge": {"model": "openrouter/moonshotai/kimi-k3", "spec": "llmc bench context subcommand per the occupancy-suite plan. Accept: fill_to_tokens exact-sizing (unit-tested with fake tokenizer), throwaway presets use the symlinked-GGUF pattern with unique model_id (never duplicate model IDs), occupancy filler = int(ctx*frac) - gen_tokens - 64, results rows carry the full envelope (preset, ctx, occupancy, tg, vram, pin, gpu, ts) and land in bench/results/runs.jsonl, cleanup deletes throwaways and restores the source preset via llmc switch. Reject: whole-file rewrites of existing bench modules, modified pre-existing tests, hardcoded paths that break outside this repo, dry-run mode that touches docker or the proxy, scope creep beyond the context subcommand."},
+  "task": "Implement the task-routing (auto alias) feature in the Go proxy. Read docs/plans/2026-08-27-task-routing.md first - it has the exact code for every change. THE CONTRACT TESTS ARE ALREADY WRITTEN AND COMMITTED: routes_test.go, scheduler_test.go additions, server_test.go startServer delegation, anthropic_test.go. They are OUTSIDE your writeScope and you MUST NOT modify them. Skip every test-writing step and every git-commit step in the plan - they are done. Implement ONLY the production code so that `cd proxy-go && go test ./... -race -count=1` passes. Concretely: (1) routes.go - Route, RouteStore, NewRouteStore, routeAliasName, aliasError, parseRoutes; (2) scheduler.go - AcquireRequest.Route field, SchedulerConfig.VRAMLimitGB/VRAMReserveGB fields, acquireRoute, greedyServe, containsPreset, and the handleAcquire greedy-serve branch; (3) server.go - 5-arg NewServer with routes, Server.routes field, resolveModel, prepLLM returning error, the 404 errPlain call in forward, and the alias listing loop in handleModels; (4) anthropic.go - alias resolution in Serve via resolveModel with 404 on unknown; (5) cmd/proxy/main.go - 5-arg NewServer call. Follow the plan's code exactly; the empty-chain `loaded` semantics is: loaded = (mode == llm) when chain is empty.",
+  "guide": ["docs/plans/2026-08-27-task-routing.md"],
   "maxIterations": 8,
+  "models": ["llama-server/loop", "opencode/deepseek-v4-pro"],
   "stallPatience": 3,
-  "agentTimeoutMs": 1800000,
-  "writeScope": ["llmc/", "proxy-go/internal/proxy/server.go", "proxy-go/internal/proxy/server_test.go", "models/"],
-  "rules": ["ADD ONLY for tests - never modify or weaken existing tests", "No new Python dependencies beyond the stdlib + what llmc already imports", "Never docker restart or rebuild model_proxy_go or llama_server from inside the loop - sensors must never rebuild the stack that serves them", "ASCII punctuation only in committed files"]
+  "agentTimeoutMs": 3600000,
+  "timeoutMs": 600000,
+  "writeScope": [
+    "proxy-go/internal/proxy/routes.go",
+    "proxy-go/internal/proxy/scheduler.go",
+    "proxy-go/internal/proxy/server.go",
+    "proxy-go/internal/proxy/anthropic.go",
+    "proxy-go/cmd/proxy/main.go"
+  ],
+  "rules": [
+    "Never modify or weaken any test file (routes_test.go, scheduler_test.go, server_test.go, anthropic_test.go) - they are the committed contract and are outside writeScope.",
+    "Make the smallest change that makes `go test ./... -race` pass; do not stub out functions - a check satisfied by a stub is a FAILED iteration.",
+    "Edit discipline: no whole-file rewrites; use exact oldText from a fresh read; run `cd proxy-go && go build ./...` after every edit.",
+    "If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong - fix the code."
+  ],
+  "sensors": [
+    {
+      "name": "go-build",
+      "cmd": "cd proxy-go && go build ./...",
+      "timeoutMs": 120000
+    },
+    {
+      "name": "go-test",
+      "cmd": "cd proxy-go && go test ./... -race -count=1",
+      "timeoutMs": 300000,
+      "expect": "fail",
+      "hint": "the committed contract tests fail to compile until the production code (routes.go, scheduler.go acquireRoute/greedyServe, server.go resolveModel/5-arg NewServer, anthropic.go alias resolution, main.go wiring) is implemented. Read docs/plans/2026-08-27-task-routing.md for the exact code."
+    }
+  ]
 }
