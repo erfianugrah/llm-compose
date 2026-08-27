@@ -25,27 +25,7 @@ file = "big.gguf"
 // Default ServerConfig is 24GB / 4GB reserve so the 10/12GB fixtures pass
 // the VRAM gate (0,0 would reject every preset).
 func startServer(t *testing.T, orch *fakeOrch, store *PresetStore, st *State, cfg ServerConfig) *httptest.Server {
-	t.Helper()
-	if cfg.VRAMLimitGB == 0 && cfg.VRAMReserveGB == 0 {
-		cfg = ServerConfig{VRAMLimitGB: 24, VRAMReserveGB: 4}
-	}
-	statePath := t.TempDir() + "/state.toml"
-	if st != nil {
-		if err := SaveState(statePath, st); err != nil {
-			t.Fatalf("SaveState: %v", err)
-		}
-	}
-	scfg := SchedulerConfig{StatePath: statePath, DrainGrace: 3 * time.Second,
-		LockTTL: 900 * time.Second, HealthTimeout: time.Second}
-	s, err := NewScheduler(scfg, orch, store, func(string, ...any) {})
-	if err != nil {
-		t.Fatalf("NewScheduler: %v", err)
-	}
-	go s.Run()
-	t.Cleanup(s.Close)
-	ts := httptest.NewServer(NewServer(s, store, cfg, func(string, ...any) {}))
-	t.Cleanup(ts.Close)
-	return ts
+	return startServerWithRoutes(t, orch, store, st, cfg, "")
 }
 
 func doGet(t *testing.T, url string) (int, map[string]any) {

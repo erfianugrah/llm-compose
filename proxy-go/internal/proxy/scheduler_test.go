@@ -947,3 +947,183 @@ func TestStatusExposesLockExpiry(t *testing.T) {
 		t.Fatalf("locked snapshot should carry a future expiry, got %d", snap.LockExpiresAt)
 	}
 }
+
+// ── 17. task routing (alias) ─────────────────────────────────────────
+
+func TestAliasResidentInChainServesInPlace(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	route := &Route{Name: "code", Chain: []string{"b", "a"}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if !res.OK || !res.Granted || res.Key != "a" || res.ServeAs != "alpha" {
+		t.Fatalf("alias resident-in-chain: %+v", res)
+	}
+	defer e.s.Release(res.Key)
+	if got := e.orch.llamaCount(); got != 0 {
+		t.Fatalf("resident-in-chain must not spawn, got %d", got)
+	}
+}
+
+func TestAliasSwapToChainHead(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	route := &Route{Name: "code", Chain: []string{"b"}} // resident "a" not in chain
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if !res.OK || !res.Granted || res.Key != "b" || res.ServeAs != "beta" {
+		t.Fatalf("alias swap-to-head: %+v", res)
+	}
+	defer e.s.Release(res.Key)
+	if got := e.orch.llamaNames(); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("expected SpawnLlama(b), got %v", got)
+	}
+}
+
+func TestAliasEmptyChainServesResident(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	route := &Route{Name: "resident", Chain: []string{}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:resident"})
+	if !res.OK || !res.Granted || res.Key != "a" || res.ServeAs != "alpha" {
+		t.Fatalf("empty-chain resident: %+v", res)
+	}
+	e.s.Release(res.Key)
+	if got := e.orch.llamaCount(); got != 0 {
+		t.Fatalf("empty-chain must not spawn, got %d", got)
+	}
+}
+
+func TestAliasEmptyChainNonLLM503(t *testing.T) {
+	e := startSched(t, newFakeOrch("idle"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		nil, SchedulerConfig{})
+	route := &Route{Name: "resident", Chain: []string{}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:resident"})
+	if res.OK || res.Status != 503 {
+		t.Fatalf("empty-chain non-llm: want 503, got %+v", res)
+	}
+}
+
+func TestAliasStaleChainEntry404(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	route := &Route{Name: "code", Chain: []string{"deleted"}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if res.OK || res.Status != 404 || !strings.Contains(res.ErrMsg, "not found") {
+		t.Fatalf("stale chain entry: want 404, got %+v", res)
+	}
+}
+
+func TestAliasLockedInChainServesInPlace(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	if r := e.s.Lock("a", false, "A", false); r.Status != 200 {
+		t.Fatalf("lock: %d %#v", r.Status, r.Body)
+	}
+	t.Cleanup(func() { e.s.Unlock("A") })
+	route := &Route{Name: "code", Chain: []string{"b", "a"}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if !res.OK || !res.Granted || res.Key != "a" || res.ServeAs != "alpha" {
+		t.Fatalf("locked-in-chain: %+v", res)
+	}
+	e.s.Release(res.Key)
+	if got := e.orch.llamaCount(); got != 0 {
+		t.Fatalf("locked-in-chain must not spawn, got %d", got)
+	}
+}
+
+func TestAliasLockedNotInChain422(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	if r := e.s.Lock("a", false, "A", false); r.Status != 200 {
+		t.Fatalf("lock: %d %#v", r.Status, r.Body)
+	}
+	t.Cleanup(func() { e.s.Unlock("A") })
+	route := &Route{Name: "code", Chain: []string{"b"}}
+
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if res.OK || res.Status != 422 || res.ErrType != "model_unavailable" {
+		t.Fatalf("locked-not-in-chain: want 422, got %+v", res)
+	}
+}
+
+// ── 18. greedy serve during drain (R4) ───────────────────────────────
+
+func TestGreedyServeDuringDrain(t *testing.T) {
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+	pA, pB := e.s.presets.ByName("a"), e.s.presets.ByName("b")
+
+	// Hold a in-flight; a swap to b starts draining.
+	resA := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !resA.OK {
+		t.Fatalf("acquire a: %+v", resA)
+	}
+	resCh := make(chan AcqResult, 1)
+	go func() { resCh <- e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pB}) }()
+	waitFor(t, 2*time.Second, "pending swap to register", func() bool {
+		return e.s.Status().Switching
+	})
+
+	// An alias whose chain contains the draining resident is served in place.
+	route := &Route{Name: "code", Chain: []string{"b", "a"}}
+	gRes := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if !gRes.OK || !gRes.Granted || gRes.Key != "a" || gRes.ServeAs != "alpha" {
+		t.Fatalf("greedy serve: %+v", gRes)
+	}
+	e.s.Release(gRes.Key)
+	if got := e.orch.llamaCount(); got != 0 {
+		t.Fatalf("greedy serve must not spawn while draining, got %d", got)
+	}
+
+	// Release A; the swap proceeds.
+	e.s.Release(resA.Key)
+	select {
+	case res := <-resCh:
+		if !res.OK || res.Key != "b" {
+			t.Fatalf("swap acquire: %+v", res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("swap to b did not grant")
+	}
+}
+
+func TestGreedyServeDoesNotStarveSwap(t *testing.T) {
+	cfg := SchedulerConfig{DrainGrace: 300 * time.Millisecond}
+	e := startSched(t, newFakeOrch("llm"), newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, cfg)
+	pA, pB := e.s.presets.ByName("a"), e.s.presets.ByName("b")
+
+	resA := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !resA.OK {
+		t.Fatalf("acquire a: %+v", resA)
+	}
+	resCh := make(chan AcqResult, 1)
+	go func() { resCh <- e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pB}) }()
+	waitFor(t, 2*time.Second, "pending swap to register", func() bool {
+		return e.s.Status().Switching
+	})
+
+	// A greedy grant that never releases cannot hold the swap past the grace
+	// deadline: evDrainTimeout forces the swap.
+	route := &Route{Name: "code", Chain: []string{"b", "a"}}
+	gRes := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Route: route, RawModel: "auto:code"})
+	if !gRes.OK {
+		t.Fatalf("greedy grant: %+v", gRes)
+	}
+	// Never release gRes; release A so only the greedy grant holds the drain.
+	e.s.Release(resA.Key)
+	select {
+	case res := <-resCh:
+		if !res.OK || res.Key != "b" {
+			t.Fatalf("swap after grace: %+v", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("grace timeout did not force the swap past the greedy grant")
+	}
+	e.s.Release(gRes.Key)
+}
