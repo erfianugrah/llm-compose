@@ -1,20 +1,15 @@
 # Slice 1: scheduler.go task-routing logic
 
-`routes.go` and the `AcquireRequest.Route` field are ALREADY DONE and
-committed. Do NOT touch routes.go. Do NOT add the Route field again - it is
-already present on AcquireRequest.
+`routes.go`, the `AcquireRequest.Route` field, and the `SchedulerConfig`
+VRAMLimitGB/VRAMReserveGB fields are ALREADY DONE and committed. Do NOT touch
+routes.go. Do NOT re-add the Route field or the VRAM fields - they are already
+present.
 
 Remaining scheduler.go work ONLY. Make these exact edits:
 
-## 1. SchedulerConfig: add VRAM fields
+## 1. SchedulerConfig VRAM fields: ALREADY PRESENT - skip
 
-Find `type SchedulerConfig struct {` and add two fields. It currently has
-StatePath, AssetsDir, DrainGrace, LockTTL, HealthTimeout. Add:
-
-```go
-	VRAMLimitGB   float64 // chain-head VRAM gate at swap-decision time
-	VRAMReserveGB float64
-```
+VRAMLimitGB and VRAMReserveGB are already on SchedulerConfig. Do not re-add them.
 
 ## 2. containsPreset helper
 
