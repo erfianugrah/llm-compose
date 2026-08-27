@@ -19,6 +19,7 @@ import (
 type Server struct {
 	sched   *Scheduler
 	presets *PresetStore
+	routes  *RouteStore
 	cfg     ServerConfig
 	logf    func(string, ...any)
 	anth    *AnthropicTranslator
@@ -45,8 +46,8 @@ var upstreamClient = &http.Client{
 	},
 }
 
-func NewServer(sched *Scheduler, presets *PresetStore, cfg ServerConfig, logf func(string, ...any)) *Server {
-	return &Server{sched: sched, presets: presets, cfg: cfg, logf: logf, anth: NewAnthropicTranslator(logf)}
+func NewServer(sched *Scheduler, presets *PresetStore, routes *RouteStore, cfg ServerConfig, logf func(string, ...any)) *Server {
+	return &Server{sched: sched, presets: presets, routes: routes, cfg: cfg, logf: logf, anth: NewAnthropicTranslator(logf)}
 }
 
 func (s *Server) log(msg string) {
@@ -170,6 +171,38 @@ func (s *Server) handleModels(w http.ResponseWriter) {
 				"reasoning":       p.Runtime.Reasoning == "on",
 				"vram_gb":         p.VRAMGB,
 				"mode":            snap.Mode,
+			},
+		})
+	}
+	if s.routes != nil {
+		if err := s.routes.Reload(); err != nil {
+			s.log(fmt.Sprintf("routes reload failed: %v", err))
+		}
+	}
+	for name, route := range s.routes.All() {
+		loaded := false
+		if len(route.Chain) == 0 {
+			loaded = snap.Mode == "llm" // empty chain = "whatever is resident"
+		} else if snap.Mode == "llm" {
+			if rp := s.presets.ByName(snap.Model); rp != nil {
+				for _, c := range route.Chain {
+					if c == rp.Name || c == rp.ModelID() {
+						loaded = true
+						break
+					}
+				}
+			}
+		}
+		id := "auto:" + name
+		if name == "default" {
+			id = "auto"
+		}
+		data = append(data, map[string]any{
+			"id": id, "object": "model", "created": 0, "owned_by": "local",
+			"meta": map[string]any{
+				"alias": true, "name": route.Name,
+				"chain": route.Chain, "loaded": loaded,
+				"description": route.Description,
 			},
 		})
 	}
@@ -320,7 +353,10 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	if mode == "llm" && body != nil {
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err == nil {
-			s.prepLLM(r, &req, payload)
+			if err := s.prepLLM(r, &req, payload); err != nil {
+				errPlain(w, 404, err.Error(), 404, "unknown_route")
+				return
+			}
 		}
 		// VRAM gate before the scheduler sees the request (422 parity).
 		if req.Preset != nil && !s.checkVRAMBody(req.Preset) {
@@ -375,21 +411,41 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request) {
 	s.forwardTo(w, r, mode, targetPath, body, res.Key)
 }
 
-func (s *Server) prepLLM(r *http.Request, req *AcquireRequest, payload map[string]any) {
+func (s *Server) prepLLM(r *http.Request, req *AcquireRequest, payload map[string]any) error {
 	model, _ := payload["model"].(string)
 	cap := r.Header.Get("X-LLM-Capability")
 	if strings.HasPrefix(model, "cap:") {
 		cap = strings.TrimPrefix(model, "cap:")
 		model = ""
 	}
+	p, route, err := s.resolveModel(model)
+	if err != nil {
+		return err
+	}
+	req.Preset = p
+	req.Route = route
+	req.RawModel = model
+	req.Capability = cap
+	return nil
+}
+
+// resolveModel turns the raw model field into (preset, route, err).
+// err is non-nil (an *aliasError) only for an unknown alias.
+func (s *Server) resolveModel(model string) (*Preset, *Route, error) {
+	if alias := routeAliasName(model); alias != "" {
+		if err := s.routes.Reload(); err != nil {
+			s.log(fmt.Sprintf("routes reload failed: %v", err))
+		}
+		r := s.routes.ByName(alias)
+		if r == nil {
+			return nil, nil, &aliasError{name: alias}
+		}
+		return nil, r, nil
+	}
 	if err := s.presets.Reload(); err != nil {
 		s.log(fmt.Sprintf("preset reload failed: %v", err))
 	}
-	if p := s.presets.ByName(model); p != nil {
-		req.Preset = p
-	}
-	req.RawModel = model
-	req.Capability = cap
+	return s.presets.ByName(model), nil, nil
 }
 
 func (s *Server) checkVRAM(w http.ResponseWriter, p *Preset) bool {

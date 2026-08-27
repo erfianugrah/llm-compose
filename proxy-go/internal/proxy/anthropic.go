@@ -570,11 +570,15 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	payload := a.translateRequest(req)
 
 	var preset *Preset
+	var route *Route
 	if model != "" {
-		if err := s.presets.Reload(); err != nil {
-			a.logf("anthropic: preset reload failed: %v", err)
+		var err error
+		preset, route, err = s.resolveModel(model)
+		if err != nil {
+			status = 404
+			anthropicErr(w, 404, "invalid_request_error", err.Error())
+			return
 		}
-		preset = s.presets.ByName(model)
 	}
 	if preset != nil {
 		if ok, msg := CheckVRAMBudget(preset, s.cfg.VRAMLimitGB, s.cfg.VRAMReserveGB); !ok {
@@ -584,7 +588,7 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	res := s.sched.Acquire(r.Context(), AcquireRequest{Mode: "llm", Preset: preset, RawModel: model})
+	res := s.sched.Acquire(r.Context(), AcquireRequest{Mode: "llm", Preset: preset, Route: route, RawModel: model})
 	if !res.OK {
 		status = res.Status
 		if status == 0 {

@@ -45,19 +45,27 @@ func main() {
 		log.Fatalf("preset store: %v", err)
 	}
 
+	routesFile := envStr("LLMC_ROUTES_FILE", "/routes.toml")
+	routes, err := proxy.NewRouteStore(routesFile)
+	if err != nil {
+		log.Fatalf("routes: %v", err)
+	}
+
 	sched, err := proxy.NewScheduler(proxy.SchedulerConfig{
 		StatePath:     filepath.Join(stateDir, "active.toml"),
 		AssetsDir:     assetsDir,
 		DrainGrace:    drainGrace,
 		LockTTL:       lockTTL,
 		HealthTimeout: healthTimeout,
+		VRAMLimitGB:   vramLimit,
+		VRAMReserveGB: vramReserve,
 	}, orch, store, logf)
 	if err != nil {
 		log.Fatalf("scheduler: %v", err)
 	}
 	go sched.Run()
 
-	server := proxy.NewServer(sched, store, proxy.ServerConfig{
+	server := proxy.NewServer(sched, store, routes, proxy.ServerConfig{
 		VRAMLimitGB:   vramLimit,
 		VRAMReserveGB: vramReserve,
 	}, logf)

@@ -445,7 +445,11 @@ func TestForwardAccessLog(t *testing.T) {
 	}
 	go s.Run()
 	t.Cleanup(s.Close)
-	ts := httptest.NewServer(NewServer(s, store, ServerConfig{VRAMLimitGB: 24, VRAMReserveGB: 4}, logf))
+	routes, err := NewRouteStore(t.TempDir() + "/routes.toml")
+	if err != nil {
+		t.Fatalf("NewRouteStore: %v", err)
+	}
+	ts := httptest.NewServer(NewServer(s, store, routes, ServerConfig{VRAMLimitGB: 24, VRAMReserveGB: 4}, logf))
 	t.Cleanup(ts.Close)
 
 	// Upstream llama-server does not exist in the test env: 502 after swap.
