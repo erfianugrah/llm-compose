@@ -208,7 +208,7 @@ build: build-proxy build-proxy-go build-llama build-comfyui build-train
 build-proxy:
 	docker build -t $(PROXY_IMAGE) -f images/proxy.Dockerfile .
 
-## Go proxy (proxy-v2 soak on :11435)
+## Go proxy (authoritative on :11434)
 build-proxy-go:
 	docker build -t $(PROXY_GO_IMAGE) -f images/proxy-go.Dockerfile .
 
@@ -216,9 +216,9 @@ build-proxy-go:
 test-proxy-go:
 	cd proxy-go && go test ./... -race -count=1
 
-## Go proxy live smoke against the soak port (stack must be up)
+## Go proxy live smoke against the live port (stack must be up)
 smoke-proxy-go:
-	hurl --variable base=http://127.0.0.1:11435 --test tests/hurl/proxy-go-smoke.hurl
+	hurl --variable base=http://127.0.0.1:11434 --test tests/hurl/proxy-go-smoke.hurl
 
 build-llama:
 	docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
