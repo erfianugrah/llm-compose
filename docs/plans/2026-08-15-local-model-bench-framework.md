@@ -172,6 +172,8 @@ Separate from the 5090 track. The gumshoe research-agent runs on the 1070 (8 GB 
 
 HARDWARE NOTE (2026-08-16, user): a 3080 Ti (12 GB) is planned for servarr eventually. Until it lands, candidates must fit the 1070; the Gemma 4 12B row is scored on quality but its deploy-fit is DEFERRED to the 3080 Ti.
 
+UPDATE (2026-08-31): 3080 Ti deployed. Gemma 4 12B Q4_K_M (6.7 GB) live at 32K ctx, 67 tok/s, 9.2 GB VRAM used alongside Immich ML (~4.2 GB). The 1070 is retired. Tool-selection baseline needs re-measurement against Gemma 4 12B.
+
 ### 8.1 Candidates
 
 | Preset | Model | Size @Q4 | Fits 1070 now? | Why |
