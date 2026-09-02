@@ -14,6 +14,7 @@ from pathlib import Path
 
 from llmc.audit import (
     DIFF,
+    unreferenced,
     GONE,
     RENAMED,
     LOCAL_ONLY,
@@ -229,6 +230,44 @@ class RenameAndDedupTest(unittest.TestCase):
         results = audit_presets(presets, self.models, fetch=lambda repo: _tree())
         self.assertEqual([r.status for r in results], [GONE, GONE, GONE])
         self.assertEqual(len(orphans(results)), 1)
+
+
+class UnreferencedTest(unittest.TestCase):
+    """The mirror question: which files on disk does no preset name?"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.models = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_lists_only_unnamed_files_largest_first(self):
+        (self.models / "used.gguf").write_bytes(b"x" * 10)
+        (self.models / "used-mmproj.gguf").write_bytes(b"x" * 5)
+        (self.models / "small-stray.gguf").write_bytes(b"x" * 20)
+        (self.models / "big-stray.gguf").write_bytes(b"x" * 99)
+        (self.models / "notes.txt").write_bytes(b"ignored")
+        presets = {"p": _preset("p", "org/repo", "used.gguf", mmproj="used-mmproj.gguf")}
+        found = unreferenced(presets, self.models)
+        self.assertEqual([f.filename for f in found],
+                         ["big-stray.gguf", "small-stray.gguf"])
+
+    def test_symlink_target_counts_as_referenced(self):
+        """`loop` names a symlink; its target must not look unreferenced."""
+        real = self.models / "base.gguf"
+        real.write_bytes(b"x" * 10)
+        (self.models / "loop-base.gguf").symlink_to("base.gguf")
+        presets = {"loop": _preset("loop", "local/x", "loop-base.gguf")}
+        self.assertEqual(unreferenced(presets, self.models), [])
+
+    def test_hardlink_count_is_reported(self):
+        real = self.models / "a.gguf"
+        real.write_bytes(b"x" * 10)
+        (self.models / "b.gguf").hardlink_to(real)
+        found = unreferenced({}, self.models)
+        self.assertEqual({f.filename: f.links for f in found},
+                         {"a.gguf": 2, "b.gguf": 2})
 
 
 class BackupGuardTest(unittest.TestCase):

@@ -8,6 +8,9 @@
 #   MMPROJ_FILE      Optional. Multimodal projection weights filename.
 #   TEMPLATE_FILE    Optional. Jinja chat template filename.
 #   REASONING        Optional. "on" | "off" — sets --reasoning flag.
+#   REASONING_BUDGET Optional. --reasoning-budget: -1 unrestricted (llama.cpp
+#                    default), 0 ends thinking immediately, N>0 caps thinking
+#                    tokens. Bounds the TAIL that reasoning_effort cannot.
 #   SPEC_TYPE        Optional. llama.cpp --spec-type (e.g. draft-mtp for MTP heads).
 #   CHAT_TEMPLATE_KWARGS  Optional. Compact JSON for --chat-template-kwargs
 #                    (e.g. {"reasoning_effort":"medium"} on Qwen3.8+).
@@ -45,6 +48,7 @@ exec llama-server \
   --jinja \
   ${TEMPLATE_FILE:+--chat-template-file /models/${TEMPLATE_FILE}} \
   ${REASONING:+--reasoning ${REASONING}} \
+  ${REASONING_BUDGET:+--reasoning-budget ${REASONING_BUDGET}} \
   ${SPEC_TYPE:+--spec-type ${SPEC_TYPE}} \
   ${SPEC_NGRAM_N_MIN:+--spec-ngram-mod-n-min ${SPEC_NGRAM_N_MIN}} \
   ${SPEC_NGRAM_N_MAX:+--spec-ngram-mod-n-max ${SPEC_NGRAM_N_MAX}} \

@@ -415,6 +415,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     results = audit_mod.audit_presets(presets, models_dir, deep=args.deep)
     orphaned = audit_mod.orphans(results)
+    stray = audit_mod.unreferenced(presets, models_dir) if args.unreferenced else []
 
     # An orphan already on off-box storage is not an alarm. Check the backup
     # destination in read-only mode too, so `make audit` is green when the
@@ -457,6 +458,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
             "backup_dest": args.dest,
             "backup_state": backup_state,
             "backups": [vars(b) for b in backups],
+            "unreferenced": [f.to_dict() for f in stray],
         })
     else:
         _print_table(
@@ -465,6 +467,25 @@ def cmd_audit(args: argparse.Namespace) -> int:
         )
         for b in backups:
             print(f"backup {b.action}: {b.filename} {b.detail}".rstrip())
+        if args.unreferenced:
+            print()
+            if stray:
+                _print_table(
+                    ["size", "links", "file", "note"],
+                    [[f"{f.size / 1024**3:.2f}G", str(f.links), f.filename,
+                      f"symlink -> {f.symlink_to}" if f.symlink_to else ""]
+                     for f in stray],
+                )
+                # Hardlinked names share one blob, so summing st_size would
+                # overstate what deleting them frees.
+                unique = sum(f.size for f in stray
+                             if f.links == 1 and not f.symlink_to)
+                total = sum(f.size for f in stray if not f.symlink_to)
+                print(f"{len(stray)} unreferenced file(s), {total / 1024**3:.1f}G on disk; "
+                      f"{unique / 1024**3:.1f}G is single-linked (deleting frees that). "
+                      f"Reported only - check backups before removing anything.")
+            else:
+                print("no unreferenced weight files")
 
     unknown = [r for r in results if r.status == audit_mod.UNKNOWN]
     lost = [r for r in results if r.unrecoverable]
@@ -1271,6 +1292,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="backup destination host:/path (env LLMC_MODEL_BACKUP_DEST)")
     sp.add_argument("--dry-run", action="store_true",
                     help="with --backup: report what would be copied, copy nothing")
+    sp.add_argument("--unreferenced", action="store_true",
+                    help="also list weight files on disk that no preset names")
     sp.set_defaults(func=cmd_audit)
 
     # Volumes (= bind-mount host paths from volumes.toml)

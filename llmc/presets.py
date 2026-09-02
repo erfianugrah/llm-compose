@@ -103,6 +103,11 @@ class RuntimeSpec:
     spec_ngram_n_max: Optional[int] = None  # llama.cpp --spec-ngram-mod-n-max (default 64)
     spec_ngram_n_match: Optional[int] = None  # llama.cpp --spec-ngram-mod-n-match (default 24)
     reasoning_effort: Optional[str] = None  # xhigh|medium|low - Qwen3.8+ chat-template kwarg
+    # llama.cpp --reasoning-budget: -1 unrestricted, 0 end thinking at once,
+    # N>0 a hard token cap. reasoning_effort lowers the AVERAGE thinking
+    # spend; only this bounds the tail (2026-09-02: a single loop task burned
+    # ~19 min inside ONE iteration at effort=medium).
+    reasoning_budget: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,7 @@ _RUNTIME_KEYS = {
     "spec_ngram_n_max": int,
     "spec_ngram_n_match": int,
     "reasoning_effort": str,
+    "reasoning_budget": int,
 }
 
 
@@ -206,6 +212,7 @@ def _load_runtime(data: dict | None) -> RuntimeSpec:
         min_p=float(data.get("min_p", 0.0)),
         presence_penalty=float(data["presence_penalty"]) if "presence_penalty" in data else None,
         repeat_penalty=float(data["repeat_penalty"]) if "repeat_penalty" in data else None,
+        reasoning_budget=int(data["reasoning_budget"]) if "reasoning_budget" in data else None,
         spec_type=data.get("spec_type", "").strip() or None,
         spec_ngram_n_min=int(data["spec_ngram_n_min"]) if "spec_ngram_n_min" in data else None,
         spec_ngram_n_max=int(data["spec_ngram_n_max"]) if "spec_ngram_n_max" in data else None,
@@ -303,6 +310,13 @@ def preset_to_env(preset: Preset) -> dict[str, str]:
         env["REASONING"] = preset.runtime.reasoning
     if preset.runtime.presence_penalty is not None:
         env["PRESENCE_PENALTY"] = str(preset.runtime.presence_penalty)
+    if preset.runtime.reasoning_budget is not None:
+        if preset.runtime.reasoning_budget < -1:
+            raise PresetError(
+                f"runtime.reasoning_budget: must be -1, 0 or a positive token count, "
+                f"got {preset.runtime.reasoning_budget}"
+            )
+        env["REASONING_BUDGET"] = str(preset.runtime.reasoning_budget)
     if preset.runtime.repeat_penalty is not None:
         env["REPEAT_PENALTY"] = str(preset.runtime.repeat_penalty)
     if preset.runtime.spec_type:

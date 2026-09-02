@@ -79,6 +79,10 @@ type RuntimeSpec struct {
 	SpecNgramNMax   *int     `toml:"spec_ngram_n_max"`
 	SpecNgramNMatch *int     `toml:"spec_ngram_n_match"`
 	ReasoningEffort string   `toml:"reasoning_effort"` // xhigh|high|medium|low
+	// llama.cpp --reasoning-budget: -1 unrestricted, 0 stop thinking at once,
+	// N>0 a hard token cap. reasoning_effort lowers the AVERAGE thinking
+	// spend; only this bounds the tail.
+	ReasoningBudget *int `toml:"reasoning_budget"`
 }
 
 func defaultRuntime() RuntimeSpec {
@@ -146,6 +150,7 @@ var runtimeKeys = map[string]bool{
 	"presence_penalty": true, "repeat_penalty": true,
 	"spec_type": true, "spec_ngram_n_min": true, "spec_ngram_n_max": true,
 	"spec_ngram_n_match": true, "reasoning_effort": true,
+	"reasoning_budget": true,
 }
 
 // LoadPreset loads and validates one preset TOML. Name = filename stem.
@@ -240,6 +245,10 @@ func LoadPreset(path string) (*Preset, error) {
 		default:
 			return nil, presetErr("%s: runtime.reasoning_effort: unexpected value %q", path, rt.ReasoningEffort)
 		}
+	}
+	if rt.ReasoningBudget != nil && *rt.ReasoningBudget < -1 {
+		return nil, presetErr("%s: runtime.reasoning_budget: must be -1, 0 or a positive token count, got %d",
+			path, *rt.ReasoningBudget)
 	}
 
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -399,6 +408,9 @@ func (p *Preset) Env() map[string]string {
 	if p.Runtime.ReasoningEffort != "" {
 		// Compact JSON: the entrypoint word-splits ${VAR:+--flag $VAR}.
 		env["CHAT_TEMPLATE_KWARGS"] = fmt.Sprintf(`{"reasoning_effort":%q}`, p.Runtime.ReasoningEffort)
+	}
+	if p.Runtime.ReasoningBudget != nil {
+		env["REASONING_BUDGET"] = fmt.Sprintf("%d", *p.Runtime.ReasoningBudget)
 	}
 	return env
 }

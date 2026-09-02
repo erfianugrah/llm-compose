@@ -109,6 +109,37 @@ def measure_ttft(model_id: str, proxy: str = PROXY, timeout: int = 300) -> tuple
     return ttft, n_tok
 
 
+# Prefill rate needs a prompt big enough that fixed per-request overhead is
+# noise, and it must not be served from the KV cache. The short
+# THROUGHPUT_PROMPT above measured ~27 tok/s against a real 2450 tok/s
+# (2026-09-02) - that number was overhead, not prefill.
+PREFILL_PROMPT = ("Analyse the following log excerpt and summarise it.\n\n"
+                  + "2026-09-02T00:00:00Z INFO worker=7 stage=ingest "
+                    "records=1284 latency_ms=37 status=ok\n" * 400)
+
+
+def measure_prefill(model_id: str, proxy: str = PROXY, timeout: int = 600) -> dict[str, float]:
+    """Prompt-processing rate on a large, uncached prompt."""
+    body = json.dumps({
+        "model": model_id,
+        "messages": [{"role": "user", "content": PREFILL_PROMPT}],
+        "max_tokens": 1, "temperature": 0.0, "cache_prompt": False,
+    }).encode()
+    req = urllib.request.Request(
+        f"{proxy}/v1/chat/completions", data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read())
+        t = d.get("timings", {})
+        return {"prompt_per_s": round(t.get("prompt_per_second", 0), 1),
+                "prompt_n": t.get("prompt_n", 0)}
+    except Exception as e:
+        print(f"# prefill err: {e}", file=sys.stderr)
+        return {"prompt_per_s": 0.0, "prompt_n": 0}
+
+
 def measure_throughput(model_id: str, proxy: str = PROXY, timeout: int = 600) -> dict[str, float]:
     """Non-stream request -> llama.cpp server timings."""
     body = json.dumps({
@@ -263,12 +294,18 @@ def run_perf(
                     t = measure_throughput(model_id, proxy=proxy)
                     if t["gen_per_s"] > best["gen_per_s"]:
                         best = t
+                prefill = {"prompt_per_s": 0.0, "prompt_n": 0}
+                for _ in range(runs):
+                    t = measure_prefill(model_id, proxy=proxy)
+                    if t["prompt_per_s"] > prefill["prompt_per_s"]:
+                        prefill = t
 
             metrics = {
                 "ttft_p50_ms": p50(ttfts),
                 "ttft_p95_ms": p95(ttfts),
                 "gen_tok_s": best["gen_per_s"],
-                "prompt_tok_s": best["prompt_per_s"],
+                "prompt_tok_s": prefill["prompt_per_s"],
+                "prompt_n": prefill["prompt_n"],
                 "vram_peak_mib": poller.peak_mib,
                 "ctx": preset.runtime.context_size,
                 "slots": preset.runtime.parallel_slots,
@@ -279,7 +316,8 @@ def run_perf(
             )
             store.append(rec)
             log(f"  TTFT p50={metrics['ttft_p50_ms']}ms p95={metrics['ttft_p95_ms']}ms | "
-                f"gen={metrics['gen_tok_s']} tok/s | pp={metrics['prompt_tok_s']} tok/s | "
+                f"gen={metrics['gen_tok_s']} tok/s | pp={metrics['prompt_tok_s']} tok/s "
+                f"({metrics['prompt_n']} tok) | "
                 f"VRAM peak={metrics['vram_peak_mib']} MiB")
             client.set_lock(False, owner="bench")
     finally:

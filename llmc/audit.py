@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -244,6 +245,60 @@ def _find_by_content(
         exact = [c for c in candidates if c[1].get("sha256") == entry.local_sha256]
         return exact[0] if len(exact) == 1 else None
     return candidates[0] if len(candidates) == 1 else None
+
+
+@dataclass
+class UnreferencedFile:
+    """A weight file on disk that no preset names."""
+
+    filename: str
+    size: int
+    links: int  # hardlink count; >1 means another name shares these bytes
+    symlink_to: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {"file": self.filename, "size": self.size, "links": self.links,
+                "symlink_to": self.symlink_to}
+
+
+def unreferenced(
+    presets: dict, models_dir: Path, *, patterns: tuple[str, ...] = ("*.gguf",)
+) -> list[UnreferencedFile]:
+    """Weight files no preset points at, largest first.
+
+    The audit's mirror image: `audit_presets` asks "does every preset have its
+    file", this asks "does every file have a preset". At 91% disk that second
+    question is the one that frees space, and answering it by eye is how a
+    still-referenced GGUF gets deleted.
+
+    Reported, never deleted: some unreferenced files are deliberate (a
+    rollback artifact, a half-finished download, an A/B arm between runs).
+    """
+    named: set[str] = set()
+    for preset in presets.values():
+        for _kind, filename in _targets(preset):
+            named.add(filename)
+            # A preset may name a symlink; its target is referenced too.
+            path = models_dir / filename
+            if path.is_symlink():
+                named.add(Path(os.readlink(path)).name)
+
+    out: list[UnreferencedFile] = []
+    for pattern in patterns:
+        for path in sorted(models_dir.glob(pattern)):
+            if path.name in named:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            out.append(UnreferencedFile(
+                filename=path.name,
+                size=st.st_size,
+                links=st.st_nlink,
+                symlink_to=os.readlink(path) if path.is_symlink() else None,
+            ))
+    return sorted(out, key=lambda f: f.size, reverse=True)
 
 
 def orphans(results: Iterable[FileAudit]) -> list[FileAudit]:
