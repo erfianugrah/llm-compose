@@ -1,16 +1,28 @@
 name = "Qwen3.8 27B Dense - coding, vision, thinking (daily driver)"
+# NOTE: `file` below has NO upstream copy - unsloth deleted every plain
+# K-quant on 2026-08-19 (UD-only re-upload). The GGUF is backed up off-box
+# (see docs/reference/model-audit.md); qwen38-ud.toml is the upstream-live
+# replacement candidate, held back pending a larger task-suite sample.
 description = """
-Qwen3.8 27B Dense - daily driver, froggeric fixed template v22.3.
+Qwen3.8 27B Dense - daily driver, froggeric fixed template v22.4.
 
 ~17.1 GB model (Q4_K_M) + ~0.9 GB mmproj. 27B dense, hybrid
 Gated DeltaNet + Gated Attention (64 layers), 262144 native ctx.
 Sampling = model card thinking-mode recommendation
 (temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0).
 
-Template: froggeric/Qwen-Fixed-Chat-Templates v22.3 (2026-08-23).
+Template: froggeric/Qwen-Fixed-Chat-Templates v22.4 (2026-08-24).
 Fixes empty-think poisoning, tool-call crash on JSON-string args,
 mid-dialogue system-message drops, hallucinated user instructions
-in thinking, and KV-preserving chronological thought.
+in thinking, and KV-preserving chronological thought. v22.4 adds
+multi-tool token alignment (drops a stray newline before <tool_call>)
+and assistant `message.reasoning` handling.
+
+v22.3 -> v22.4 measured on the 4 fast loop tasks x 2 runs (2026-09-02):
+both 8/8 PASS, but iterations fell 12 -> 8 (every v22.4 run converged
+first try; v22.3 needed 2-3 iterations on three of them) and total wall
+543.4s -> 452.0s. Small sample, but the direction matches what the
+release claims to fix: malformed tool calls are what cost an iteration.
 
 context_size = 262144 (the model's native max) since 2026-08-26.
 

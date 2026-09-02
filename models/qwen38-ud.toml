@@ -1,0 +1,50 @@
+name = "Qwen3.8 27B Dense - unsloth dynamic Q4_K_M (upstream-live A/B arm)"
+description = """
+Same model, same runtime as qwen38; the only difference is the quant file:
+unsloth's dynamic `UD-Q4_K_M` (15.33 GiB) instead of the plain `Q4_K_M`
+(15.93 GiB) the daily driver still names.
+
+Why this preset exists: unsloth DELETED every plain K-quant of
+Qwen3.8-27B on 2026-08-19 and re-uploaded a UD-only lineup (imatrix,
+08-20). The daily driver's `[model] file` therefore has no upstream copy
+at all - `llmc audit` reports it `gone`, and the entrypoint's download
+fallback would 404 if the local GGUF were ever lost. This arm is the
+candidate replacement: it is smaller (-0.6 GiB, i.e. more KV headroom at
+262144 ctx) AND it is still published, which the incumbent is not.
+
+sha256 verified against the HF LFS oid on download
+(322e194ff797...3482), so this is byte-identical to what unsloth ships.
+
+Adopt only on a task-suite A/B against qwen38 - switching changes the
+advertised model_id (the GGUF stem), which `webui/models.json` pins.
+"""
+vram_gb = 20.5
+
+capabilities = ["vision", "code"]
+
+[model]
+repo = "unsloth/Qwen3.8-27B-GGUF"
+file = "Qwen3.8-27B-UD-Q4_K_M.gguf"
+
+[mmproj]
+file = "qwen38-mmproj.gguf"
+
+[template]
+file = "qwen38-fixed.jinja"
+
+[runtime]
+reasoning = "on"
+reasoning_effort = "medium"
+context_size = 262144
+parallel_slots = 1
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+# spec: NONE, same as qwen38 - both speculators collapse under agentic
+# churn on this hybrid Gated DeltaNet model (llama.cpp #27151/#27296).
+
+[bench]
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"
