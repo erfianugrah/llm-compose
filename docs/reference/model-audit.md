@@ -76,6 +76,23 @@ could not be checked upstream, `3` a file is absent both locally and upstream
 - **Re-runs are cheap.** A remote file of matching size is skipped, so the
   weekly timer costs one HF API call per repo plus one ssh.
 
+## Tests
+
+```bash
+make test         # unit: classifier logic against an injected repo tree
+make test-audit   # live drill: real HF API + planted orphan over ssh (~40s)
+```
+
+The unit tests cover the logic (deletion detection, rate-limit-is-not-a-
+deletion, inode dedup, ambiguous-twin refusal). The drill covers what only
+fails for real: that the HF tree endpoint still returns LFS oids where we
+expect them, that an oid genuinely equals the file's sha256, and that a
+backed-up file lands byte-identical on the far end. It plants an 8 MiB
+orthan, backs it up to a scratch remote dir, re-runs to prove the skip,
+mutates the local file to prove a changed file is re-copied, then removes
+both the local file and the scratch dir. Presets live in a temp dir
+throughout, so the proxy's live preset list is never touched.
+
 ## Schedule
 
 `llmc-model-audit.timer` (systemd user unit, Sundays 05:00 +/- 30 min,

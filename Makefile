@@ -25,7 +25,7 @@ LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
-.PHONY: help setup up verify _poll-health down restart status shell audit install-timer test test-docker test-integration test-proxy-go smoke-proxy-go \
+.PHONY: help setup up verify _poll-health down restart status shell audit install-timer test test-audit test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
         pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train \
@@ -202,6 +202,11 @@ test-docker:
 ## Run end-to-end GPU integration tests (requires stack up + GPU + ~90s)
 test-integration:
 	@LLMC_TEST_INTEGRATION=1 python3 -m unittest discover llmc.tests
+
+## Live audit drill: real HF API + a planted orphan backed up over ssh.
+## No GPU, ~40s. Uses a scratch remote dir it removes afterwards.
+test-audit:
+	@LLMC_TEST_INTEGRATION=1 python3 -m unittest llmc.tests.test_audit_integration -v
 
 # ── Image builds ─────────────────────────────────────────────────────
 #
