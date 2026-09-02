@@ -1,12 +1,13 @@
 name = "Qwen3.8 27B Dense - coding, vision, thinking (daily driver)"
-# NOTE: `file` below has NO upstream copy - unsloth deleted every plain
-# K-quant on 2026-08-19 (UD-only re-upload). The GGUF is backed up off-box
-# (see docs/reference/model-audit.md); qwen38-ud.toml is the upstream-live
-# replacement candidate, held back pending a larger task-suite sample.
+# Quant promoted from plain Q4_K_M to unsloth's dynamic UD-Q4_K_M on
+# 2026-09-02 (A/B below). The old file has no upstream copy at all -
+# unsloth deleted every plain K-quant on 2026-08-19 - and is now referenced
+# by no preset; it stays on local disk plus a verified off-box backup
+# (docs/reference/model-audit.md) purely as a rollback artifact.
 description = """
 Qwen3.8 27B Dense - daily driver, froggeric fixed template v22.4.
 
-~17.1 GB model (Q4_K_M) + ~0.9 GB mmproj. 27B dense, hybrid
+~16.5 GB model (UD-Q4_K_M) + ~0.9 GB mmproj. 27B dense, hybrid
 Gated DeltaNet + Gated Attention (64 layers), 262144 native ctx.
 Sampling = model card thinking-mode recommendation
 (temp 1.0 / top_p 0.95 / top_k 20 / min_p 0 / presence_penalty 0).
@@ -23,6 +24,25 @@ both 8/8 PASS, but iterations fell 12 -> 8 (every v22.4 run converged
 first try; v22.3 needed 2-3 iterations on three of them) and total wall
 543.4s -> 452.0s. Small sample, but the direction matches what the
 release claims to fix: malformed tool calls are what cost an iteration.
+
+Quant: unsloth dynamic UD-Q4_K_M, adopted 2026-09-02 after a task-suite
++ perf A/B against the plain Q4_K_M it replaces (4 fast loop tasks, 3 runs,
+back to back in one invocation; perf re-measured with both files page-cache
+warm):
+
+  plain Q4_K_M   12/12 PASS  median  52.9s  max 1165.4s  gen 73.5 tok/s  29897 MiB
+  UD-Q4_K_M      12/12 PASS  median  44.8s  max  124.8s  gen 75.6 tok/s  29217 MiB
+
+The 1165s outlier was a single-iteration run - one ~19 min generation, not a
+retry storm - which is the tail `--reasoning-budget` would bound; it is the
+reason to read medians here, not means. UD wins on median wall, peak wall,
+gen tok/s and VRAM, holds the full 262144 ctx (n_ctx_slot = 262144, no
+silent `--fit` shrink), and unlike the incumbent it still EXISTS upstream,
+which is what forced the comparison. sha256 verified against the HF LFS oid
+on download.
+
+An earlier 2-run pass had UD looking 63% slower; it did not survive the
+larger sample (cold page cache on a freshly downloaded 15.33 GiB file).
 
 context_size = 262144 (the model's native max) since 2026-08-26.
 
@@ -46,13 +66,13 @@ not a VRAM one. A bigger card would buy a larger quant or more slots,
 not more context.
 
 """
-vram_gb = 21.0
+vram_gb = 20.5
 
 capabilities = ["vision", "code"]
 
 [model]
 repo = "unsloth/Qwen3.8-27B-GGUF"
-file = "Qwen3.8-27B-Q4_K_M.gguf"
+file = "Qwen3.8-27B-UD-Q4_K_M.gguf"
 
 [mmproj]
 file = "qwen38-mmproj.gguf"

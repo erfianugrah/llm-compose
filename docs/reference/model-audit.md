@@ -17,7 +17,7 @@ the presets kept pointing at them:
 
 | file | preset | discovered |
 |---|---|---|
-| `Qwen3.8-27B-Q4_K_M.gguf` | qwen38 (+3 hardlinked variants), loop | 2026-09-02 |
+| `Qwen3.8-27B-Q4_K_M.gguf` | was qwen38 (+3 hardlinks), loop - now unreferenced | 2026-09-02 |
 | `gemma-4-26B-A4B-it-Q4_K_M.gguf` | summarizer (whisper's cross-stack model) | 2026-09-02 |
 | `gemma-4-31B-it-Q4_K_M.gguf` | gemma4 | 2026-09-02 |
 | `gemma4-mmproj.gguf` | gemma4 | 2026-09-02 |
@@ -25,6 +25,14 @@ the presets kept pointing at them:
 Nothing failed, because the local GGUFs survived. Had the volume been lost
 first, the daily driver, the loop engine and the whisper summarisation model
 were all unrecoverable. The audit turns that from luck into a check.
+
+The Qwen3.8 orphan has since been retired: `qwen38`, `qwen38-xhigh` and
+`loop` moved to unsloth's still-published `UD-Q4_K_M` on 2026-09-02 after a
+task-suite + perf A/B (see `models/qwen38.toml`), so the audit no longer
+lists that file - no preset names it. It stays on local disk plus the
+verified off-box copy as a rollback artifact. The two gemma-4 files are
+still live orphans: their presets have no upstream replacement at the same
+quant, only `Q4_0` / `Q8_0`.
 
 ## Usage
 

@@ -35,16 +35,16 @@ threshold (~111K) killed every iteration of the concurrency-build run
 thinking traces far leaner than Gemma 4's 10K+ xhigh binges.
 
 """
-vram_gb = 21.0
+vram_gb = 20.5
 
 capabilities = ["code"]
 
 [model]
-# Local symlink -> Qwen3.8-27B-Q4_K_M.gguf (see description).
+# Local symlink -> Qwen3.8-27B-UD-Q4_K_M.gguf (see description).
 # repo is a placeholder to satisfy preset validation; entrypoint
 # prefers the local file.
 repo = "local/loop-engine"
-file = "loop-qwen3.8-27B-Q4_K_M.gguf"
+file = "loop-Qwen3.8-27B-UD-Q4_K_M.gguf"
 
 [template]
 file = "qwen38-fixed.jinja"

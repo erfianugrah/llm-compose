@@ -198,18 +198,25 @@ llmc bench <subcommand> [args...]  pass-through to bench scripts
 
 ## Available models
 
-10 presets in `models/`:
+8 presets in `models/`:
 
-| Preset                  | Model                     | Active | VRAM   | Vision | Best for                                |
-|-------------------------|---------------------------|--------|--------|--------|-----------------------------------------|
-| `gemma4`                | Gemma 4 31B Dense         | 31B    | 20.2GB | yes    | Generic tasks, writing, image input     |
-| `qwen38`                | Qwen3.8 27B Dense         | 27B    | 21.0GB | yes    | Daily driver: coding, vision, thinking  |
-| `qwen38-xhigh`          | Qwen3.8 27B + MTP + xhigh | 27B    | 21.0GB | yes    | Interactive quality ceiling             |
-| `summarizer`            | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | TL;DW bot, 256K context summarization   |
-| `loop`                  | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | no     | Loop-engine worker (agentic coding, 131072 ctx, text-only; same weights as summarizer via symlink) |
-| `erfi`                  | Qwen3-4B fine-tune        | 4B     | 3.5GB  | no     | Personal-voice bot (local GGUF)         |
+| Preset         | Model                     | Active | VRAM   | Vision | ctx     | Best for                                |
+|----------------|---------------------------|--------|--------|--------|---------|-----------------------------------------|
+| `qwen38`       | Qwen3.8 27B Dense (UD)    | 27B    | 20.5GB | yes    | 262144  | Daily driver: coding, vision, thinking  |
+| `qwen38-xhigh` | Qwen3.8 27B + MTP + xhigh | 27B    | 20.5GB | yes    | 196608  | Interactive quality ceiling (babysat only - MTP degrades under churn) |
+| `loop`         | Qwen3.8 27B Dense (UD)    | 27B    | 20.5GB | no     | 262144  | Loop-engine worker (agentic coding, text-only; same weights as `qwen38` via symlink) |
+| `gemma4`       | Gemma 4 31B Dense         | 31B    | 20.2GB | yes    | 65536   | Generic tasks, writing, image input     |
+| `summarizer`   | Gemma 4 26B-A4B MoE       | 4B     | 24.0GB | yes    | 131072  | TL;DW bot, long-context summarization (whisper's cross-stack model) |
+| `gemma4-12b`   | Gemma 4 12B               | 12B    | 8.5GB  | no     | 32768   | Small-track quality ceiling             |
+| `lfm25-8b`     | LFM2.5 8B-A1B MoE         | 1B     | 6.5GB  | no     | 32768   | Small-track MoE speed candidate         |
+| `erfi`         | Qwen3-4B fine-tune        | 4B     | 3.5GB  | no     | 8192    | Personal-voice bot (local GGUF)         |
 
 All fit in 32GB VRAM at Q4 quantization. VRAM column includes mmproj.
+
+`make audit` checks every preset's GGUF against its upstream HuggingFace
+repo and backs up anything upstream has deleted - see
+[docs/reference/model-audit.md](docs/reference/model-audit.md). Four files
+are currently `gone` upstream and exist only locally plus off-box.
 
 ## Prerequisites
 

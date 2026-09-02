@@ -9,13 +9,13 @@ degrades to ~0.5 tok/s within ~10 min of agentic task traffic
 The daily-driver qwen38 preset runs medium + ngram-mod instead.
 Hardlinked GGUF (presets dedup by model_id stem).
 """
-vram_gb = 21.0
+vram_gb = 20.5
 
 capabilities = ["vision", "code"]
 
 [model]
 repo = "unsloth/Qwen3.8-27B-GGUF"
-file = "Qwen3.8-27B-Q4_K_M-xhigh.gguf"
+file = "Qwen3.8-27B-UD-Q4_K_M-xhigh.gguf"
 
 [mmproj]
 file = "qwen38-mmproj.gguf"

@@ -262,10 +262,17 @@ class TestProxyEndpoints(unittest.TestCase):
             status, _, payload = _http_get(srv.port, "/v1/models")
         self.assertEqual(status, 200)
         self.assertEqual(payload["object"], "list")
-        # Core presets must be present (don't hardcode a count - presets
-        # come and go; load_all raises on malformed TOML anyway)
+        # Presets come and go, so assert the endpoint mirrors models/ rather
+        # than a magic number (the previous `>= 9` failed the moment two dead
+        # variant presets were pruned, which is a docs problem, not a bug).
+        from pathlib import Path
+
+        from llmc.presets import load_all
+
+        expected = {p.model_id for p in
+                    load_all(Path(__file__).resolve().parents[2] / "models").values()}
         ids = {m["id"] for m in payload["data"]}
-        self.assertGreaterEqual(len(ids), 9)
+        self.assertEqual(ids, expected)
         # Each entry has the metadata Open WebUI expects
         for entry in payload["data"]:
             self.assertIn("meta", entry)

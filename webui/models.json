@@ -1,7 +1,7 @@
 [
   {
     "id": "qwen38",
-    "base_model_id": "Qwen3.8-27B-Q4_K_M",
+    "base_model_id": "Qwen3.8-27B-UD-Q4_K_M",
     "name": "Qwen3.8 27B Dense",
     "meta": {
       "description": "Coding daily driver. 27B dense, thinking mode, vision, 262K native context.",
