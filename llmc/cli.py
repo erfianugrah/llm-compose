@@ -398,6 +398,114 @@ def cmd_unlock(args: argparse.Namespace) -> int:
     return EXIT_BACKEND_ERROR
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Check every preset's model/mmproj file against its upstream HF repo."""
+    from llmc import audit as audit_mod
+
+    try:
+        presets = load_all(DEFAULT_PRESETS_DIR)
+    except PresetError as exc:
+        _err(f"Failed to load presets: {exc}")
+        return EXIT_USER_ERROR
+
+    models_dir = _models_dir()
+    if models_dir is None:
+        _err("Cannot resolve the llama-models bind path from volumes.toml")
+        return EXIT_USER_ERROR
+
+    results = audit_mod.audit_presets(presets, models_dir, deep=args.deep)
+    orphaned = audit_mod.orphans(results)
+
+    # An orphan already on off-box storage is not an alarm. Check the backup
+    # destination in read-only mode too, so `make audit` is green when the
+    # only copies are safe - a report that cries wolf gets ignored.
+    unbacked = list(orphaned)
+    backup_state = "n/a"
+    if orphaned:
+        try:
+            inventory = audit_mod.remote_inventory(args.dest)
+            backup_state = "checked"
+            unbacked = [o for o in orphaned
+                        if inventory.get(o.filename) != o.local_size]
+            for entry in orphaned:
+                if entry not in unbacked:
+                    entry.note = f"{entry.note}; backed up at {args.dest}"
+        except audit_mod.AuditError as exc:
+            # Cannot reach the backup host: that is an unknown, not a verdict.
+            # Calling these unbacked would be the same mistake as calling a
+            # rate-limited HF lookup an upstream deletion.
+            backup_state = f"unknown ({exc})"
+            unbacked = []
+
+    backups: list = []
+    if args.backup and orphaned:
+        try:
+            backups = audit_mod.backup_orphans(
+                orphaned, args.dest, dry_run=args.dry_run,
+                log=(lambda m: None) if args.json else (lambda m: print(f"  {m}")),
+            )
+        except audit_mod.AuditError as exc:
+            _err(f"Backup failed: {exc}")
+            return EXIT_TRANSIENT
+
+    if args.json:
+        _print_json({
+            "models_dir": str(models_dir),
+            "results": [r.to_dict() for r in results],
+            "orphans": [r.filename for r in orphaned],
+            "unbacked": [r.filename for r in unbacked],
+            "backup_dest": args.dest,
+            "backup_state": backup_state,
+            "backups": [vars(b) for b in backups],
+        })
+    else:
+        _print_table(
+            ["status", "preset", "kind", "file", "note"],
+            [[r.status, r.preset, r.kind, r.filename, r.note] for r in results],
+        )
+        for b in backups:
+            print(f"backup {b.action}: {b.filename} {b.detail}".rstrip())
+
+    unknown = [r for r in results if r.status == audit_mod.UNKNOWN]
+    lost = [r for r in results if r.unrecoverable]
+    failed = [b for b in backups if b.action == "failed"]
+    copied = {b.filename for b in backups if b.action in ("copied", "skipped")}
+    still_unbacked = [r for r in unbacked if r.filename not in copied]
+
+    if lost:
+        _err(f"UNRECOVERABLE: {len(lost)} file(s) absent both locally and upstream")
+        return EXIT_BACKEND_ERROR
+    if failed:
+        _err(f"{len(failed)} backup(s) failed")
+        return EXIT_BACKEND_ERROR
+    if backup_state.startswith("unknown"):
+        _err(f"backup state unverified for {len(orphaned)} orphan(s): {backup_state}")
+        return EXIT_TRANSIENT
+    if still_unbacked:
+        _err(f"{len(still_unbacked)} orphaned file(s) not backed up: "
+             f"{', '.join(r.filename for r in still_unbacked)} "
+             f"(run: llmc audit --backup)")
+        return EXIT_USER_ERROR
+    if unknown:
+        _err(f"{len(unknown)} file(s) could not be checked upstream (network/rate limit)")
+        return EXIT_TRANSIENT
+    if orphaned:
+        print(f"{len(orphaned)} orphan(s), all backed up at {args.dest}")
+    return EXIT_OK
+
+
+def _models_dir() -> Optional[Path]:
+    """Host path of the llmc-llama-models bind mount."""
+    try:
+        registry = load_volumes(DEFAULT_VOLUMES_TOML)
+    except VolumeError:
+        return None
+    for spec in registry:
+        if spec.name == "llmc-llama-models":
+            return spec.device
+    return None
+
+
 def cmd_models(args: argparse.Namespace) -> int:
     """List presets. Live from proxy if reachable, else local TOML files."""
     client = ProxyClient()
@@ -1150,6 +1258,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("models", help="list available LLM presets")
     sp.set_defaults(func=cmd_models)
+
+    sp = sub.add_parser("audit",
+                        help="check preset model files against upstream (drift/orphans)")
+    sp.add_argument("--deep", action="store_true",
+                    help="sha256 every same-size file against the HF LFS oid (slow, exact)")
+    sp.add_argument("--backup", action="store_true",
+                    help="rsync orphaned files (no upstream copy) to --dest and verify")
+    sp.add_argument("--dest",
+                    default=os.environ.get("LLMC_MODEL_BACKUP_DEST",
+                                           "servarr:/tank/backups/llm-models/orphaned"),
+                    help="backup destination host:/path (env LLMC_MODEL_BACKUP_DEST)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="with --backup: report what would be copied, copy nothing")
+    sp.set_defaults(func=cmd_audit)
 
     # Volumes (= bind-mount host paths from volumes.toml)
     vol = sub.add_parser("volumes", help="manage bind-mount paths")

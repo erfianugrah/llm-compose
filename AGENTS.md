@@ -32,6 +32,8 @@ make logs-{proxy,webui,llama,comfyui,train}
 make gpu                # nvidia-smi
 make health             # curl /health
 make metrics            # curl /metrics
+make audit              # preset GGUFs vs upstream HF (drift/orphans)
+make install-timer      # enable the weekly audit timer (systemd user)
 
 # Mode + model switching (CLI)
 llmc switch <preset>    # hot-swap LLM (POST /mode {mode:llm, model:X})
@@ -152,6 +154,16 @@ only. Docker Engine API via a hand-rolled unix-socket client
 
 The proxy never rewrites `.env` (which was a major source of v1 jank).
 Container env vars are passed directly to `docker run` via the SDK.
+
+**A preset's `repo`/`file` pair is a promise that decays.** It is the
+entrypoint's download fallback, and upstream repos delete files: unsloth
+wiped every plain K-quant of Qwen3.8-27B on 2026-08-19, and ggml-org did the
+same to both gemma-4 repos, orphaning four of our GGUFs while the presets
+kept naming them. `make audit` checks every preset file against its repo and
+backs up anything with no upstream copy; the weekly
+`llmc-model-audit.timer` runs it with backup enabled. Details and status
+semantics: `docs/reference/model-audit.md`. When changing a preset's quant,
+remember the GGUF stem IS the advertised `model_id`.
 
 ## Route-based GPU switching
 

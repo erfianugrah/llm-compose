@@ -25,7 +25,7 @@ LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
-.PHONY: help setup up verify _poll-health down restart status shell test test-docker test-integration test-proxy-go smoke-proxy-go \
+.PHONY: help setup up verify _poll-health down restart status shell audit install-timer test test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
         pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train \
@@ -125,6 +125,20 @@ restart:
 ## Uses llmc because it queries the proxy's mode endpoint and renders a table.
 status:
 	@$(LLMC) status
+
+## Audit preset GGUFs against upstream HF repos (drift + orphan detection).
+## Read-only; `llmc audit --backup` also rsyncs orphans to tank. Runs weekly
+## via the llmc-model-audit.timer systemd user unit.
+audit:
+	@$(LLMC) audit
+
+## Install + enable the weekly audit timer (systemd user unit).
+install-timer:
+	mkdir -p ~/.config/systemd/user
+	cp deploy/llmc-model-audit.service deploy/llmc-model-audit.timer ~/.config/systemd/user/
+	systemctl --user daemon-reload
+	systemctl --user enable --now llmc-model-audit.timer
+	systemctl --user list-timers llmc-model-audit.timer --no-pager
 
 ## Open a busybox shell with every named volume mounted at /vol/<name>
 shell:
