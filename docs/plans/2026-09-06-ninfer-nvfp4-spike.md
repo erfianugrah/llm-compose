@@ -1,9 +1,20 @@
 # 2026-09-06 - NInfer + NVFP4 spike: the parked S3 engine lever
 
-Status: SPIKE PARKED 2026-09-07 - N3/N4/N6 PASS, N5 open (churn soak
-not yet run; attempt 1 stopped for GPU reclaim). Engine + artifact kept
-in place: `ninfer-spike` container **stopped, not removed**, image
-`ninfer:local`, artifact bind-mounted from `.ninfer/models/`.
+Status: **SPIKE COMPLETE + ADOPTED 2026-09-07 - N3/N4/N5/N6 all PASS.**
+Proxy integration shipped and verified live: `models/qwen38-ninfer.toml`,
+`llmc switch qwen38-ninfer` starts `ninfer_server` and switching back to a
+llama preset reverses it, both confirmed end-to-end through the Go proxy on
+:11434 (a completion returned correctly on each engine). Engine support is in
+`proxy-go` (the live proxy) and mirrored in `llmc/` (CLI, bench, rollback
+lane); see the "Engines" section of AGENTS.md for the preset schema and the
+three engine differences the proxy handles.
+
+Adoption is bounded to the Qwen3.8-27B presets - see the per-preset table in
+section 4. llama.cpp remains the multi-model engine.
+
+Outstanding: the unexplained 6.2% slow tail in section 6; the proxy does not
+yet inject the per-request `reasoning_effort`, so a client that sends none
+gets the template default (xhigh) and its 10-30k-token thinking traces.
 
 Resume: take `llama_server` down first (the GPU holds one workload), then
 `docker start ninfer-spike`. There is NO ninfer service in `compose.yaml`
@@ -217,38 +228,76 @@ guards + 5 red feature sensors + an opus-5 judge, ladder
 Harness design and canary evidence: `~/infra/lockstep/docs/loop-harness.md`.
 
 **N5 attempt 1 (2026-09-07) - STOPPED at iteration 2/2 of the trial, GPU
-reclaimed for other work.** Not a verdict either way. What it produced:
+reclaimed.** Superseded by the full run below; kept because the two failure
+modes it exposed are the reason the run needed reconfiguring at all.
 
-- Engine health over the container's full life (2026-09-06T23:52:41Z to
-  2026-09-07T08:47Z, ~16 min of actual serving across two segments):
-  70 completed requests, **0 error / panic / CUDA-failure lines**,
-  0 restarts.
-- Per-request decode across all 70: min **103.7**, p50 **147.7**,
-  p95 183.0, max 221.6 tok/s. No request fell below 100 tok/s. That is
-  the anti-decay signal in miniature - llama.cpp's failure mode is
-  122 -> 69 as ctx fills - but 70 requests over 16 minutes is nowhere
-  near the hours of churn the gate needs.
-- Prompt contexts: min 58, p50 48,450, max 88,985 tokens. Prefix-cache
-  hit rate p50 96.6%. MTP draft acceptance p50 64.0% (range 45.5-94.4%).
+**N5 RUN (2026-09-07) - the lockstep v1 build-out, COMPLETE. PASS.**
 
-The blocker is on the harness side, not the engine: **trial iteration 1
-ran 6.6 min on the ninfer rung, exited 0, and changed zero files**
-(`changedFiles: []`, `scopeViolations: []`, `kept: true`). ~35 requests
-at 47K ctx with `tools 4`, one tool call per request - so read/edit/write/
-bash were all in schema and being called. The repo is `--bind` (rw) in
-the jail, so the sandbox did not eat the writes; the agent explored and
-never wrote. Which of "explored instead of acting" vs "writes failed
-silently" is unresolved, because bwrap puts `~/.pi/agent` on a
-`--tmp-overlay` and the iteration's pi transcript is discarded at exit.
+The engine drove the entire lockstep v1 build-out to all-sensors-green
+across four milestones without the escalation rung ever being reached.
+Deliverables: server auth + ws dispatch + rooms + playback + participant
+broadcasts (66 unit tests, acceptance probe 5/5, reachability-clean under
+`clippy --all-targets -D warnings`), a browser client (typed ws transport
+with reconnect + resync, Jellyfin adapter, HTMLMediaElement drift
+correction, room UI), 73 client tests up from 20, and a 190-line README.
+An `anthropic/claude-opus-5` judge reviewed every milestone and rejected one
+on substance. Repo: `~/infra/lockstep`, branch `v1-buildout`; harness
+evidence and the milestone table in `~/infra/lockstep/docs/loop-harness.md`.
 
-Next step for N5, in order: one iteration with `LOOP_SANDBOX=off` so the
-transcript survives and the tool sequence is readable; if the model was
-merely exploring, slice the manifest to one milestone (ws dispatch + auth
-only) per the local-rung working-window rules in the loop skill's
-docs/models.md, which already say the local rung stalls on multi-file
-work. Then re-run the trial before spending the 40-iteration budget.
-Killed runs are not journaled, so `loop history` shows nothing for this
-attempt.
+Cumulative engine numbers, one container instance, **0 restarts and 0
+error / panic / CUDA-failure lines across 336 requests**:
+
+| metric | value |
+|---|---|
+| decode p5 / p50 / p95 | 95.2 / 139.7 / 182.0 tok/s |
+| decode by ctx depth (p50) | 180.0 at 0-10K, 141.1 at 30-50K, 142.3 at 50-70K, **136.5 at 70-100K** |
+| prompt ctx p50 / max | ~59K / 88,985 |
+| prefix-cache hit p50 | 96.6% |
+| MTP acceptance p50 | 64% (range 45.5-94.4%) |
+
+**The churn gate is CLEARED.** Decode is flat from 30K to 100K of context -
+141 -> 136 tok/s, a 3% drift - against llama.cpp's 122 -> 69 collapse, which
+is the failure mode that disqualified draft-mtp and ngram-mod. The 5th
+percentile of 336 real agentic requests (95.2 tok/s) still beats
+llama.cpp's 73.2 tok/s cold-start best.
+
+**Open: an unexplained slow tail.** 21/336 requests (6.2%) decoded below
+100 tok/s, the worst at 33.9-43.5 tok/s, clustered at 66-72K ctx with
+substantial outputs (392-2882 tokens) so not a short-output artifact. MTP
+acceptance on those averages 56.5% against 65.6% on fast requests - far too
+small a gap to explain a 4x slowdown. Diagnose before promoting ninfer to
+anything unattended and latency-sensitive.
+
+### Two configuration faults that looked like model incapability
+
+Both produced iterations that exited 0 having changed nothing, and both
+would bite any adopter:
+
+1. **Effort was `xhigh` by inheritance.** pi's `defaultThinkingLevel` is
+   `high`; `compat.supportsReasoningEffort: false` meant pi sent no effort
+   field at all, so the artifact's chat template applied its own default.
+   At xhigh a single tool call produced **35,747 output tokens**. Our own
+   presets have specified `reasoning_effort = "medium"` since 2026-08-19
+   (`models/qwen38.toml`, `models/loop.toml`) for exactly this reason.
+   Fix: `supportsReasoningEffort: true` plus a `:medium` suffix on the rung.
+   Note the template exposes only `low|medium|xhigh` and **rejects `high`**
+   with `reasoning_effort_not_supported` - which is why the field had been
+   suppressed in the first place. It is safe to enable only because pi maps
+   its own `high` onto the template's `xhigh`.
+2. **No `maxTokens` on the model entry**, so pi applied a 16,384 default.
+   The model hit that ceiling mid-thought and was truncated, emitting no
+   tool call and no text - which the harness records as a clean exit with no
+   changes. Fix: `maxTokens: 65536`.
+
+With both corrected, the rung delivered four client modules, a UI layer, 53
+new tests and the README in a single iteration. The local-rung
+"stalls on multi-file work" note in the loop skill's `docs/models.md` was
+measured against this broken configuration and should be re-tested.
+
+Not established: whether medium is *faster* than xhigh here. Output p50 went
+311 -> 1326 tokens and the max fell 35,747 -> 14,783, but the two samples
+are not comparable (the xhigh set is full of trivial requests). A real
+comparison needs the same task run both ways.
 
 - VRAM budget at 196K x 2 lanes with fp8 KV + MTP + vision: unmeasured.
   20 GiB weights + KV; 32 GB card. N2 smoke logs actual usage; drop

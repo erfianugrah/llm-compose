@@ -110,6 +110,59 @@ GPU services live OUTSIDE compose. The proxy spawns them via Docker SDK
 in `llmc/orchestrator.py` and labels them with `llmc.mode` so it can
 find them again after a restart.
 
+## Engines: llama.cpp and NInfer
+
+A preset names the engine that serves it. `engine` absent means `llama`, so
+every pre-existing preset is unaffected.
+
+```toml
+engine = "ninfer"
+
+[model]
+file = "qwen3_8_27b_nvfp4.ninfer"
+id   = "qwen3.8-27b-nvfp4"   # required: no .gguf name to derive an id from
+
+[ninfer]                      # ninfer-serve flags; see models/qwen38-ninfer.toml
+max_context = 262144
+kv_dtype    = "fp8"
+spec        = "mtp"
+```
+
+`llmc switch qwen38-ninfer` stops llama_server and starts `ninfer_server`;
+switching back to any llama preset reverses it. Both verified live 2026-09-07.
+
+How the two differ, and what the proxy does about it:
+
+- **argv vs env.** The llama image's ENTRYPOINT assembles its command line
+  from env vars; `ninfer-serve` is argv-driven, so the proxy renders the
+  flags itself (`NinferCommand` in proxy-go, `ninfer_command` in llmc).
+- **Same mode, different container.** Both are mode `llm`, so
+  `Services["llm"]` is NOT sufficient to find the upstream - use
+  `LLMServiceFor(preset)` / `activeLLMService()`. Getting this wrong forwards
+  every request to llama-server while ninfer holds the GPU.
+- **The model field is validated.** NInfer 404s a request whose `model` is
+  not its served alias, where llama-server ignores the field. The proxy
+  rewrites the outbound `model` to the preset's `ModelID()` for ninfer
+  presets only.
+- **Thinking effort is per-request**, not a serve flag. The chat template
+  exposes `low|medium|xhigh` and REJECTS `high`. Clients should send
+  `medium` for unattended work; pi's rung is `external/...:medium`. The proxy
+  does not yet inject it, so a client that sends nothing gets the template
+  default (xhigh) and 10-30k-token thinking traces.
+- **Artifacts are placed by hand.** `ensure_preset_assets` only downloads
+  mmproj/template URLs; the 22 GiB `.ninfer` file is put in
+  `~/docker-volumes/ninfer/models/` and verified against upstream
+  SHA256SUMS. sha256 for the current artifact is in the spike plan.
+- **Coverage is bounded.** Upstream registers five Qwen artifact identities
+  and the build is sm_120a-only, so this engine can never serve the Gemma or
+  LFM presets. llama.cpp remains the multi-model engine.
+
+Known gaps: `llmc models` shows a ninfer preset's context as the `runtime`
+default rather than `ninfer.max_context`, and its vision column as `no`
+(derived from the llama-only mmproj asset). `LoadedLlamaModel` probes only
+llama-server, so a proxy restart with ninfer resident forces one needless
+swap.
+
 ## proxy-go (v2 rewrite, in soak)
 
 `proxy-go/` is the Go rewrite of the proxy (spec:
@@ -309,6 +362,7 @@ migrations.
 | `llmc-state`                 | `~/docker-volumes/state`                              | proxy state + secrets            |
 | `llmc-llama-cache`           | `~/docker-volumes/llama-server`                       | HuggingFace cache                |
 | `llmc-llama-models`          | `~/docker-volumes/llama-server/models`                | GGUFs + mmproj + templates       |
+| `llmc-ninfer-models`         | `~/docker-volumes/ninfer/models`                      | NInfer `.ninfer` artifacts (ro)  |
 | `llmc-comfyui-models`        | `~/docker-volumes/comfyui/models`                     | diffusion checkpoints            |
 | `llmc-comfyui-output`        | `~/docker-volumes/comfyui/output`                     | generated images/videos          |
 | `llmc-comfyui-input`         | `~/docker-volumes/comfyui/input`                      | uploaded inputs                  |
