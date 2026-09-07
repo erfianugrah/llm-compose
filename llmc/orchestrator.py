@@ -70,6 +70,18 @@ LLAMA_SERVICE = GpuService(
     health_path="/health",
 )
 
+# NInfer serves the same mode as llama.cpp: both are the LLM, and the GPU
+# holds one workload at a time. It is deliberately NOT in SERVICES (which
+# maps mode -> service 1:1); resolve it from the preset via llm_service_for.
+NINFER_SERVICE = GpuService(
+    name="ninfer_server",
+    hostname="ninfer-server",
+    mode="llm",
+    image=os.environ.get("LLMC_NINFER_IMAGE", "ninfer:local"),
+    internal_port=8080,
+    health_path="/health",
+)
+
 COMFYUI_SERVICE = GpuService(
     name="comfyui",
     hostname="comfyui",
@@ -94,6 +106,60 @@ GPU_LABEL = "llmc.mode"
 SERVICE_LABEL = "llmc.service"
 DEFAULT_NETWORK = os.environ.get("LLMC_NETWORK", "llmc")
 DEFAULT_HEALTH_TIMEOUT = int(os.environ.get("LLMC_HEALTH_TIMEOUT", "900"))
+
+
+def llm_service_for(preset: Preset) -> GpuService:
+    """Which container serves this preset. Two engines share mode "llm", so
+    the mode alone cannot decide - the preset does."""
+    if preset.engine == "ninfer":
+        return NINFER_SERVICE
+    return LLAMA_SERVICE
+
+
+def ninfer_command(preset: Preset) -> list[str]:
+    """Build the `ninfer-serve` argv for a ninfer preset.
+
+    Unlike the llama image (whose ENTRYPOINT assembles a command line from
+    environment variables), ninfer-serve is driven directly by argv, so the
+    proxy owns the flag rendering. Returned as a list because the Docker SDK
+    shlex-splits string commands at whitespace and mangles them.
+    """
+    if preset.engine != "ninfer":
+        raise ValueError(
+            f"ninfer_command: {preset.name!r} declares engine={preset.engine!r}"
+        )
+    spec = preset.ninfer
+    argv: list[str] = [
+        "ninfer-serve",
+        f"/models/{preset.model.file}",
+        "--model-id", preset.model_id,
+        "--host", "0.0.0.0",
+        "--port", str(NINFER_SERVICE.internal_port),
+        "--max-context", str(spec.max_context),
+        "--max-concurrency", str(spec.max_concurrency),
+        "--kv-dtype", spec.kv_dtype,
+    ]
+    # `is not None` rather than truthiness: 0 is a meaningful value for the
+    # host/device slot flags (the WSL2 pinned-host workaround).
+    for flag, value in (
+        ("--spec", spec.spec),
+        ("--draft-tokens", spec.draft_tokens),
+        ("--host-state-slots", spec.host_state_slots),
+        ("--host-kv-mib", spec.host_kv_mib),
+        ("--device-state-slots", spec.device_state_slots),
+        ("--default-thinking-budget", spec.default_thinking_budget),
+        ("--kv-capacity", spec.kv_capacity),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
+    for flag, enabled in (
+        ("--lm-head-draft", spec.lm_head_draft),
+        ("--preserve-thinking", spec.preserve_thinking),
+        ("--vision", spec.vision),
+    ):
+        if enabled:
+            argv.append(flag)
+    return argv
 
 
 class OrchestratorError(RuntimeError):
@@ -290,6 +356,29 @@ class Orchestrator:
                 "llmc-llama-models": {"bind": "/models", "mode": "rw"},
             },
         )
+
+    def spawn_ninfer(self, preset: Preset):
+        """Start ninfer-serve with the given preset. Existing GPU services
+        are stopped first.
+
+        The artifact directory is mounted read-only: ninfer only ever reads
+        its `.ninfer` file, and unlike the llama flow there is nothing to
+        download into the mount at spawn time."""
+        return self.spawn(
+            NINFER_SERVICE,
+            command=ninfer_command(preset),
+            volumes={
+                "llmc-ninfer-models": {"bind": "/models", "mode": "ro"},
+            },
+        )
+
+    def spawn_llm(self, preset: Preset):
+        """Start whichever engine the preset names. Callers that used to
+        reach for spawn_llama should use this instead, so a ninfer preset
+        cannot silently start llama.cpp."""
+        if preset.engine == "ninfer":
+            return self.spawn_ninfer(preset)
+        return self.spawn_llama(preset)
 
     def spawn_comfyui(self):
         return self.spawn(

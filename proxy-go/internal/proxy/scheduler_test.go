@@ -15,11 +15,12 @@ import (
 // fakeOrch is the test double for Orchestrator. doSwap runs on its own
 // goroutine, so every accessor is mutex-guarded.
 type fakeOrch struct {
-	mu         sync.Mutex
-	mode       string
-	llamaCalls []*Preset
-	comfyCalls int
-	trainCalls int
+	mu          sync.Mutex
+	mode        string
+	llamaCalls  []*Preset
+	ninferCalls []*Preset
+	comfyCalls  int
+	trainCalls  int
 }
 
 func newFakeOrch(mode string) *fakeOrch { return &fakeOrch{mode: mode} }
@@ -28,6 +29,24 @@ func (f *fakeOrch) CurrentMode() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.mode
+}
+
+// SpawnLLM mirrors the production dispatch so the fake cannot mask a
+// wrong-engine spawn: routing a ninfer preset to SpawnLlama is the exact
+// regression this records.
+func (f *fakeOrch) SpawnLLM(p *Preset) error {
+	if p != nil && p.Engine == EngineNinfer {
+		return f.SpawnNinfer(p)
+	}
+	return f.SpawnLlama(p)
+}
+
+func (f *fakeOrch) SpawnNinfer(p *Preset) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ninferCalls = append(f.ninferCalls, p)
+	f.mode = "llm"
+	return nil
 }
 
 func (f *fakeOrch) SpawnLlama(p *Preset) error {

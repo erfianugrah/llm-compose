@@ -692,11 +692,11 @@ func (s *Scheduler) doSwap(gen int64, mode string, preset *Preset) {
 			err = e
 			break
 		}
-		if e := s.orch.SpawnLlama(preset); e != nil {
+		if e := s.orch.SpawnLLM(preset); e != nil {
 			err = e
 			break
 		}
-		if !s.orch.WaitHealthy(LlamaService, s.cfg.HealthTimeout) {
+		if !s.orch.WaitHealthy(LLMServiceFor(preset), s.cfg.HealthTimeout) {
 			err = &OrchestratorError{Msg: fmt.Sprintf("timeout loading %s", preset.DisplayName)}
 		}
 	case "comfyui":

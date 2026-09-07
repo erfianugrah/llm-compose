@@ -1,0 +1,345 @@
+package proxy
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const stagedNinferPreset = "../../../models/qwen38-ninfer.toml"
+
+func loadStagedNinfer(t *testing.T) *Preset {
+	t.Helper()
+	p, err := LoadPreset(stagedNinferPreset)
+	if err != nil {
+		t.Fatalf("load ninfer preset: %v", err)
+	}
+	return p
+}
+
+// A preset names the engine that serves it; absent means llama.cpp, so every
+// pre-existing preset keeps working untouched. Presets that declare
+// engine="ninfer" are excluded and asserted separately - counted here so the
+// exclusion cannot quietly empty the set.
+func TestEngineDefaultsToLlama(t *testing.T) {
+	llama, ninfer := 0, 0
+	for _, path := range mustGlob(t, "../../../models/*.toml") {
+		p, err := LoadPreset(path)
+		if err != nil {
+			t.Fatalf("%s: %v", filepath.Base(path), err)
+		}
+		switch p.Engine {
+		case EngineNinfer:
+			ninfer++
+		case EngineLlama:
+			llama++
+		default:
+			t.Errorf("%s: engine = %q, want %q or %q",
+				filepath.Base(path), p.Engine, EngineLlama, EngineNinfer)
+		}
+	}
+	if llama == 0 {
+		t.Error("no llama presets found - the default is untested")
+	}
+	if ninfer == 0 {
+		t.Error("no ninfer preset found - the engine field is untested against a real preset")
+	}
+}
+
+func mustGlob(t *testing.T, pattern string) []string {
+	t.Helper()
+	paths, err := filepath.Glob(pattern)
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob %q: %v (%d hits)", pattern, err, len(paths))
+	}
+	return paths
+}
+
+func TestNinferPresetParses(t *testing.T) {
+	p := loadStagedNinfer(t)
+	if p.Engine != EngineNinfer {
+		t.Fatalf("engine = %q, want %q", p.Engine, EngineNinfer)
+	}
+	if p.Ninfer == nil {
+		t.Fatal("Ninfer section is nil")
+	}
+	if p.Ninfer.MaxContext != 262144 {
+		t.Errorf("max_context = %d", p.Ninfer.MaxContext)
+	}
+	if p.Ninfer.KVDtype != "fp8" || p.Ninfer.Spec != "mtp" || p.Ninfer.DraftTokens == nil || *p.Ninfer.DraftTokens != 3 {
+		t.Errorf("flags wrong: %+v", p.Ninfer)
+	}
+	if !p.Ninfer.LMHeadDraft || !p.Ninfer.PreserveThinking || !p.Ninfer.Vision {
+		t.Errorf("bools wrong: %+v", p.Ninfer)
+	}
+}
+
+// NInfer artifacts carry no .gguf name to derive an id from, so the preset
+// states it outright. Without this the served alias would silently become the
+// artifact filename and every client's `model` parameter would stop matching.
+func TestExplicitModelIDWins(t *testing.T) {
+	p := loadStagedNinfer(t)
+	if got := p.ModelID(); got != "qwen3.8-27b-nvfp4" {
+		t.Errorf("ModelID() = %q", got)
+	}
+}
+
+func TestNinferSuffixStrippedWhenNoExplicitID(t *testing.T) {
+	m := ModelSpec{File: "qwen3_8_27b_nvfp4.ninfer"}
+	if got := m.ID(); got != "qwen3_8_27b_nvfp4" {
+		t.Errorf("ID() = %q", got)
+	}
+}
+
+func TestUnknownEngineRejected(t *testing.T) {
+	_, err := loadInline(t, `name="x"
+vram_gb=5
+engine="vllm"
+[model]
+repo="r"
+file="f.gguf"`)
+	if err == nil || !strings.Contains(err.Error(), "engine") {
+		t.Fatalf("want engine error, got %v", err)
+	}
+}
+
+func TestNinferSectionOnLlamaPresetRejected(t *testing.T) {
+	_, err := loadInline(t, `name="x"
+vram_gb=5
+[model]
+repo="r"
+file="f.gguf"
+[ninfer]
+max_context=1024`)
+	if err == nil || !strings.Contains(err.Error(), "ninfer") {
+		t.Fatalf("want ninfer/engine mismatch error, got %v", err)
+	}
+}
+
+func TestUnknownNinferKeyRejected(t *testing.T) {
+	_, err := loadInline(t, `name="x"
+vram_gb=5
+engine="ninfer"
+[model]
+repo="r"
+file="f.ninfer"
+id="x-id"
+[ninfer]
+bogus_flag=1`)
+	if err == nil || !strings.Contains(err.Error(), "unknown key") {
+		t.Fatalf("want unknown-key error, got %v", err)
+	}
+}
+
+// ── argv builder ────────────────────────────────────────────────────────
+
+func TestNinferCommand(t *testing.T) {
+	p := loadStagedNinfer(t)
+	argv, err := NinferCommand(p)
+	if err != nil {
+		t.Fatalf("NinferCommand: %v", err)
+	}
+	if argv[0] != "ninfer-serve" {
+		t.Errorf("argv[0] = %q", argv[0])
+	}
+	if argv[1] != "/models/qwen3_8_27b_nvfp4.ninfer" {
+		t.Errorf("artifact path = %q", argv[1])
+	}
+	want := map[string]string{
+		"--model-id":           "qwen3.8-27b-nvfp4",
+		"--host":               "0.0.0.0",
+		"--max-context":        "262144",
+		"--max-concurrency":    "1",
+		"--kv-dtype":           "fp8",
+		"--spec":               "mtp",
+		"--draft-tokens":       "3",
+		"--host-state-slots":   "0",
+		"--host-kv-mib":        "0",
+		"--device-state-slots": "0",
+	}
+	for flag, value := range want {
+		got, ok := argvValue(argv, flag)
+		if !ok {
+			t.Errorf("%s missing", flag)
+			continue
+		}
+		if got != value {
+			t.Errorf("%s = %q, want %q", flag, got, value)
+		}
+	}
+	for _, flag := range []string{"--lm-head-draft", "--preserve-thinking", "--vision"} {
+		if !argvHas(argv, flag) {
+			t.Errorf("%s missing", flag)
+		}
+	}
+	for _, a := range argv {
+		if a == "<nil>" || a == "" {
+			t.Errorf("argv contains an empty/nil rendering: %v", argv)
+		}
+	}
+}
+
+// host_state_slots = 0 is meaningful (the WSL2 pinned-host workaround), so it
+// must survive any zero-value-means-unset check.
+func TestZeroIsNotTreatedAsUnset(t *testing.T) {
+	p := loadStagedNinfer(t)
+	argv, _ := NinferCommand(p)
+	if got, ok := argvValue(argv, "--host-state-slots"); !ok || got != "0" {
+		t.Errorf("--host-state-slots = %q (ok=%v)", got, ok)
+	}
+}
+
+func TestUnsetOptionalsOmitted(t *testing.T) {
+	p := loadStagedNinfer(t)
+	p.Ninfer.Spec = ""
+	p.Ninfer.DraftTokens = nil
+	p.Ninfer.Vision = false
+	argv, _ := NinferCommand(p)
+	for _, flag := range []string{"--spec", "--draft-tokens", "--vision"} {
+		if argvHas(argv, flag) {
+			t.Errorf("%s should be omitted", flag)
+		}
+	}
+}
+
+func TestNinferCommandRefusesLlamaPreset(t *testing.T) {
+	p, err := LoadPreset("../../../models/qwen38.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NinferCommand(p); err == nil {
+		t.Fatal("want error for a llama preset")
+	}
+}
+
+// ── service routing ─────────────────────────────────────────────────────
+
+// Two engines share mode "llm", so resolving the service from the mode alone
+// would forward every request to llama-server even while ninfer holds the GPU.
+func TestLLMServiceForEngine(t *testing.T) {
+	llama, err := LoadPreset("../../../models/qwen38.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ninfer := loadStagedNinfer(t)
+
+	if got := LLMServiceFor(llama); got.Name != LlamaService.Name {
+		t.Errorf("llama preset -> %q", got.Name)
+	}
+	if got := LLMServiceFor(ninfer); got.Name != NinferService.Name {
+		t.Errorf("ninfer preset -> %q", got.Name)
+	}
+	if LlamaService.Hostname == NinferService.Hostname {
+		t.Error("the two engines must have distinct hostnames or forwarding cannot distinguish them")
+	}
+	if NinferService.Mode != "llm" {
+		t.Errorf("ninfer mode = %q, want llm", NinferService.Mode)
+	}
+}
+
+func argvValue(argv []string, flag string) (string, bool) {
+	for i, a := range argv {
+		if a == flag && i+1 < len(argv) {
+			return argv[i+1], true
+		}
+	}
+	return "", false
+}
+
+func argvHas(argv []string, flag string) bool {
+	for _, a := range argv {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// loadInline writes a TOML body to a temp file and loads it, so schema
+// rejections can be asserted without shipping broken presets.
+func loadInline(t *testing.T, body string) (*Preset, error) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "inline.toml")
+	if err := writeFile(path, body); err != nil {
+		t.Fatal(err)
+	}
+	return LoadPreset(path)
+}
+
+func writeFile(path, body string) error {
+	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+// End-to-end through the scheduler: a ninfer preset must reach SpawnNinfer.
+// The isolated LLMServiceFor test cannot catch a doSwap that still calls
+// SpawnLlama directly, which is what the code did before this change.
+func TestSchedulerRoutesNinferPresetToNinferSpawn(t *testing.T) {
+	orch := newFakeOrch("idle")
+	if err := orch.SpawnLLM(loadStagedNinfer(t)); err != nil {
+		t.Fatalf("SpawnLLM: %v", err)
+	}
+	if len(orch.ninferCalls) != 1 {
+		t.Errorf("ninferCalls = %d, want 1", len(orch.ninferCalls))
+	}
+	if len(orch.llamaCalls) != 0 {
+		t.Errorf("a ninfer preset started llama.cpp (%d calls)", len(orch.llamaCalls))
+	}
+}
+
+func TestSchedulerRoutesLlamaPresetToLlamaSpawn(t *testing.T) {
+	orch := newFakeOrch("idle")
+	p, err := LoadPreset("../../../models/qwen38.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := orch.SpawnLLM(p); err != nil {
+		t.Fatal(err)
+	}
+	if len(orch.llamaCalls) != 1 || len(orch.ninferCalls) != 0 {
+		t.Errorf("llama=%d ninfer=%d", len(orch.llamaCalls), len(orch.ninferCalls))
+	}
+}
+
+// ── outbound model rewrite ──────────────────────────────────────────────
+
+// NInfer validates the request's `model` against its served alias and 404s on
+// a mismatch, where llama-server ignores the field entirely. So a client
+// addressing the preset by stem ("qwen38-ninfer") swaps correctly and then
+// gets model_not_found from the engine. Observed live 2026-09-07.
+func TestRewriteModelSetsServedAlias(t *testing.T) {
+	body := []byte(`{"model":"qwen38-ninfer","max_tokens":256,"temperature":0.7}`)
+	out := rewriteModel(body, "qwen3.8-27b-nvfp4")
+	if got := peekModel(out); got != "qwen3.8-27b-nvfp4" {
+		t.Errorf("model = %q", got)
+	}
+}
+
+// Other fields must survive byte-exact: round-tripping through float64 would
+// quietly rewrite sampling params.
+func TestRewriteModelPreservesOtherFields(t *testing.T) {
+	body := []byte(`{"model":"x","temperature":0.70,"top_p":0.95,"n":1}`)
+	out := rewriteModel(body, "served")
+	for _, frag := range []string{`"temperature":0.70`, `"top_p":0.95`, `"n":1`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("lost %s from %s", frag, out)
+		}
+	}
+}
+
+func TestRewriteModelLeavesNonJSONAlone(t *testing.T) {
+	for _, body := range [][]byte{nil, {}, []byte("not json"), []byte(`[1,2]`)} {
+		out := rewriteModel(body, "served")
+		if string(out) != string(body) {
+			t.Errorf("body %q was altered to %q", body, out)
+		}
+	}
+}
+
+func TestRewriteModelAddsFieldWhenAbsent(t *testing.T) {
+	out := rewriteModel([]byte(`{"max_tokens":8}`), "served")
+	if got := peekModel(out); got != "served" {
+		t.Errorf("model = %q, want served", got)
+	}
+}

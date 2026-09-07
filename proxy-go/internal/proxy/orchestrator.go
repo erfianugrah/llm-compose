@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,79 @@ var (
 	TrainService   = GpuService{Name: "lora_train", Hostname: "lora-train", Mode: "train", Image: envOr("LLMC_TRAIN_IMAGE", "erfianugrah/lora-train:latest"), InternalPort: 8787, HealthPath: "/health"}
 )
 
+// NinferService serves the same mode as llama.cpp: both are the LLM and the
+// GPU holds one workload at a time. It is deliberately NOT in Services (which
+// maps mode -> service 1:1); resolve it from the preset via LLMServiceFor.
+var NinferService = GpuService{Name: "ninfer_server", Hostname: "ninfer-server", Mode: "llm", Image: envOr("LLMC_NINFER_IMAGE", "ninfer:local"), InternalPort: 8080, HealthPath: "/health"}
+
+// LLMServiceFor returns the container that serves this preset. Two engines
+// share mode "llm", so the mode alone cannot decide - the preset does.
+func LLMServiceFor(p *Preset) GpuService {
+	if p != nil && p.Engine == EngineNinfer {
+		return NinferService
+	}
+	return LlamaService
+}
+
+// NinferCommand builds the ninfer-serve argv for a ninfer preset. Unlike the
+// llama image (whose ENTRYPOINT assembles a command line from environment
+// variables), ninfer-serve is argv-driven, so the proxy owns flag rendering.
+func NinferCommand(p *Preset) ([]string, error) {
+	if p.Engine != EngineNinfer {
+		return nil, &PresetError{Msg: fmt.Sprintf(
+			"NinferCommand: preset %q declares engine %q", p.Name, p.Engine)}
+	}
+	if p.Ninfer == nil {
+		return nil, &PresetError{Msg: fmt.Sprintf("NinferCommand: preset %q has no [ninfer] section", p.Name)}
+	}
+	n := p.Ninfer
+	argv := []string{
+		"ninfer-serve",
+		"/models/" + p.Model.File,
+		"--model-id", p.ModelID(),
+		"--host", "0.0.0.0",
+		"--port", strconv.Itoa(NinferService.InternalPort),
+		"--max-context", strconv.Itoa(n.MaxContext),
+		"--max-concurrency", strconv.Itoa(n.MaxConcurrency),
+		"--kv-dtype", n.KVDtype,
+	}
+	if n.Spec != "" {
+		argv = append(argv, "--spec", n.Spec)
+	}
+	if n.KVCapacity != "" {
+		argv = append(argv, "--kv-capacity", n.KVCapacity)
+	}
+	// Pointer checks, not zero checks: 0 is meaningful for the slot flags
+	// (the WSL2 pinned-host workaround) and must still be emitted.
+	for _, f := range []struct {
+		flag string
+		val  *int
+	}{
+		{"--draft-tokens", n.DraftTokens},
+		{"--host-state-slots", n.HostStateSlots},
+		{"--host-kv-mib", n.HostKVMib},
+		{"--device-state-slots", n.DeviceStateSlots},
+		{"--default-thinking-budget", n.DefaultThinkingBudget},
+	} {
+		if f.val != nil {
+			argv = append(argv, f.flag, strconv.Itoa(*f.val))
+		}
+	}
+	for _, f := range []struct {
+		flag string
+		on   bool
+	}{
+		{"--lm-head-draft", n.LMHeadDraft},
+		{"--preserve-thinking", n.PreserveThinking},
+		{"--vision", n.Vision},
+	} {
+		if f.on {
+			argv = append(argv, f.flag)
+		}
+	}
+	return argv, nil
+}
+
 var Services = map[string]GpuService{
 	"llm":     LlamaService,
 	"comfyui": ComfyUIService,
@@ -57,6 +131,10 @@ func (e *OrchestratorError) Error() string { return e.Msg }
 type Orchestrator interface {
 	CurrentMode() string
 	SpawnLlama(p *Preset) error
+	// SpawnLLM dispatches on the preset's engine. Prefer it over SpawnLlama:
+	// a ninfer preset handed to SpawnLlama would start the wrong engine.
+	SpawnLLM(p *Preset) error
+	SpawnNinfer(p *Preset) error
 	SpawnComfyUI() error
 	SpawnTrain() error
 	WaitHealthy(svc GpuService, timeout time.Duration) bool
@@ -117,6 +195,10 @@ func (o *DockerOrchestrator) resolveBinds(mounts map[string]BindSpec) (map[strin
 }
 
 func (o *DockerOrchestrator) spawn(svc GpuService, env map[string]string, mounts map[string]BindSpec, shmMB int64, ports map[string]string) error {
+	return o.spawnCmd(svc, env, mounts, shmMB, ports, nil)
+}
+
+func (o *DockerOrchestrator) spawnCmd(svc GpuService, env map[string]string, mounts map[string]BindSpec, shmMB int64, ports map[string]string, cmd []string) error {
 	if err := o.stopGPU(); err != nil {
 		return &OrchestratorError{Msg: fmt.Sprintf("stopping GPU services: %v", err)}
 	}
@@ -139,6 +221,7 @@ func (o *DockerOrchestrator) spawn(svc GpuService, env map[string]string, mounts
 		Labels:    map[string]string{ServiceLabel: svc.Hostname, GPULabel: svc.Mode},
 		ShmSize:   shmMB << 20,
 		PortBinds: ports,
+		Cmd:       cmd,
 		GPU:       true,
 	})
 	if err != nil {
@@ -152,6 +235,29 @@ func (o *DockerOrchestrator) SpawnLlama(p *Preset) error {
 		"llmc-llama-cache":  {Bind: "/root/.cache", Mode: "rw"},
 		"llmc-llama-models": {Bind: "/models", Mode: "rw"},
 	}, 2048, nil)
+}
+
+// SpawnNinfer starts ninfer-serve for the given preset. The artifact dir is
+// mounted read-only: ninfer only reads its .ninfer file, and unlike the llama
+// flow there is nothing to download into the mount at spawn time.
+func (o *DockerOrchestrator) SpawnNinfer(p *Preset) error {
+	argv, err := NinferCommand(p)
+	if err != nil {
+		return &OrchestratorError{Msg: err.Error()}
+	}
+	return o.spawnCmd(NinferService, nil, map[string]BindSpec{
+		"llmc-ninfer-models": {Bind: "/models", Mode: "ro"},
+	}, 2048, nil, argv)
+}
+
+// SpawnLLM starts whichever engine the preset names. Callers that reached for
+// SpawnLlama should use this, so a ninfer preset cannot silently start
+// llama.cpp with a config it does not understand.
+func (o *DockerOrchestrator) SpawnLLM(p *Preset) error {
+	if p != nil && p.Engine == EngineNinfer {
+		return o.SpawnNinfer(p)
+	}
+	return o.SpawnLlama(p)
 }
 
 func (o *DockerOrchestrator) SpawnComfyUI() error {

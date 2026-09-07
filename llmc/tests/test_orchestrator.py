@@ -16,6 +16,7 @@ import os
 import time
 import unittest
 from pathlib import Path
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 try:
@@ -26,6 +27,7 @@ except ImportError:
 
 from llmc.orchestrator import (
     COMFYUI_SERVICE,
+    NINFER_SERVICE,
     GPU_LABEL,
     LLAMA_SERVICE,
     SERVICE_LABEL,
@@ -34,11 +36,14 @@ from llmc.orchestrator import (
     GpuService,
     Orchestrator,
     OrchestratorError,
+    llm_service_for,
+    ninfer_command,
 )
 from llmc.presets import load_preset
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PRESET = load_preset(REPO_ROOT / "models" / "gemma4.toml")
+NINFER_PRESET = load_preset(REPO_ROOT / "models" / "qwen38-ninfer.toml")
 
 
 class TestServiceDefinitions(unittest.TestCase):
@@ -358,3 +363,130 @@ class TestOrchestratorIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEngineRouting(unittest.TestCase):
+    """Two engines share mode "llm", so the service cannot be resolved from
+    the mode alone - it comes from the preset."""
+
+    def test_ninfer_service_shape(self):
+        self.assertEqual(NINFER_SERVICE.mode, "llm")
+        self.assertEqual(NINFER_SERVICE.health_path, "/health")
+        self.assertNotEqual(NINFER_SERVICE.name, LLAMA_SERVICE.name)
+        self.assertNotEqual(NINFER_SERVICE.hostname, LLAMA_SERVICE.hostname)
+
+    def test_ninfer_is_not_in_the_mode_map(self):
+        """SERVICES maps mode -> service and must stay 1:1; ninfer is
+        reachable only through the preset."""
+        self.assertNotIn(NINFER_SERVICE, SERVICES.values())
+        self.assertEqual(set(SERVICES), {"llm", "comfyui", "train"})
+
+    def test_service_resolves_from_preset_engine(self):
+        self.assertIs(llm_service_for(PRESET), LLAMA_SERVICE)
+        self.assertIs(llm_service_for(NINFER_PRESET), NINFER_SERVICE)
+
+
+class TestNinferCommand(unittest.TestCase):
+    """ninfer-serve is argv-driven, unlike the llama image which reads env."""
+
+    def setUp(self):
+        self.cmd = ninfer_command(NINFER_PRESET)
+
+    def test_is_a_list_not_a_string(self):
+        """The Docker SDK shlex-splits string commands and mangles them."""
+        self.assertIsInstance(self.cmd, list)
+        self.assertTrue(all(isinstance(a, str) for a in self.cmd))
+
+    def test_artifact_path_and_model_id(self):
+        self.assertEqual(self.cmd[0], "ninfer-serve")
+        self.assertEqual(self.cmd[1], "/models/qwen3_8_27b_nvfp4.ninfer")
+        self.assertIn("--model-id", self.cmd)
+        self.assertEqual(self.cmd[self.cmd.index("--model-id") + 1], "qwen3.8-27b-nvfp4")
+
+    def test_serves_on_the_service_port(self):
+        self.assertEqual(self.cmd[self.cmd.index("--port") + 1], str(NINFER_SERVICE.internal_port))
+        self.assertEqual(self.cmd[self.cmd.index("--host") + 1], "0.0.0.0")
+
+    def test_measured_flags_present(self):
+        pairs = {
+            "--max-context": "262144",
+            "--max-concurrency": "1",
+            "--kv-dtype": "fp8",
+            "--spec": "mtp",
+            "--draft-tokens": "3",
+            "--host-state-slots": "0",
+            "--host-kv-mib": "0",
+            "--device-state-slots": "0",
+        }
+        for flag, value in pairs.items():
+            self.assertIn(flag, self.cmd, f"{flag} missing")
+            self.assertEqual(self.cmd[self.cmd.index(flag) + 1], value, f"{flag} value")
+
+    def test_true_booleans_are_bare_flags(self):
+        for flag in ("--lm-head-draft", "--preserve-thinking", "--vision"):
+            self.assertIn(flag, self.cmd)
+
+    def test_false_booleans_and_unset_options_omitted(self):
+        """A False bool must not appear at all, and an unset Optional must
+        not render as the string "None"."""
+        preset = replace(NINFER_PRESET, ninfer=replace(NINFER_PRESET.ninfer, vision=False, spec=None, draft_tokens=None))
+        cmd = ninfer_command(preset)
+        self.assertNotIn("--vision", cmd)
+        self.assertNotIn("--spec", cmd)
+        self.assertNotIn("--draft-tokens", cmd)
+        self.assertNotIn("None", cmd)
+
+    def test_zero_is_not_treated_as_unset(self):
+        """host_state_slots = 0 is meaningful (the WSL2 workaround); it must
+        survive a falsiness check."""
+        self.assertEqual(self.cmd[self.cmd.index("--host-state-slots") + 1], "0")
+
+    def test_refuses_a_llama_preset(self):
+        with self.assertRaises(ValueError):
+            ninfer_command(PRESET)
+
+
+class TestSpawnLlmDispatch(unittest.TestCase):
+    """Verifies the engine dispatch without needing the docker SDK: patch
+    Orchestrator.spawn and assert what it was handed. The docker package is
+    not installed in every environment, and gating these behind it left the
+    routing untested."""
+
+    def _capture(self, preset):
+        seen = {}
+
+        def fake_spawn(self, service, **kwargs):
+            seen["service"] = service
+            seen["kwargs"] = kwargs
+            return object()
+
+        with patch.object(Orchestrator, "spawn", fake_spawn):
+            orch = Orchestrator.__new__(Orchestrator)
+            orch.spawn_llm(preset)
+        return seen
+
+    def test_llama_preset_goes_to_llama_with_env(self):
+        seen = self._capture(PRESET)
+        self.assertIs(seen["service"], LLAMA_SERVICE)
+        self.assertIn("MODEL_FILE", seen["kwargs"]["environment"])
+        self.assertNotIn("command", seen["kwargs"])
+
+    def test_ninfer_preset_goes_to_ninfer_with_argv(self):
+        seen = self._capture(NINFER_PRESET)
+        self.assertIs(seen["service"], NINFER_SERVICE)
+        cmd = seen["kwargs"]["command"]
+        self.assertIsInstance(cmd, list)
+        self.assertEqual(cmd[0], "ninfer-serve")
+        self.assertNotIn("environment", seen["kwargs"])
+
+    def test_ninfer_mounts_its_artifact_dir_read_only(self):
+        seen = self._capture(NINFER_PRESET)
+        binds = {spec["bind"]: spec["mode"] for spec in seen["kwargs"]["volumes"].values()}
+        self.assertEqual(binds.get("/models"), "ro")
+
+    def test_a_ninfer_preset_can_never_start_llama(self):
+        """The regression that matters: spawning the wrong engine with a
+        config it does not understand."""
+        seen = self._capture(NINFER_PRESET)
+        self.assertIsNot(seen["service"], LLAMA_SERVICE)
+        self.assertNotEqual(seen["service"].image, LLAMA_SERVICE.image)

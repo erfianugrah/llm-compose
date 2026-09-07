@@ -44,6 +44,8 @@ from llmc import state as state_mod
 from llmc.orchestrator import (
     COMFYUI_SERVICE,
     LLAMA_SERVICE,
+    NINFER_SERVICE,
+    llm_service_for,
     SERVICES,
     TRAIN_SERVICE,
     GpuService,
@@ -165,6 +167,21 @@ def _enqueue(queue: list[dict], owner: str, model: str) -> int:
     return len(queue)
 
 
+def active_llm_service(ctx: "ProxyContext"):
+    """The container currently serving mode "llm".
+
+    llama.cpp and NInfer share that mode, so SERVICES["llm"] is not enough:
+    the proxy would forward to llama-server while ninfer holds the GPU.
+    Resolve from the active preset, falling back to llama.cpp when state has
+    no model yet (first boot) or names one we cannot find - the request path
+    is the wrong place to raise, and llama.cpp is the historical default.
+    """
+    preset = ctx.preset_by_name(ctx.state.model) if ctx.state.model else None
+    if preset is None:
+        return LLAMA_SERVICE
+    return llm_service_for(preset)
+
+
 def _check_vram_budget(preset: Preset, config: ProxyConfig) -> tuple[bool, str]:
     """Return (ok, error_message). VRAM_LIMIT - VRAM_RESERVE is the maximum
     model-weights budget; KV cache and CUDA overhead live in the reserve."""
@@ -256,7 +273,9 @@ def _ensure_mode(ctx: ProxyContext, target: str) -> tuple[bool, str]:
                     "POST /mode with {\"mode\":\"llm\", \"model\":\"<preset>\"}"
                 )
             ctx.orchestrator.ensure_preset_assets(preset, ctx.config.assets_dir)
-            ctx.orchestrator.spawn_llama(preset)
+            # Engine comes from the preset; SERVICES["llm"] is llama.cpp only.
+            service = llm_service_for(preset)
+            ctx.orchestrator.spawn_llm(preset)
         elif target == "comfyui":
             ctx.orchestrator.spawn_comfyui()
         elif target == "train":
@@ -345,10 +364,11 @@ def _ensure_model(ctx: ProxyContext, requested_model: str) -> tuple[bool, str]:
         ctx.orchestrator.ensure_preset_assets(preset, ctx.config.assets_dir)
 
         # Spawn (auto-stops previous GPU service)
-        ctx.orchestrator.spawn_llama(preset)
+        service = llm_service_for(preset)
+        ctx.orchestrator.spawn_llm(preset)
 
-        _log(f"Waiting for llama-server with {preset.name} to become healthy...")
-        if not ctx.orchestrator.wait_healthy(LLAMA_SERVICE, timeout=ctx.config.health_timeout):
+        _log(f"Waiting for {service.hostname} with {preset.name} to become healthy...")
+        if not ctx.orchestrator.wait_healthy(service, timeout=ctx.config.health_timeout):
             return False, f"timeout loading {preset.display_name}"
 
         ctx.state = state_mod.update(ctx.config.state_path, mode="llm")
@@ -625,7 +645,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         body: Optional[bytes] = None,
     ) -> None:
         """Ensure the target mode is active, then proxy to the backend."""
-        service = SERVICES[target_mode]
 
         if self.ctx.orchestrator.current_mode() != target_mode:
             if self.command not in self._SWAP_TRIGGER_METHODS:
@@ -654,6 +673,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # thinking chains, non-streamed requests). Other backends keep the
         # tighter default.
         timeout = 3600 if target_mode == "llm" else 600
+        # Resolved AFTER the ensure above: a swap in that window can change
+        # which engine holds the GPU, and forwarding to the previous one
+        # would hit a container that is no longer running.
+        service = (
+            active_llm_service(self.ctx) if target_mode == "llm"
+            else SERVICES[target_mode]
+        )
         self._forward(service.hostname, service.internal_port, target_path, body=body, timeout=timeout)
 
     def _forward(self, host: str, port: int, path: str, body: Optional[bytes] = None, *, timeout: int = 600) -> None:

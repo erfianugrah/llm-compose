@@ -179,6 +179,11 @@ type CreateSpec struct {
 	ShmSize   int64
 	PortBinds map[string]string // containerPort/tcp -> host loopback port
 	GPU       bool
+	// Cmd overrides the image CMD. Required for argv-driven engines such as
+	// ninfer-serve, whose flags the proxy renders itself (the llama image
+	// instead reads env vars in its ENTRYPOINT). Kept as a slice: joining it
+	// into a string would re-introduce shell word-splitting on paths.
+	Cmd []string
 }
 
 type BindSpec struct {
@@ -188,6 +193,7 @@ type BindSpec struct {
 
 type createBody struct {
 	Image      string            `json:"Image"`
+	Cmd        []string          `json:"Cmd,omitempty"`
 	Hostname   string            `json:"Hostname"`
 	Env        []string          `json:"Env"`
 	Labels     map[string]string `json:"Labels"`
@@ -229,6 +235,7 @@ type port struct {
 func (d *DockerClient) CreateAndStart(spec CreateSpec) error {
 	body := createBody{
 		Image:    spec.Image,
+		Cmd:      spec.Cmd,
 		Hostname: spec.Hostname,
 		Labels:   spec.Labels,
 		HostConfig: hostConfig{

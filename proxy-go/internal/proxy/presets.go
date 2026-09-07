@@ -38,10 +38,20 @@ func presetErr(format string, args ...any) *PresetError {
 type ModelSpec struct {
 	Repo string `toml:"repo"`
 	File string `toml:"file"`
+	// IDOverride is the served alias when the artifact filename cannot supply
+	// one. NInfer artifacts are ".ninfer" and their served id is chosen at
+	// serve time (--model-id), so those presets state it outright.
+	IDOverride string `toml:"id"`
 }
 
-// ID is the OpenAI-API model ID: GGUF filename minus ".gguf".
-func (m ModelSpec) ID() string { return strings.TrimSuffix(m.File, ".gguf") }
+// ID is the OpenAI-API model ID: the explicit override, else the artifact
+// filename minus its suffix.
+func (m ModelSpec) ID() string {
+	if m.IDOverride != "" {
+		return m.IDOverride
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(m.File, ".gguf"), ".ninfer")
+}
 
 // AssetSpec is an optional asset (mmproj or template): auto-download (URL)
 // or pre-placed (File), never both.
@@ -101,6 +111,35 @@ type BenchSpec struct {
 	Tags      string `toml:"tags"`
 }
 
+// Engines the proxy can start. Absent in a preset means EngineLlama, so every
+// pre-existing preset keeps working untouched.
+const (
+	EngineLlama  = "llama"
+	EngineNinfer = "ninfer"
+)
+
+// NinferSpec holds ninfer-serve flags. Defaults are the configuration
+// measured in docs/plans/2026-09-06-ninfer-nvfp4-spike.md section 6.
+//
+// HostStateSlots / HostKVMib default to 0 because pinned-host cudaMallocHost
+// OOMs under WSL2 Docker Desktop; no decode cost was observed at 1-2 lanes.
+// They are pointers so a configured 0 is distinguishable from "unset".
+type NinferSpec struct {
+	MaxContext            int    `toml:"max_context"`
+	MaxConcurrency        int    `toml:"max_concurrency"`
+	KVDtype               string `toml:"kv_dtype"`
+	Spec                  string `toml:"spec"`
+	DraftTokens           *int   `toml:"draft_tokens"`
+	LMHeadDraft           bool   `toml:"lm_head_draft"`
+	PreserveThinking      bool   `toml:"preserve_thinking"`
+	Vision                bool   `toml:"vision"`
+	HostStateSlots        *int   `toml:"host_state_slots"`
+	HostKVMib             *int   `toml:"host_kv_mib"`
+	DeviceStateSlots      *int   `toml:"device_state_slots"`
+	DefaultThinkingBudget *int   `toml:"default_thinking_budget"`
+	KVCapacity            string `toml:"kv_capacity"`
+}
+
 type Preset struct {
 	Name         string      `toml:"-"` // filename stem
 	DisplayName  string      `toml:"name"`
@@ -112,6 +151,8 @@ type Preset struct {
 	Template     AssetSpec   `toml:"template"`
 	Runtime      RuntimeSpec `toml:"runtime"`
 	Bench        BenchSpec   `toml:"bench"`
+	Engine       string      `toml:"engine"`
+	Ninfer       *NinferSpec `toml:"ninfer"` // non-nil iff Engine == EngineNinfer
 }
 
 func (p *Preset) ModelID() string { return p.Model.ID() }
@@ -140,6 +181,18 @@ type rawPreset struct {
 	Template     map[string]string `toml:"template"`
 	Runtime      map[string]any    `toml:"runtime"`
 	Bench        map[string]string `toml:"bench"`
+	Engine       string            `toml:"engine"`
+	Ninfer       map[string]any    `toml:"ninfer"`
+}
+
+// ninferKeys is the strictness net for [ninfer]; the typed decode is a second
+// pass into NinferSpec.
+var ninferKeys = map[string]bool{
+	"max_context": true, "max_concurrency": true, "kv_dtype": true,
+	"spec": true, "draft_tokens": true, "lm_head_draft": true,
+	"preserve_thinking": true, "vision": true, "host_state_slots": true,
+	"host_kv_mib": true, "device_state_slots": true,
+	"default_thinking_budget": true, "kv_capacity": true,
 }
 
 // runtimeKeys lists the allowed [runtime] keys (typed decode is done via a
@@ -179,7 +232,7 @@ func LoadPreset(path string) (*Preset, error) {
 		}
 	}
 	for k := range raw.Model {
-		if k != "repo" && k != "file" {
+		if k != "repo" && k != "file" && k != "id" {
 			return nil, presetErr("%s:model: unknown key %q", path, k)
 		}
 	}
@@ -252,17 +305,58 @@ func LoadPreset(path string) (*Preset, error) {
 	}
 
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	engine := raw.Engine
+	if engine == "" {
+		engine = EngineLlama
+	}
+	if engine != EngineLlama && engine != EngineNinfer {
+		return nil, presetErr("%s: engine must be %q or %q, got %q",
+			path, EngineLlama, EngineNinfer, engine)
+	}
+	if raw.Ninfer != nil && engine != EngineNinfer {
+		return nil, presetErr("%s: a [ninfer] section requires engine = %q; "+
+			"this preset declares engine = %q", path, EngineNinfer, engine)
+	}
+	for k := range raw.Ninfer {
+		if !ninferKeys[k] {
+			return nil, presetErr("%s:ninfer: unknown key %q", path, k)
+		}
+	}
+	var ninfer *NinferSpec
+	if engine == EngineNinfer {
+		var wrapper struct {
+			Ninfer NinferSpec `toml:"ninfer"`
+		}
+		if _, err := toml.Decode(string(data), &wrapper); err != nil {
+			return nil, presetErr("%s: [ninfer] type error: %v", path, err)
+		}
+		ninfer = &wrapper.Ninfer
+		if ninfer.MaxContext <= 0 {
+			return nil, presetErr("%s: ninfer.max_context must be positive", path)
+		}
+		if ninfer.MaxConcurrency < 1 || ninfer.MaxConcurrency > 8 {
+			return nil, presetErr("%s: ninfer.max_concurrency must be 1..8, got %d",
+				path, ninfer.MaxConcurrency)
+		}
+	}
+
 	return &Preset{
 		Name:         name,
 		DisplayName:  raw.Name,
 		Description:  strings.TrimSpace(raw.Description),
 		VRAMGB:       *raw.VRAMGB,
 		Capabilities: raw.Capabilities,
-		Model:        ModelSpec{Repo: raw.Model["repo"], File: raw.Model["file"]},
-		MMProj:       mmproj,
-		Template:     tmpl,
-		Runtime:      rt,
-		Bench:        BenchSpec{Tokenizer: raw.Bench["tokenizer"], Tags: raw.Bench["tags"]},
+		Model: ModelSpec{
+			Repo:       raw.Model["repo"],
+			File:       raw.Model["file"],
+			IDOverride: strings.TrimSpace(raw.Model["id"]),
+		},
+		MMProj:   mmproj,
+		Template: tmpl,
+		Runtime:  rt,
+		Engine:   engine,
+		Ninfer:   ninfer,
+		Bench:    BenchSpec{Tokenizer: raw.Bench["tokenizer"], Tags: raw.Bench["tags"]},
 	}, nil
 }
 

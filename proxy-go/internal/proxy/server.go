@@ -431,6 +431,19 @@ func (s *Server) prepLLM(r *http.Request, req *AcquireRequest, payload map[strin
 
 // resolveModel turns the raw model field into (preset, route, err).
 // err is non-nil (an *aliasError) only for an unknown alias.
+// activeLLMService returns the container currently serving mode "llm",
+// resolved from the active preset's engine. Falls back to llama.cpp when
+// state has no model yet (first boot) or names one we cannot resolve: the
+// request path is the wrong place to fail, and llama.cpp is the historical
+// default.
+func (s *Server) activeLLMService() GpuService {
+	snap := s.sched.Status()
+	if snap.Model == "" {
+		return LlamaService
+	}
+	return LLMServiceFor(s.presets.ByName(snap.Model))
+}
+
 func (s *Server) resolveModel(model string) (*Preset, *Route, error) {
 	if alias := routeAliasName(model); alias != "" {
 		if err := s.routes.Reload(); err != nil {
@@ -498,6 +511,35 @@ func orRoot(p string) string {
 // failure (the container died out-of-band) is reported to the scheduler so
 // the next acquire respawns instead of 502-looping; key identifies the
 // grant so stale reports from an already-drained model are ignored.
+// rewriteModel sets the "model" field of a JSON object body to id, leaving
+// every other field byte-exact (decoding into map[string]json.RawMessage
+// rather than map[string]any, so sampling params are not round-tripped
+// through float64). Non-object or unparseable bodies are returned unchanged.
+//
+// Needed because NInfer validates the request model against its served alias
+// and returns model_not_found on a mismatch, where llama-server ignores the
+// field. A client addressing the preset by stem would otherwise swap the
+// engine successfully and then be rejected by it.
+func rewriteModel(body []byte, id string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	encoded, err := json.Marshal(id)
+	if err != nil {
+		return body
+	}
+	fields["model"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // peekModel best-effort extracts the "model" field from a JSON request body.
 // Access logging only; routing never depends on it.
 func peekModel(body []byte) string {
@@ -543,6 +585,21 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 		status = 500
 		jsonReply(w, 500, map[string]any{"error": "unknown mode"})
 		return
+	}
+	// llama.cpp and NInfer share mode "llm", so Services["llm"] is not
+	// enough: it would forward to llama-server while ninfer holds the GPU.
+	if mode == "llm" {
+		svc = s.activeLLMService()
+		// Narrowed to ninfer: llama-server ignores the model field, so
+		// rewriting there would be churn with no behavioural gain.
+		if svc.Name == NinferService.Name {
+			if p := s.presets.ByName(s.sched.Status().Model); p != nil {
+				if served := p.ModelID(); served != "" && model != served {
+					body = rewriteModel(body, served)
+					note += " model-rewritten"
+				}
+			}
+		}
 	}
 	url := fmt.Sprintf("http://%s:%d%s", svc.Hostname, svc.InternalPort, targetPath)
 	ctx := r.Context()
@@ -685,7 +742,7 @@ func (s *Server) handlePresetRegister(w http.ResponseWriter, r *http.Request) {
 	p := &Preset{
 		Name: b.Name, DisplayName: firstNonEmpty(b.DisplayName, b.Name),
 		VRAMGB: b.VRAMGB, Capabilities: b.Capabilities,
-		Model: ModelSpec{Repo: b.Model.Repo, File: b.Model.File},
+		Model:   ModelSpec{Repo: b.Model.Repo, File: b.Model.File},
 		Runtime: rt,
 	}
 	if b.InheritFrom != "" {

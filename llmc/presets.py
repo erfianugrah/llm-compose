@@ -58,11 +58,14 @@ class PresetError(ValueError):
 class ModelSpec:
     repo: str
     file: str
+    id: Optional[str] = None  # explicit override; NInfer artifacts need one
 
     @property
     def model_id(self) -> str:
         """OpenAI-API model ID — GGUF filename minus `.gguf`."""
-        return self.file.removesuffix(".gguf")
+        if self.id:
+            return self.id
+        return self.file.removesuffix(".gguf").removesuffix(".ninfer")
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,31 @@ class RuntimeSpec:
 
 
 @dataclass(frozen=True)
+class NinferSpec:
+    """`ninfer-serve` flags. Defaults are the configuration measured in
+    docs/plans/2026-09-06-ninfer-nvfp4-spike.md section 6: 2.2x decode over
+    llama.cpp, flat to 262K, 31.7 GB peak on a 32 GB 5090.
+
+    host_state_slots / host_kv_mib default to 0 because pinned-host
+    cudaMallocHost OOMs under WSL2 Docker Desktop; no decode cost was
+    observed at 1-2 lanes."""
+
+    max_context: int = 262144
+    max_concurrency: int = 1
+    kv_dtype: str = "fp8"
+    spec: Optional[str] = None
+    draft_tokens: Optional[int] = None
+    lm_head_draft: bool = False
+    preserve_thinking: bool = False
+    vision: bool = False
+    host_state_slots: Optional[int] = None
+    host_kv_mib: Optional[int] = None
+    device_state_slots: Optional[int] = None
+    default_thinking_budget: Optional[int] = None
+    kv_capacity: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class Preset:
     name: str  # filename stem (e.g. "gemma4")
     display_name: str
@@ -122,6 +150,8 @@ class Preset:
     runtime: RuntimeSpec = field(default_factory=RuntimeSpec)
     bench: dict = field(default_factory=dict)  # optional [bench] section (tokenizer, tags)
     capabilities: tuple = ()  # flat strings, e.g. ("vision", "code")
+    engine: str = "llama"  # "llama" | "ninfer"; absent means llama.cpp
+    ninfer: Optional[NinferSpec] = None  # set iff engine == "ninfer"
 
     @property
     def model_id(self) -> str:
@@ -141,9 +171,10 @@ class Preset:
 
 
 # Schema definition for validation. Maps section → allowed keys with types.
-_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime", "bench", "capabilities"}
+_TOP_LEVEL_KEYS = {"name", "description", "vram_gb", "model", "mmproj", "template", "runtime", "bench", "capabilities", "engine", "ninfer"}
+ENGINES = ("llama", "ninfer")
 _REQUIRED_TOP = {"name", "vram_gb", "model"}
-_MODEL_KEYS = {"repo": str, "file": str}
+_MODEL_KEYS = {"repo": str, "file": str, "id": str}
 _ASSET_KEYS = {"url": str, "file": str}
 _BENCH_KEYS = {"tokenizer": str, "tags": str}
 _RUNTIME_KEYS = {
@@ -162,6 +193,14 @@ _RUNTIME_KEYS = {
     "spec_ngram_n_match": int,
     "reasoning_effort": str,
     "reasoning_budget": int,
+}
+
+
+_NINFER_KEYS = {
+    "max_context": int, "max_concurrency": int, "kv_dtype": str, "spec": str,
+    "draft_tokens": int, "lm_head_draft": bool, "preserve_thinking": bool,
+    "vision": bool, "host_state_slots": int, "host_kv_mib": int,
+    "device_state_slots": int, "default_thinking_budget": int, "kv_capacity": str,
 }
 
 
@@ -192,6 +231,14 @@ def _load_asset(section: str, data: dict | None) -> AssetSpec:
     if url and file:
         raise PresetError(f"{section}: 'url' and 'file' are mutually exclusive")
     return AssetSpec(url=url, file=file)
+
+
+def _load_ninfer(section: str, data: dict | None) -> NinferSpec:
+    if not data:
+        return NinferSpec()
+    _check_keys(section, data, _NINFER_KEYS)
+    _check_types(section, data, _NINFER_KEYS)
+    return NinferSpec(**data)
 
 
 def _load_runtime(data: dict | None) -> RuntimeSpec:
@@ -252,6 +299,16 @@ def load_preset(path: Path) -> Preset:
     _check_keys(f"{path}:bench", bench_data, _BENCH_KEYS)
     _check_types(f"{path}:bench", bench_data, _BENCH_KEYS)
 
+    engine = data.get("engine", "llama")
+    if engine not in ENGINES:
+        raise PresetError(f"{path}: engine must be one of {list(ENGINES)}, got {engine!r}")
+    if "ninfer" in data and engine != "ninfer":
+        raise PresetError(
+            f"{path}: a [ninfer] section requires engine = 'ninfer'; "
+            f"this preset declares engine = {engine!r}"
+        )
+    ninfer = _load_ninfer(f"{path}:ninfer", data.get("ninfer")) if engine == "ninfer" else None
+
     caps = data.get("capabilities", [])
     if not isinstance(caps, list) or not all(isinstance(c, str) and c for c in caps):
         raise PresetError(f"{path}: capabilities must be a list of non-empty strings")
@@ -261,12 +318,18 @@ def load_preset(path: Path) -> Preset:
         display_name=data["name"],
         description=data.get("description", "").strip(),
         vram_gb=float(data["vram_gb"]),
-        model=ModelSpec(repo=data["model"]["repo"], file=data["model"]["file"]),
+        model=ModelSpec(
+            repo=data["model"]["repo"],
+            file=data["model"]["file"],
+            id=(data["model"].get("id") or "").strip() or None,
+        ),
         mmproj=_load_asset(f"{path}:mmproj", data.get("mmproj")),
         template=_load_asset(f"{path}:template", data.get("template")),
         runtime=_load_runtime(data.get("runtime")),
         bench=bench_data,
         capabilities=tuple(caps),
+        engine=engine,
+        ninfer=ninfer,
     )
 
 
@@ -294,6 +357,11 @@ def preset_to_env(preset: Preset) -> dict[str, str]:
     """Render preset as the environment variables expected by llama-server's
     entrypoint script (see llama-server.Dockerfile). Used by the proxy when
     spawning the container — passed via Docker API `environment=...`."""
+    if preset.engine != "llama":
+        raise PresetError(
+            f"preset_to_env: {preset.name!r} declares engine={preset.engine!r}; "
+            f"only llama presets render to llama.cpp entrypoint env vars"
+        )
     env: dict[str, str] = {
         "MODEL_REPO": preset.model.repo,
         "MODEL_FILE": preset.model.file,

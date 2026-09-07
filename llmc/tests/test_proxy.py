@@ -17,10 +17,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from llmc.orchestrator import LLAMA_SERVICE, NINFER_SERVICE
 from llmc.presets import load_preset
 from llmc.proxy import (
     ProxyConfig,
     ProxyContext,
+    active_llm_service,
     ProxyHandler,
     _check_vram_budget,
     _merge_system_messages,
@@ -922,3 +924,53 @@ class TestOwnerSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestActiveLlmService(unittest.TestCase):
+    """The proxy forwards to service.hostname:internal_port. Two engines share
+    mode "llm", so resolving that service from the mode alone would send every
+    request to llama-server even while ninfer holds the GPU."""
+
+    def _ctx(self, model, presets):
+        return ProxyContext(
+            config=ProxyConfig(),
+            orchestrator=MagicMock(),
+            presets=presets,
+            state=State(model=model),
+        )
+
+    def setUp(self):
+        from pathlib import Path as _P
+        from llmc.presets import load_preset
+        root = _P(__file__).resolve().parent.parent.parent
+        self.llama = load_preset(root / "models" / "qwen38.toml")
+        self.ninfer = load_preset(root / "models" / "qwen38-ninfer.toml")
+        self.presets = {
+            self.llama.model_id: self.llama,
+            self.ninfer.model_id: self.ninfer,
+        }
+
+    def test_llama_preset_resolves_to_llama_service(self):
+        ctx = self._ctx(self.llama.name, self.presets)
+        self.assertIs(active_llm_service(ctx), LLAMA_SERVICE)
+
+    def test_ninfer_preset_resolves_to_ninfer_service(self):
+        ctx = self._ctx(self.ninfer.name, self.presets)
+        self.assertIs(active_llm_service(ctx), NINFER_SERVICE)
+
+    def test_forwarding_target_differs_between_engines(self):
+        """The regression this exists to prevent: same mode, same port, but a
+        different container hostname."""
+        llama = active_llm_service(self._ctx(self.llama.name, self.presets))
+        ninfer = active_llm_service(self._ctx(self.ninfer.name, self.presets))
+        self.assertNotEqual(llama.hostname, ninfer.hostname)
+
+    def test_no_active_model_falls_back_to_llama(self):
+        """First boot with empty state: default to the historical engine
+        rather than raising in the request path."""
+        ctx = self._ctx("", self.presets)
+        self.assertIs(active_llm_service(ctx), LLAMA_SERVICE)
+
+    def test_unknown_model_falls_back_to_llama(self):
+        ctx = self._ctx("no-such-preset", self.presets)
+        self.assertIs(active_llm_service(ctx), LLAMA_SERVICE)

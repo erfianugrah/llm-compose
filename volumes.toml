@@ -35,6 +35,13 @@ path = "llama-server"
 # GGUFs, mmproj projections, jinja chat templates
 path = "llama-server/models"
 
+[volumes.llmc-ninfer-models]
+# NInfer .ninfer artifacts (weights + tokenizer + chat template + MTP head +
+# vision tower in one file). Mounted read-only: unlike the llama flow there is
+# nothing to download into it at spawn time, artifacts are placed by hand and
+# verified against upstream SHA256SUMS.
+path = "ninfer/models"
+
 [volumes.llmc-comfyui-models]
 # Diffusion checkpoints, LoRAs, VAE, upscalers (full tree)
 path = "comfyui/models"

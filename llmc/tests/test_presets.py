@@ -15,6 +15,7 @@ from pathlib import Path
 
 from llmc.presets import (
     AssetSpec,
+    NinferSpec,
     Preset,
     PresetError,
     load_all,
@@ -24,6 +25,7 @@ from llmc.presets import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MODELS_DIR = REPO_ROOT / "models"
+STAGING_DIR = REPO_ROOT / "models"
 
 
 def _parse_dotenv(path: Path) -> dict[str, str]:
@@ -54,13 +56,45 @@ class TestPresetLoading(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)), "duplicate model_ids")
 
     def test_model_id_matches_gguf_filename(self):
+        """llama.cpp presets derive their OpenAI model id from the GGUF name.
+        Scoped to that engine: a NInfer artifact's served id is an alias
+        chosen at serve time (--model-id), so those presets state it
+        explicitly - asserted separately below rather than relaxed here."""
+        checked = 0
         for path in MODELS_DIR.glob("*.toml"):
             preset = load_preset(path)
+            if preset.engine != "llama":
+                continue
+            checked += 1
             self.assertEqual(
                 preset.model_id,
                 preset.model.file.removesuffix(".gguf"),
                 f"{preset.name}: model_id should be GGUF filename minus .gguf",
             )
+        self.assertGreater(checked, 0, "no llama presets found - did the glob break?")
+
+    def test_ninfer_presets_state_their_model_id_explicitly(self):
+        """The counterpart invariant. Without an explicit id the served alias
+        would silently become the artifact filename, and every client's
+        `model` parameter would stop matching.
+
+        Globs both dirs: ninfer presets live in presets-staging/ until the Go
+        proxy learns the engine field, and a test that silently iterated an
+        empty set would pass vacuously."""
+        paths = list(MODELS_DIR.glob("*.toml"))
+        self.assertTrue(
+            any(load_preset(p).engine == "ninfer" for p in paths),
+            "no ninfer preset found in models/ or presets-staging/",
+        )
+        for path in paths:
+            preset = load_preset(path)
+            if preset.engine != "ninfer":
+                continue
+            self.assertTrue(
+                preset.model.id,
+                f"{preset.name}: engine=ninfer requires an explicit model.id",
+            )
+            self.assertNotIn(".ninfer", preset.model_id)
 
     def test_all_presets_have_required_fields(self):
         for path in MODELS_DIR.glob("*.toml"):
@@ -260,3 +294,106 @@ class TestAssetDerivation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_NINFER_TOML = """
+name = "Qwen3.8 27B NVFP4 on NInfer"
+vram_gb = 31.7
+engine = "ninfer"
+
+[model]
+repo = "neroued/Qwen3.8-27B-nvfp4-NInfer"
+file = "qwen3_8_27b_nvfp4.ninfer"
+id = "qwen3.8-27b-nvfp4"
+
+[ninfer]
+max_context = 262144
+max_concurrency = 1
+kv_dtype = "fp8"
+spec = "mtp"
+draft_tokens = 3
+lm_head_draft = true
+preserve_thinking = true
+vision = true
+host_state_slots = 0
+host_kv_mib = 0
+device_state_slots = 0
+"""
+
+
+class TestEngineSelection(unittest.TestCase):
+    """A preset names the engine that serves it. Absent = llama.cpp, so every
+    pre-existing preset keeps working untouched."""
+
+    def _load(self, content: str) -> Preset:
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
+            f.write(content)
+            path = Path(f.name)
+        try:
+            return load_preset(path)
+        finally:
+            path.unlink()
+
+    def test_engine_defaults_to_llama(self):
+        p = self._load('name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"')
+        self.assertEqual(p.engine, "llama")
+
+    def test_every_shipped_preset_declares_a_known_engine(self):
+        for name, preset in load_all(MODELS_DIR).items():
+            self.assertIn(preset.engine, ("llama", "ninfer"), f"{name}: bad engine")
+
+    def test_unknown_engine_rejected(self):
+        with self.assertRaises(PresetError) as ctx:
+            self._load('name="x"\nvram_gb=5\nengine="vllm"\n[model]\nrepo="r"\nfile="f.gguf"')
+        self.assertIn("engine", str(ctx.exception))
+
+    def test_ninfer_section_parsed(self):
+        p = self._load(_NINFER_TOML)
+        self.assertEqual(p.engine, "ninfer")
+        self.assertIsInstance(p.ninfer, NinferSpec)
+        self.assertEqual(p.ninfer.max_context, 262144)
+        self.assertEqual(p.ninfer.kv_dtype, "fp8")
+        self.assertEqual(p.ninfer.spec, "mtp")
+        self.assertEqual(p.ninfer.draft_tokens, 3)
+        self.assertTrue(p.ninfer.lm_head_draft)
+        self.assertTrue(p.ninfer.vision)
+        self.assertEqual(p.ninfer.device_state_slots, 0)
+
+    def test_explicit_model_id_wins(self):
+        """NInfer artifacts carry no .gguf name to derive an id from, so the
+        preset states it outright."""
+        p = self._load(_NINFER_TOML)
+        self.assertEqual(p.model_id, "qwen3.8-27b-nvfp4")
+
+    def test_ninfer_artifact_suffix_stripped_when_no_id(self):
+        content = _NINFER_TOML.replace('id = "qwen3.8-27b-nvfp4"\n', "")
+        p = self._load(content)
+        self.assertEqual(p.model_id, "qwen3_8_27b_nvfp4")
+
+    def test_ninfer_section_on_a_llama_preset_rejected(self):
+        with self.assertRaises(PresetError) as ctx:
+            self._load(
+                'name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"\n'
+                "[ninfer]\nmax_context=1024"
+            )
+        self.assertIn("ninfer", str(ctx.exception))
+
+    def test_unknown_ninfer_key_rejected(self):
+        with self.assertRaises(PresetError) as ctx:
+            self._load(_NINFER_TOML + "\nbogus_flag = 1\n")
+        self.assertIn("unknown key", str(ctx.exception))
+
+    def test_llama_env_rendering_untouched_by_the_engine_field(self):
+        """preset_to_env is the llama.cpp entrypoint contract; the engine
+        field must not leak into it."""
+        p = self._load('name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"')
+        env = preset_to_env(p)
+        self.assertNotIn("ENGINE", env)
+        self.assertEqual(env["MODEL_FILE"], "f.gguf")
+
+    def test_preset_to_env_refuses_a_ninfer_preset(self):
+        """A ninfer preset has no llama.cpp entrypoint; rendering one as env
+        vars would silently start the wrong engine."""
+        p = self._load(_NINFER_TOML)
+        with self.assertRaises(PresetError):
+            preset_to_env(p)
