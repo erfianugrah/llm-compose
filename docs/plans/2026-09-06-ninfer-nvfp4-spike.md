@@ -319,3 +319,81 @@ comparison needs the same task run both ways.
   pinned above; `make audit` does not cover it - manual verify in N1.
 - Upstream is young (repo created ~2026-09-05 per GitHub metadata);
   pin the commit, do not track master.
+
+## 7. Parked follow-ups (2026-09-07)
+
+Adoption shipped; these are the open threads, in the order I would spend time
+on them. Nothing here blocks daily use of `qwen38-ninfer`.
+
+### 7.1 Cross-request prefix caching is unavailable (the big lever)
+
+Measured, not inferred: four one-shot requests at 84K ctx, including a
+byte-identical repeat, each logged `cache 0 (0.0%)` and paid ~20s TTFT at
+~4.1-4.8k tok/s prefill.
+
+Prefix reuse itself is ON (`--no-prefix-reuse` is not set). What is zero is the
+storage reuse depends on. Per the engine's flag table, total Device StateImage
+capacity is `C+H` for `C=--max-concurrency` and `H=--device-state-slots`; with
+`C=1, H=0` there is one StateImage - the active lane's guarantee - and no
+checkpoint pool, so a finished request's state has nowhere to be retained.
+`--host-state-slots 0 --host-kv-mib 0` remove the pinned-host fallback too.
+
+Both zeroes are load-bearing, which is why this is parked rather than fixed:
+
+- host pinned memory: `cudaMallocHost` OOMs under WSL2 Docker Desktop (the
+  risk section 5 anticipated, confirmed during the spike). Platform-blocked.
+- device slots: cost VRAM, and 262K + fp8 KV + MTP + vision peaked at
+  31.7 of 32.6 GB. ~900 MiB spare is not a useful pool.
+
+So the trade is **context for caching**: at 196K there is room for checkpoint
+slots. Worth measuring before deciding, because the benefit is workload-shaped
+- conversational traffic already reuses via the private-continuation path and
+would gain nothing, while one-shot traffic (bench, single tool calls, Open
+WebUI first turns) currently re-prefills every time.
+
+Experiment: serve at 196K with `--device-state-slots 2`, repeat the four-request
+probe (cold / identical repeat / prefix-modified / suffix-modified) and compare
+`cache %` and TTFT against the 262K numbers above. Probe script shape is in
+the section 6 notes; keep `reasoning_effort: none` so decode volume does not
+confound TTFT.
+
+### 7.2 The 6.2% sub-100 tok/s tail: narrowed, unresolved
+
+Controlled probes (2026-09-07) rule out the obvious causes:
+
+| condition | decode |
+|---|---|
+| 23-token prompt, 400-570 out | 117 tok/s |
+| 84K prompt, 693-900 out | 95-121 tok/s (run-to-run variance is this wide) |
+| 84K prompt, host load avg 3.3 | 120.8 tok/s |
+| the observed tail | **33-43 tok/s** |
+
+Context depth costs at most ~19%; light host load costs nothing. The tail sits
+far outside run-to-run variance and did NOT reproduce single-turn at all.
+
+What the slow requests had that the probes did not: thinking at xhigh, 126
+tools in schema, multi-turn with private-continuation reuse, and genuinely
+heavy concurrent sensor builds (cargo, docker). Next experiment must hold that
+whole shape rather than vary one dimension - i.e. a real loop soak with the
+engine log correlated per request, not another probe. That is deliberate GPU
+time.
+
+### 7.3 Unmeasured: DFlash2
+
+The README states Qwen3.8-27B artifacts with DFlash2 companion weights accept
+`--spec dflash2 --draft-tokens 7` (draft counts 1..15) where we run
+`--spec mtp --draft-tokens 3`. Upstream claim, never measured here. Worth an
+N3 cell if 7.1 frees any VRAM headroom, since both compete for it.
+
+### 7.4 Docs not yet updated
+
+- `README.md` volume table still lists only the llama volumes; AGENTS.md has
+  the `llmc-ninfer-models` row and the "Engines" section, README does not.
+- No lexicanum page covers the local inference stack. If one is written, the
+  engine-selection model (one preset names one engine, both share mode `llm`,
+  the proxy resolves the upstream from the active preset) is the part worth
+  explaining, and it should cross-link the existing docs the authoring
+  contract requires rather than landing standalone.
+- `~/infra/secretctl/AGENTS.md` does not mention that sops input format is now
+  content-sniffed and that binary envelopes are supported (2026-09-07 fix).
+
