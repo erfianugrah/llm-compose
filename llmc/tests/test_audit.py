@@ -29,7 +29,7 @@ from llmc.audit import (
     sha256_file,
 )
 from llmc import audit
-from llmc.presets import AssetSpec, ModelSpec, Preset, RuntimeSpec
+from llmc.presets import AssetSpec, ModelSpec, NinferSpec, Preset, RuntimeSpec
 
 
 def _preset(name: str, repo: str, file: str, mmproj: str | None = None) -> Preset:
@@ -360,3 +360,75 @@ class TestDryRunIsNotABackup(unittest.TestCase):
         entries = [audit._BackupEntry("a.gguf", Path("/nonexistent/a.gguf"), 10)]
         results = audit.backup_orphans(entries, "host:/path", dry_run=True)
         self.assertNotEqual(results[0].action, "skipped")
+
+
+class TestEngineAwareModelsDir(unittest.TestCase):
+    """Every preset was resolved against ONE models dir - the llama volume - so
+    a ninfer preset, whose artifact lives in llmc-ninfer-models, was reported
+    `missing ... entrypoint would download it`. Both halves were false: the
+    file was present in its own volume, and nothing downloads a .ninfer
+    artifact (ensure_preset_assets only fetches mmproj/template URLs).
+
+    A false "missing" in the tool you consult before deleting weights is the
+    same class of defect as the dry-run false-safe (2026-09-07)."""
+
+    def setUp(self):
+        self.llama_dir = Path(tempfile.mkdtemp())
+        self.ninfer_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        for d in (self.llama_dir, self.ninfer_dir):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _ninfer_preset(self):
+        return Preset(
+            name="qwen38-ninfer",
+            display_name="ninfer",
+            description="",
+            vram_gb=22.1,
+            model=ModelSpec(repo="neroued/x", file="q.ninfer", id="q-alias"),
+            runtime=RuntimeSpec(),
+            engine="ninfer",
+            ninfer=NinferSpec(),
+        )
+
+    def test_ninfer_artifact_found_in_its_own_volume(self):
+        (self.ninfer_dir / "q.ninfer").write_bytes(b"x" * 16)
+        results = audit.audit_presets(
+            {"q-alias": self._ninfer_preset()},
+            self.llama_dir,
+            fetch=lambda repo: {},
+            dirs={"ninfer": self.ninfer_dir},
+        )
+        statuses = {r.status for r in results}
+        self.assertNotIn(
+            audit.MISSING, statuses,
+            "artifact present in the ninfer volume must not read as missing",
+        )
+
+    def test_absent_ninfer_artifact_does_not_promise_a_download(self):
+        # Present upstream, absent locally: that is the MISSING branch. With an
+        # empty upstream tree it would classify as GONE first.
+        upstream = {"q.ninfer": {"size": 16, "sha256": ""}}
+        results = audit.audit_presets(
+            {"q-alias": self._ninfer_preset()},
+            self.llama_dir,
+            fetch=lambda repo: upstream,
+            dirs={"ninfer": self.ninfer_dir},
+        )
+        entry = results[0]
+        self.assertEqual(entry.status, audit.MISSING)
+        self.assertNotIn(
+            "would download", entry.note,
+            "nothing downloads a .ninfer artifact; the note must not claim otherwise",
+        )
+        self.assertIn("place", entry.note.lower())
+
+    def test_llama_presets_unaffected_when_no_dirs_given(self):
+        (self.llama_dir / "m.gguf").write_bytes(b"y" * 8)
+        p = Preset(
+            name="l", display_name="l", description="", vram_gb=1.0,
+            model=ModelSpec(repo="local/x", file="m.gguf"), runtime=RuntimeSpec(),
+        )
+        results = audit.audit_presets({"m": p}, self.llama_dir, fetch=lambda repo: {})
+        self.assertNotIn(audit.MISSING, {r.status for r in results})

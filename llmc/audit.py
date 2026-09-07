@@ -142,12 +142,20 @@ def audit_presets(
     *,
     deep: bool = False,
     fetch: Callable[[str], dict[str, dict]] = fetch_tree,
+    dirs: Optional[dict[str, Path]] = None,
 ) -> list[FileAudit]:
     """Classify every preset file against its upstream repo.
 
     `fetch` is injected so tests never touch the network. Repo trees are
     fetched once per repo, not once per file.
+
+    `dirs` maps a non-default engine to the directory its artifacts live in.
+    Without it every preset was resolved against the llama volume, so a
+    ninfer preset was reported missing while its artifact sat in
+    llmc-ninfer-models (2026-09-07). `models_dir` remains the default and the
+    llama location, so existing callers are unaffected.
     """
+    dirs = dirs or {}
     trees: dict[str, Optional[dict[str, dict]]] = {}
     errors: dict[str, str] = {}
     results: list[FileAudit] = []
@@ -156,7 +164,7 @@ def audit_presets(
         preset = presets[key]
         repo = preset.model.repo
         for kind, filename in _targets(preset):
-            path = models_dir / filename
+            path = dirs.get(getattr(preset, "engine", "llama"), models_dir) / filename
             entry = FileAudit(
                 preset=preset.name, kind=kind, repo=repo,
                 filename=filename, local_path=path,
@@ -206,7 +214,15 @@ def audit_presets(
             entry.upstream_sha256 = up["sha256"]
             if entry.local_size is None:
                 entry.status = MISSING
-                entry.note = "absent locally; entrypoint would download it"
+                # Only the llama entrypoint downloads on demand. A ninfer
+                # artifact is placed by hand and verified against upstream
+                # SHA256SUMS, so promising a download would send someone
+                # restarting a container that cannot recover.
+                entry.note = (
+                    "absent locally; entrypoint would download it"
+                    if getattr(preset, "engine", "llama") == "llama"
+                    else "absent locally; place the artifact in the engine's models volume"
+                )
             elif entry.local_size != entry.upstream_size:
                 entry.status = DIFF
                 entry.note = "upstream re-uploaded; local copy is a previous build"

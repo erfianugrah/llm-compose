@@ -413,7 +413,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
         _err("Cannot resolve the llama-models bind path from volumes.toml")
         return EXIT_USER_ERROR
 
-    results = audit_mod.audit_presets(presets, models_dir, deep=args.deep)
+    results = audit_mod.audit_presets(
+        presets, models_dir, deep=args.deep, dirs=_engine_models_dirs()
+    )
     orphaned = audit_mod.orphans(results)
     stray = audit_mod.unreferenced(presets, models_dir) if args.unreferenced else []
 
@@ -527,16 +529,34 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _models_dir() -> Optional[Path]:
-    """Host path of the llmc-llama-models bind mount."""
+def _volume_device(name: str) -> Optional[Path]:
+    """Host path of a named bind mount from volumes.toml."""
     try:
         registry = load_volumes(DEFAULT_VOLUMES_TOML)
     except VolumeError:
         return None
     for spec in registry:
-        if spec.name == "llmc-llama-models":
+        if spec.name == name:
             return spec.device
     return None
+
+
+def _models_dir() -> Optional[Path]:
+    """Host path of the llmc-llama-models bind mount."""
+    return _volume_device("llmc-llama-models")
+
+
+def _engine_models_dirs() -> dict[str, Path]:
+    """Artifact directory per non-default engine.
+
+    The audit resolves each preset against its own engine's volume; without
+    this a ninfer preset is looked up in the llama models dir and reported
+    missing while its artifact sits in llmc-ninfer-models.
+    """
+    dirs: dict[str, Path] = {}
+    if (d := _volume_device("llmc-ninfer-models")) is not None:
+        dirs["ninfer"] = d
+    return dirs
 
 
 def cmd_models(args: argparse.Namespace) -> int:
