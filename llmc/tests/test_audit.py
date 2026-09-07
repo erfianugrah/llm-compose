@@ -8,6 +8,8 @@ existed upstream and nothing noticed.
 
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +28,7 @@ from llmc.audit import (
     orphans,
     sha256_file,
 )
+from llmc import audit
 from llmc.presets import AssetSpec, ModelSpec, Preset, RuntimeSpec
 
 
@@ -280,3 +283,80 @@ class BackupGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnreferencedBackupSet(unittest.TestCase):
+    """`--backup` only ever covered orphans (files gone from upstream). The
+    146 GB that actually fills the disk is the UNREFERENCED set - files no
+    preset names, most of which still exist upstream. Re-downloading those is
+    hours over the internet when servarr is on the LAN, so they get backed up
+    too rather than deleted and re-fetched (2026-09-07)."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, name, size=1024):
+        p = self.dir / name
+        p.write_bytes(b"x" * size)
+        return p
+
+    def test_converts_to_entries_backup_orphans_accepts(self):
+        self._write("stray.gguf", 2048)
+        items = [audit.UnreferencedFile(filename="stray.gguf", size=2048, links=1)]
+        entries = audit.unreferenced_backup_set(items, self.dir)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        # the exact attribute surface backup_orphans touches
+        self.assertEqual(e.filename, "stray.gguf")
+        self.assertEqual(e.local_size, 2048)
+        self.assertEqual(e.local_path, self.dir / "stray.gguf")
+
+    def test_symlinks_are_excluded(self):
+        """Backing up a symlink copies a pointer, not the weights."""
+        self._write("real.gguf")
+        (self.dir / "link.gguf").symlink_to(self.dir / "real.gguf")
+        items = [audit.UnreferencedFile(filename="link.gguf", size=1024, links=1,
+                                        symlink_to="real.gguf")]
+        self.assertEqual(audit.unreferenced_backup_set(items, self.dir), [])
+
+    def test_hardlinked_names_dedupe_to_one_copy(self):
+        """Same bytes under two names must not be sent twice."""
+        a = self._write("a.gguf", 4096)
+        b = self.dir / "b.gguf"
+        os.link(a, b)
+        items = [
+            audit.UnreferencedFile(filename="a.gguf", size=4096, links=2),
+            audit.UnreferencedFile(filename="b.gguf", size=4096, links=2),
+        ]
+        self.assertEqual(len(audit.unreferenced_backup_set(items, self.dir)), 1)
+
+    def test_missing_file_is_skipped_not_fatal(self):
+        items = [audit.UnreferencedFile(filename="vanished.gguf", size=10, links=1)]
+        self.assertEqual(audit.unreferenced_backup_set(items, self.dir), [])
+
+
+class TestDryRunIsNotABackup(unittest.TestCase):
+    """`--backup --dry-run` copied nothing, so its results must never count as
+    evidence of a backup. Observed 2026-09-07: a dry run against a
+    non-existent destination made the audit print "3 orphan(s), all backed up
+    at <dest>", because dry-run results were emitted as action="skipped" and
+    the summary treated "skipped" as "already present". That is a false-safe
+    in the one tool you consult before deleting 146 GB."""
+
+    def test_dry_run_action_is_distinguishable(self):
+        entries = [audit._BackupEntry("a.gguf", Path("/nonexistent/a.gguf"), 10)]
+        results = audit.backup_orphans(entries, "host:/path", dry_run=True)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(
+            results[0].action, "dry-run",
+            "a dry run must not report the same action as a real skip",
+        )
+
+    def test_dry_run_action_is_not_skipped(self):
+        """Specifically NOT "skipped": that is what the summary trusts."""
+        entries = [audit._BackupEntry("a.gguf", Path("/nonexistent/a.gguf"), 10)]
+        results = audit.backup_orphans(entries, "host:/path", dry_run=True)
+        self.assertNotEqual(results[0].action, "skipped")

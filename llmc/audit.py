@@ -324,13 +324,59 @@ def orphans(results: Iterable[FileAudit]) -> list[FileAudit]:
     return out
 
 
+@dataclass
+class _BackupEntry:
+    """The attribute surface backup_orphans consumes: filename, local_path,
+    local_size. FileAudit already satisfies it; this lets an
+    UnreferencedFile do so too without widening that dataclass."""
+
+    filename: str
+    local_path: Path
+    local_size: int
+
+
+def unreferenced_backup_set(
+    items: Iterable[UnreferencedFile], models_dir: Path
+) -> list[_BackupEntry]:
+    """Turn `unreferenced()` output into a backup set.
+
+    Orphans (gone from upstream) MUST be backed up before deletion because
+    the local copy is the only copy. Unreferenced files usually still exist
+    upstream, so backing them up is a bandwidth decision rather than a
+    safety one - restoring 146 GB from a LAN NAS beats re-downloading it.
+
+    Excludes symlinks (copying a pointer is not a backup) and deduplicates
+    by inode, so hardlinked names do not send the same bytes twice.
+    """
+    seen: set[tuple[int, int]] = set()
+    out: list[_BackupEntry] = []
+    for item in items:
+        if item.symlink_to:
+            continue
+        path = models_dir / item.filename
+        try:
+            st = path.stat()
+        except OSError:
+            continue  # vanished between scan and backup; not fatal
+        key = (st.st_dev, st.st_ino)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(_BackupEntry(item.filename, path, st.st_size))
+    return out
+
+
 # ── backup ─────────────────────────────────────────────────────────────
 
 
 @dataclass
 class BackupResult:
     filename: str
-    action: str  # "skipped" | "copied" | "failed"
+    # "copied"  - transferred and hash-verified at the destination
+    # "skipped"  - already present there at the right size (a real backup)
+    # "dry-run"  - NOTHING was copied; never treat this as evidence of a backup
+    # "failed"   - attempted and did not verify
+    action: str
     sha256: Optional[str] = None
     detail: str = ""
 
@@ -383,7 +429,9 @@ def backup_orphans(
     out: list[BackupResult] = []
 
     if dry_run:
-        return [BackupResult(e.filename, "skipped", detail="dry-run") for e in entries]
+        # Deliberately not "skipped": callers treat that as "already safely
+        # at the destination", and a dry run has copied nothing.
+        return [BackupResult(e.filename, "dry-run", detail="would copy") for e in entries]
 
     remote_sizes = remote_inventory(dest, create=True)
 

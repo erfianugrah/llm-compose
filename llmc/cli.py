@@ -439,10 +439,19 @@ def cmd_audit(args: argparse.Namespace) -> int:
             unbacked = []
 
     backups: list = []
-    if args.backup and orphaned:
+    # Orphans are backed up because the local copy is the only copy.
+    # Unreferenced files are backed up only when asked: they usually still
+    # exist upstream, so this is a "restore from the LAN instead of
+    # re-downloading 146 GB" choice, not a safety one.
+    to_backup: list = list(orphaned)
+    if args.unreferenced:
+        already = {e.filename for e in to_backup}
+        to_backup += [e for e in audit_mod.unreferenced_backup_set(stray, models_dir)
+                      if e.filename not in already]
+    if args.backup and to_backup:
         try:
             backups = audit_mod.backup_orphans(
-                orphaned, args.dest, dry_run=args.dry_run,
+                to_backup, args.dest, dry_run=args.dry_run,
                 log=(lambda m: None) if args.json else (lambda m: print(f"  {m}")),
             )
         except audit_mod.AuditError as exc:
@@ -490,6 +499,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     unknown = [r for r in results if r.status == audit_mod.UNKNOWN]
     lost = [r for r in results if r.unrecoverable]
     failed = [b for b in backups if b.action == "failed"]
+    # "dry-run" is excluded on purpose: it means nothing was transferred.
     copied = {b.filename for b in backups if b.action in ("copied", "skipped")}
     still_unbacked = [r for r in unbacked if r.filename not in copied]
 
@@ -510,7 +520,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if unknown:
         _err(f"{len(unknown)} file(s) could not be checked upstream (network/rate limit)")
         return EXIT_TRANSIENT
-    if orphaned:
+    if orphaned and not args.json:
+        # Suppressed under --json: a --json mode that also prints prose to
+        # stdout cannot be parsed by anything.
         print(f"{len(orphaned)} orphan(s), all backed up at {args.dest}")
     return EXIT_OK
 

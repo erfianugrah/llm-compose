@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Delete unreferenced local weight files, but only after re-proving that a
+# verified copy exists on the backup host RIGHT NOW.
+#
+# The backup run already hash-verified every file at the far end. This re-checks
+# anyway, immediately before each unlink, because the gap between "it was
+# verified 30 minutes ago" and "it is there now" is exactly where a deletion
+# script loses data. Per file: confirm it is unreferenced, confirm the remote
+# size matches, confirm the remote SHA256SUMS entry matches a freshly computed
+# local hash. Any doubt and the file is skipped, not deleted.
+#
+# Usage:
+#   prune-unreferenced-models [--apply]
+#     (default is a dry run: reports what it would delete, deletes nothing)
+#
+# Env:
+#   LLMC_MODEL_BACKUP_DEST   host:/path of the backup (default below)
+set -euo pipefail
+
+DEST="${LLMC_MODEL_BACKUP_DEST:-servarr:/tank/backups/llm-models/unreferenced}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APPLY=0
+[[ "${1:-}" == "--apply" ]] && APPLY=1
+
+HOST="${DEST%%:*}"
+RDIR="${DEST#*:}"
+
+MODELS_DIR="$("$REPO/bin/llmc" --json audit 2>/dev/null | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["models_dir"])')"
+[[ -d "$MODELS_DIR" ]] || { echo "models dir not found: $MODELS_DIR" >&2; exit 2; }
+
+# The authoritative unreferenced list comes from the audit, never from a glob:
+# a hand-written pattern is how a still-referenced GGUF gets deleted.
+mapfile -t FILES < <("$REPO/bin/llmc" --json audit --unreferenced 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for f in d.get("unreferenced", []):
+    if not f.get("symlink_to"):
+        print(f["file"])
+')
+
+(( ${#FILES[@]} )) || { echo "nothing unreferenced; nothing to do"; exit 0; }
+
+echo "backup dest: $DEST"
+echo "models dir:  $MODELS_DIR"
+echo "candidates:  ${#FILES[@]}"
+(( APPLY )) || echo "MODE: dry run (pass --apply to delete)"
+echo
+
+# One ssh for the whole remote manifest rather than one per file.
+REMOTE_SUMS="$(ssh "$HOST" "cat $RDIR/SHA256SUMS 2>/dev/null" || true)"
+REMOTE_LS="$(ssh "$HOST" "ls -l $RDIR 2>/dev/null" || true)"
+[[ -n "$REMOTE_SUMS" ]] || { echo "no SHA256SUMS at $DEST - refusing to delete anything" >&2; exit 2; }
+
+freed=0 deleted=0 skipped=0
+for name in "${FILES[@]}"; do
+  local_path="$MODELS_DIR/$name"
+  if [[ ! -f "$local_path" ]]; then
+    echo "skip  $name: not a regular local file"; skipped=$((skipped + 1)); continue
+  fi
+
+  local_size="$(stat -c %s "$local_path")"
+  # awk exits on the first match rather than piping to head: `awk | head`
+  # can SIGPIPE awk, and pipefail + set -e then kills the script mid-loop.
+  remote_size="$(awk -v n="$name" '$NF==n && $1 ~ /^-/ {print $5; exit}' <<<"$REMOTE_LS")"
+  if [[ "$remote_size" != "$local_size" ]]; then
+    echo "SKIP  $name: remote size ${remote_size:-missing} != local $local_size"
+    skipped=$((skipped + 1)); continue
+  fi
+
+  want="$(awk -v n="$name" '$2==n {print $1; exit}' <<<"$REMOTE_SUMS")"
+  if [[ -z "$want" ]]; then
+    echo "SKIP  $name: no SHA256SUMS entry at $DEST"; skipped=$((skipped + 1)); continue
+  fi
+
+  got="$(sha256sum "$local_path" | cut -d' ' -f1)"
+  if [[ "$got" != "$want" ]]; then
+    echo "SKIP  $name: local sha256 disagrees with the backup manifest"
+    echo "        local  $got"
+    echo "        backup $want"
+    skipped=$((skipped + 1)); continue
+  fi
+
+  if (( APPLY )); then
+    rm -f -- "$local_path"
+    echo "DELETED $name ($(numfmt --to=iec "$local_size")) verified ${want:0:12}"
+    deleted=$((deleted + 1))
+  else
+    echo "would delete $name ($(numfmt --to=iec "$local_size")) verified ${want:0:12}"
+  fi
+  freed=$(( freed + local_size ))
+done
+
+echo
+echo "verified-and-$( ((APPLY)) && echo deleted || echo deletable ): $(( APPLY ? deleted : ${#FILES[@]} - skipped ))"
+echo "skipped: $skipped"
+echo "space $( ((APPLY)) && echo freed || echo reclaimable ): $(numfmt --to=iec "$freed")"
+(( skipped == 0 )) || echo "NOTE: $skipped file(s) skipped - investigate before deleting them by hand." >&2
