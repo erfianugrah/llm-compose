@@ -146,7 +146,13 @@ How the two differ, and what the proxy does about it:
   presets only.
 - **Thinking effort is per-request**, not a serve flag. The chat template
   exposes `low|medium|xhigh` and REJECTS `high`. Clients should send
-  `medium` for unattended work; pi's rung is `external/...:medium`. The proxy
+  `medium` for unattended work. **Use the `external/qwen3.8-27b-nvfp4:medium`
+  rung, not `llama-server/qwen38-ninfer`**: both reach this engine, but pi
+  sends `max output 65,536` on the first and `16,384` on the second (measured
+  2026-09-08), because `llama-server-dynamic.ts` pins pi's default for every
+  model it registers. 16,384 truncates a thinking response mid-chain and the
+  agent then exits 0 having done nothing. Fix is step 1 of
+  `docs/plans/2026-09-08-provider-consolidation.md`. The proxy
   does not yet inject it, so a client that sends nothing gets the template
   default (xhigh) and 10-30k-token thinking traces.
 - **Artifacts are placed by hand.** `ensure_preset_assets` only downloads
