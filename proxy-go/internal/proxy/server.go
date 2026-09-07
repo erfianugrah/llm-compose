@@ -155,23 +155,27 @@ func (s *Server) handleModels(w http.ResponseWriter) {
 			desc = desc[:i]
 		}
 		caps := map[string]any{"vision": p.HasVision()}
+		meta := map[string]any{
+			"description":     desc,
+			"capabilities":    caps,
+			"capability_list": p.Capabilities,
+			"name":            p.DisplayName,
+			"preset":          p.Name,
+			"loaded":          p.Name == snap.Model,
+			"context":         p.EffectiveContext(),
+			"reasoning":       p.Runtime.Reasoning == "on",
+			"vram_gb":         p.VRAMGB,
+			"mode":            snap.Mode,
+		}
+		if p.Runtime.MaxOutputTokens != nil {
+			meta["max_output"] = *p.Runtime.MaxOutputTokens
+		}
 		data = append(data, map[string]any{
 			"id":       id,
 			"object":   "model",
 			"created":  0,
 			"owned_by": "local",
-			"meta": map[string]any{
-				"description":     desc,
-				"capabilities":    caps,
-				"capability_list": p.Capabilities,
-				"name":            p.DisplayName,
-				"preset":          p.Name,
-				"loaded":          p.Name == snap.Model,
-				"context":         p.EffectiveContext(),
-				"reasoning":       p.Runtime.Reasoning == "on",
-				"vram_gb":         p.VRAMGB,
-				"mode":            snap.Mode,
-			},
+			"meta": meta,
 		})
 	}
 	if s.routes != nil {

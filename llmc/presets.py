@@ -111,6 +111,9 @@ class RuntimeSpec:
     # spend; only this bounds the tail (2026-09-02: a single loop task burned
     # ~19 min inside ONE iteration at effort=medium).
     reasoning_budget: Optional[int] = None
+    # Per-preset max-output cap, published by the Go proxy as meta.max_output
+    # in /v1/models. Absent = no cap concept (llama.cpp n_predict=-1).
+    max_output_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,7 @@ _RUNTIME_KEYS = {
     "spec_ngram_n_match": int,
     "reasoning_effort": str,
     "reasoning_budget": int,
+    "max_output_tokens": int,
 }
 
 
@@ -278,6 +282,7 @@ def _load_runtime(data: dict | None) -> RuntimeSpec:
         spec_ngram_n_max=int(data["spec_ngram_n_max"]) if "spec_ngram_n_max" in data else None,
         spec_ngram_n_match=int(data["spec_ngram_n_match"]) if "spec_ngram_n_match" in data else None,
         reasoning_effort=data.get("reasoning_effort", "").strip() or None,
+        max_output_tokens=int(data["max_output_tokens"]) if "max_output_tokens" in data else None,
     )
 
 

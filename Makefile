@@ -336,13 +336,19 @@ release: build push restart
 ## Alias for release — old muscle-memory shortcut
 ship: release
 
-## Ship just the proxy (common case: llmc/ source changed). Skips the
-## ~14 GB of llama-server + comfyui + lora-train pushes that are no-ops
-## on every layer when only Python changed.
-ship-proxy: build-proxy push-proxy restart
-	@echo "Python proxy (rollback lane) shipped"
+## ship-proxy DEPRECATED for daily use: it ships the PYTHON proxy
+## (llmc/, rollback lane only). The live container on :11434 is the Go
+## proxy - this target rebuilt and restarted model_proxy_go from the
+## STALE Go image after only rebuilding the Python image, and a new
+## preset key that older Go binary did not know took the proxy into a
+## crash loop (2026-09-08, runtime.max_output_tokens). Kept for the
+## rollback lane; prints a warning instead of restarting.
+ship-proxy: build-proxy push-proxy
+	@echo "Python rollback-lane image built and pushed."
+	@echo "NOT restarting: the live proxy is the Go one. To roll back, run:"
+	@echo "  LLMC_PROXY_GO=off make restart"
 
-## Ship the Go proxy (daily flow for proxy-go/ changes)
+## Ship the Go proxy (THE daily flow - the live proxy on :11434 is Go).
 ship-proxy-go: build-proxy-go push-proxy-go restart
 	@echo "Go proxy shipped and restarted"
 

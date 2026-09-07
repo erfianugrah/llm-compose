@@ -166,6 +166,36 @@ file = "alpha.gguf"
 url = "https://huggingface.co/org/alpha/resolve/main/mmproj.gguf"
 `
 
+// c with a per-preset max-output cap: published as meta.max_output in
+// /v1/models (absent key for every preset without one).
+const tomlCMaxOut = `name = "Gamma"
+vram_gb = 22.1
+
+[model]
+repo = "org/gamma"
+file = "gamma.gguf"
+
+[runtime]
+max_output_tokens = 65536
+`
+
+func TestPresetMaxOutputTokensParse(t *testing.T) {
+	st := newTestStore(t, map[string]string{"c": tomlCMaxOut, "b": tomlB})
+	if err := st.Reload(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	c, b := st.ByName("c"), st.ByName("b")
+	if c == nil || b == nil {
+		t.Fatalf("presets missing: c=%v b=%v", c, b)
+	}
+	if c.Runtime.MaxOutputTokens == nil || *c.Runtime.MaxOutputTokens != 65536 {
+		t.Fatalf("c: MaxOutputTokens not parsed: %#v", c.Runtime.MaxOutputTokens)
+	}
+	if b.Runtime.MaxOutputTokens != nil {
+		t.Fatalf("b: MaxOutputTokens must be nil when unset: %#v", b.Runtime.MaxOutputTokens)
+	}
+}
+
 func newTestStore(t *testing.T, files map[string]string) *PresetStore {
 	t.Helper()
 	dir := t.TempDir()

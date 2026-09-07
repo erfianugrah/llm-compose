@@ -78,6 +78,12 @@ device_state_slots = 0
 # model as non-reasoning in pi (caught 2026-09-07).
 reasoning = "on"
 reasoning_effort = "medium"
+# Per-preset max-output cap, published as meta.max_output in /v1/models.
+# pi's dynamic registration reads it and registers maxTokens from it;
+# without this field the extension pins pi's default 16384, which truncated
+# a 35,747-token response mid-thought on 2026-09-07 (two silent zero-write
+# loop iterations). 65536 matches what pi's external/ entry already sent.
+max_output_tokens = 65536
 
 [bench]
 tokenizer = "unsloth/Qwen3.8-27B-GGUF"

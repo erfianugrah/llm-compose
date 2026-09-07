@@ -93,6 +93,12 @@ type RuntimeSpec struct {
 	// N>0 a hard token cap. reasoning_effort lowers the AVERAGE thinking
 	// spend; only this bounds the tail.
 	ReasoningBudget *int `toml:"reasoning_budget"`
+	// MaxOutputTokens is the per-preset max-output cap, published as
+	// meta.max_output in /v1/models. llama.cpp has no such concept
+	// (n_predict=-1 is unlimited), so absent stays absent for those
+	// presets; consumers keep their own fallback. Pointer so a configured
+	// value is distinguishable from unset.
+	MaxOutputTokens *int `toml:"max_output_tokens"`
 }
 
 func defaultRuntime() RuntimeSpec {
@@ -221,7 +227,7 @@ var runtimeKeys = map[string]bool{
 	"presence_penalty": true, "repeat_penalty": true,
 	"spec_type": true, "spec_ngram_n_min": true, "spec_ngram_n_max": true,
 	"spec_ngram_n_match": true, "reasoning_effort": true,
-	"reasoning_budget": true,
+	"reasoning_budget": true, "max_output_tokens": true,
 }
 
 // LoadPreset loads and validates one preset TOML. Name = filename stem.

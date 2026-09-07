@@ -77,7 +77,7 @@ docker/curl/nvidia-smi call — fast targets that don't need Python's
 | `build` / `build-X` / `push-X` | docker build / docker push |
 | `build-proxy-go` / `test-proxy-go` / `smoke-proxy-go` | Go proxy (proxy-go/, soak on :11435): build / go test -race / live hurl suite |
 | `rebuild-X` | docker build `--no-cache` (slow - for base bumps) |
-| `ship` / `ship-proxy` | build + push + restart stack (all four / proxy only) |
+| `ship` / `ship-proxy-go` | build + push + restart stack (all / Go proxy only) |
 | `deploy` | full bootstrap: setup + build + up |
 
 The `llmc` CLI covers anything that needs proxy state, schema
@@ -315,12 +315,13 @@ make build              # all 4 (docker build, cache-aware, ~5s if unchanged)
 make build-proxy        # just the proxy — daily flow for llmc/ changes
 make rebuild-llama      # --no-cache full rebuild (slow, ~10 min)
 make pull               # pull instead of building
-make ship-proxy         # build-proxy + push-proxy + restart (daily ship loop)
+make ship-proxy-go      # build-proxy-go + push + restart (daily ship loop; the live proxy is Go)
+make ship-proxy         # Python rollback-lane image only; deprecated for daily use, no restart
 make ship               # full release: build all + push all + restart stack
 ```
 
-Both `ship-proxy` and `ship` end with a `docker compose up -d --force-recreate
-model-proxy open-webui` so the running stack picks up the new proxy image.
+Both `ship-proxy-go` and `ship` end with a restart of model-proxy-go +
+open-webui so the running stack picks up the new proxy image.
 GPU services (llama-server, comfyui, lora-train) aren't restarted — they're
 spawned on demand and the next mode swap will use the freshly-pushed image
 automatically.
@@ -338,9 +339,11 @@ totally fresh build (base image bump, CUDA arch change, etc.). For
 The proxy image (`erfianugrah/llmc-proxy:v2`, ~216 MB) is the only image
 llmc itself owns — it bundles the `docker` Python SDK + the llmc package.
 The other three (llama-server, comfyui, lora-train) are larger
-purpose-built images that change rarely. `make ship-proxy` is the
-common-case shortcut for daily code changes: rebuild proxy, push, restart
-the running container.
+purpose-built images that change rarely. `make ship-proxy-go` is the
+common-case shortcut for daily code changes: rebuild the Go proxy, push,
+restart the running container. (`ship-proxy` ships the Python rollback-lane
+image only and no longer restarts anything - a stale-image restart took the
+proxy down on 2026-09-08.)
 
 ### Adding a model
 

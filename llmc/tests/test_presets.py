@@ -167,6 +167,38 @@ class TestSchemaValidation(unittest.TestCase):
             "must be non-empty",
         )
 
+    def test_max_output_tokens_parses_and_defaults_none(self):
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
+            f.write(
+                'name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"\n'
+                "[runtime]\nmax_output_tokens=65536\n"
+            )
+            path = Path(f.name)
+        try:
+            self.assertEqual(load_preset(path).runtime.max_output_tokens, 65536)
+        finally:
+            path.unlink()
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="w", delete=False) as f:
+            f.write('name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"\n')
+            path = Path(f.name)
+        try:
+            self.assertIsNone(load_preset(path).runtime.max_output_tokens)
+        finally:
+            path.unlink()
+
+    def test_max_output_tokens_wrong_type_rejected(self):
+        self._check_rejected(
+            'name="x"\nvram_gb=5\n[model]\nrepo="r"\nfile="f.gguf"\n'
+            '[runtime]\nmax_output_tokens="big"',
+            "expected int",
+        )
+
+    def test_qwen38_ninfer_publishes_a_max_output_cap(self):
+        self.assertEqual(
+            load_preset(MODELS_DIR / "qwen38-ninfer.toml").runtime.max_output_tokens,
+            65536,
+        )
+
 
 class TestMigrationFidelity(unittest.TestCase):
     """Verify each TOML preset produces the same effective container env as

@@ -150,6 +150,32 @@ func TestModels(t *testing.T) {
 
 // ── 17. mode get / status ────────────────────────────────────────────────
 
+func TestModelsMaxOutput(t *testing.T) {
+	ts := startServer(t, newFakeOrch("llm"),
+		newTestStore(t, map[string]string{"a": tomlAVisionMMProj, "b": tomlB, "c": tomlCMaxOut}),
+		&State{Mode: "llm", Model: "a"}, ServerConfig{})
+	code, body := doGet(t, ts.URL+"/v1/models")
+	if code != 200 {
+		t.Fatalf("models: %d %#v", code, body)
+	}
+	byID := map[string]map[string]any{}
+	for _, d := range body["data"].([]any) {
+		e := d.(map[string]any)
+		byID[e["id"].(string)] = e["meta"].(map[string]any)
+	}
+	if v, ok := byID["gamma"]["max_output"]; !ok || v.(float64) != 65536 {
+		t.Fatalf("c: meta.max_output missing or wrong: %#v", byID["gamma"]["max_output"])
+	}
+	if byID["gamma"]["preset"] != "c" {
+		t.Fatalf("gamma entry is not preset c: %#v", byID["gamma"])
+	}
+	if _, has := byID["beta"]["max_output"]; has {
+		t.Fatalf("b: max_output must be omitted when unset: %#v", byID["beta"])
+	}
+}
+
+// ── 17. mode get / status ────────────────────────────────────────────────
+
 func TestModeGet(t *testing.T) {
 	ts := startServer(t, newFakeOrch("llm"),
 		newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),

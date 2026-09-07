@@ -1,6 +1,10 @@
 # 2026-09-08 - Consolidating the pi provider surface: one engine-neutral name
 
-Status: PLAN. Not started. Written because the obvious version of this change
+Status: step 1 DONE (landed + engine-verified 2026-09-08: `runtime.max_output_tokens`
+in the preset schema, `meta.max_output` in `/v1/models`,
+`llama-server-dynamic.ts` registers `maxTokens: meta.max_output ?? 16384`;
+`pi --model llama-server/qwen38-ninfer` logs `max output 65,536`).
+Steps 2-4 not started. Written because the obvious version of this change
 (rename the provider, delete the duplicate) silently breaks harness manifests
 in nine repos, and because the two providers differ in a way that is not
 cosmetic.
@@ -127,9 +131,11 @@ Recorded here so it is not rediscovered, not to widen the scope:
 - `~/infra/secretctl/AGENTS.md` does not mention that sops input format is
   content-sniffed and binary envelopes are supported (2026-09-07 fix).
 - 10 unpushed commits in `llm-compose`, 1 in `secretctl` as of 2026-09-08.
+  (Pushed later that day.)
 - The static `llama-server` model list in `models.json` has a null `maxTokens`
   for every entry and is only a fallback for when the proxy is unreachable.
-  Once step 1 lands, that fallback disagrees with the live registration.
+  With step 1 landed, that fallback disagrees with the live registration for
+  `qwen38-ninfer` (fallback has no cap value, live registers 65,536).
 
 ## Verify before done
 
