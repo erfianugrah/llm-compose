@@ -130,11 +130,19 @@ def measure_prefill(model_id: str, proxy: str = PROXY, timeout: int = 600) -> di
         headers={"Content-Type": "application/json"},
     )
     try:
+        t0 = time.perf_counter()
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read())
+        wall = time.perf_counter() - t0
         t = d.get("timings", {})
-        return {"prompt_per_s": round(t.get("prompt_per_second", 0), 1),
-                "prompt_n": t.get("prompt_n", 0)}
+        if t:
+            return {"prompt_per_s": round(t.get("prompt_per_second", 0), 1),
+                    "prompt_n": t.get("prompt_n", 0)}
+        # external engines (ninfer) have no llama.cpp timings: wall-clock + usage
+        usage = d.get("usage", {})
+        n = usage.get("prompt_tokens", 0)
+        return {"prompt_per_s": round(n / wall, 1) if n and wall > 0 else 0.0,
+                "prompt_n": n}
     except Exception as e:
         print(f"# prefill err: {e}", file=sys.stderr)
         return {"prompt_per_s": 0.0, "prompt_n": 0}
@@ -152,13 +160,25 @@ def measure_throughput(model_id: str, proxy: str = PROXY, timeout: int = 600) ->
         headers={"Content-Type": "application/json"},
     )
     try:
+        t0 = time.perf_counter()
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read())
+        wall = time.perf_counter() - t0
         t = d.get("timings", {})
+        if t:
+            return {
+                "prompt_per_s": round(t.get("prompt_per_second", 0), 1),
+                "gen_per_s": round(t.get("predicted_per_second", 0), 1),
+                "gen_n": t.get("predicted_n", 0),
+            }
+        # external engines (ninfer) have no llama.cpp timings: wall-clock + usage.
+        # gen rate includes prefill time - conservative (understates gen).
+        usage = d.get("usage", {})
+        gen_n = usage.get("completion_tokens", 0)
         return {
-            "prompt_per_s": round(t.get("prompt_per_second", 0), 1),
-            "gen_per_s": round(t.get("predicted_per_second", 0), 1),
-            "gen_n": t.get("predicted_n", 0),
+            "prompt_per_s": 0.0,
+            "gen_per_s": round(gen_n / wall, 1) if gen_n and wall > 0 else 0.0,
+            "gen_n": gen_n,
         }
     except Exception as e:
         print(f"# throughput err: {e}", file=sys.stderr)
@@ -221,6 +241,66 @@ def restart_whisper(stopped: list[str], log: LogFn) -> None:
 
 
 # ── The runner ─────────────────────────────────────────────────────────
+
+def run_perf_external(
+    url: str,
+    model_id: str,
+    label: str,
+    ctx: int,
+    slots: int,
+    runs: int = 1,
+    rid: Optional[str] = None,
+    log: LogFn = print,
+    no_whisper_stop: bool = False,
+) -> int:
+    """Measure an external OpenAI-compatible endpoint (no proxy lock/switch).
+
+    For engine spikes (e.g. NInfer) where the service is not proxy-managed.
+    Same measurement protocol as run_perf so numbers are comparable.
+    """
+    rid = rid or store.run_id()
+    stopped = [] if no_whisper_stop else stop_whisper(log)
+    try:
+        log(f"\n=== {label} (external {url}, model {model_id}, ctx {ctx} x {slots}) ===")
+        if not wait_ready(model_id, proxy=url):
+            log("  FAIL: endpoint did not answer in 900s")
+            return 1
+        with VramPoller() as poller:
+            for _ in range(2):
+                measure_ttft(model_id, proxy=url)  # warmup
+            ttfts = [measure_ttft(model_id, proxy=url)[0] for _ in range(5 * runs)]
+            ttfts = [t for t in ttfts if t > 0]
+            best = {"prompt_per_s": 0.0, "gen_per_s": 0.0, "gen_n": 0}
+            for _ in range(3 * runs):
+                t = measure_throughput(model_id, proxy=url)
+                if t["gen_per_s"] > best["gen_per_s"]:
+                    best = t
+            prefill = {"prompt_per_s": 0.0, "prompt_n": 0}
+            for _ in range(runs):
+                t = measure_prefill(model_id, proxy=url)
+                if t["prompt_per_s"] > prefill["prompt_per_s"]:
+                    prefill = t
+        metrics = {
+            "ttft_p50_ms": p50(ttfts),
+            "ttft_p95_ms": p95(ttfts),
+            "gen_tok_s": best["gen_per_s"],
+            "prompt_tok_s": prefill["prompt_per_s"],
+            "prompt_n": prefill["prompt_n"],
+            "vram_peak_mib": poller.peak_mib,
+            "ctx": ctx,
+            "slots": slots,
+        }
+        rec = store.make_record("perf", label, None, metrics, rid,
+                                extra={"model_file": model_id, "external": url})
+        store.append(rec)
+        log(f"  TTFT p50={metrics['ttft_p50_ms']}ms p95={metrics['ttft_p95_ms']}ms | "
+            f"gen={metrics['gen_tok_s']} tok/s | pp={metrics['prompt_tok_s']} tok/s "
+            f"({metrics['prompt_n']} tok) | "
+            f"VRAM peak={metrics['vram_peak_mib']} MiB")
+        return 0
+    finally:
+        restart_whisper(stopped, log)
+
 
 def wait_ready(model_id: str, timeout_s: int = 900, proxy: str = PROXY) -> bool:
     deadline = time.monotonic() + timeout_s

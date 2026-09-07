@@ -248,6 +248,56 @@ def check_trace(case: dict, trace: dict) -> bool:
 
 # ── Runner ─────────────────────────────────────────────────────────────
 
+def _gumshoe_cases(cases, repeats: int, llm_fn, log: LogFn):
+    """Run the case matrix against an llm_fn; returns (per_case, metrics)."""
+    per_case: dict[str, float] = {}
+    total_steps = total_llm_steps = total_invalid = total_forced = 0
+    for case in cases:
+        hits = 0
+        for _ in range(repeats):
+            trace = run_case(llm_fn, case)
+            hits += 1 if check_trace(case, trace) else 0
+            total_steps += len(trace["steps"])
+            total_llm_steps += trace["llm_steps"]
+            total_invalid += trace["json_invalid"]
+            total_forced += 1 if trace["forced"] else 0
+            time.sleep(0.5)
+        per_case[case["id"]] = round(hits / repeats, 3)
+        log(f"  {case['id']}: {hits}/{repeats}")
+    n_runs = len(cases) * repeats
+    metrics = {
+        "case_hit_rate": round(sum(per_case.values()) / len(per_case), 3),
+        "json_valid_rate": round(1 - total_invalid / total_llm_steps, 4) if total_llm_steps else 0,
+        "mean_steps": round(total_steps / n_runs, 2),
+        "forced_final_rate": round(total_forced / n_runs, 3),
+        "per_case": per_case,
+    }
+    return metrics
+
+
+def run_gumshoe_external(url: str, model_id: str, label: str,
+                         repeats: int = 3, cases_path: Optional[Path] = None,
+                         rid: Optional[str] = None, log: LogFn = print) -> int:
+    """Gumshoe suite against an external OpenAI endpoint (no proxy lock/switch)."""
+    cases_path = Path(cases_path) if isinstance(cases_path, str) else (cases_path or CASES_PATH)
+    cases = json.loads(cases_path.read_text())["cases"]
+    rid = rid or store.run_id()
+    log(f"\n=== {label} (external {url}, {len(cases)} cases x {repeats}) ===")
+    if not wait_ready(model_id, proxy=url):
+        log("  FAIL: endpoint did not answer")
+        return 1
+    metrics = _gumshoe_cases(cases, repeats, make_llm_fn(model_id, proxy=url), log)
+    rec = store.make_record(
+        "gumshoe", label, None, metrics, rid,
+        extra={"model_file": model_id, "external": url,
+               "cases_path": str(cases_path), "repeats": repeats},
+    )
+    store.append(rec)
+    log(f"  -> hit={metrics['case_hit_rate']} json={metrics['json_valid_rate']} "
+        f"steps={metrics['mean_steps']} forced={metrics['forced_final_rate']}")
+    return 0
+
+
 def run_gumshoe(preset_names: list[str], repeats: int = 3,
                 cases_path: Optional[Path] = None,
                 rid: Optional[str] = None, log: LogFn = print) -> int:
@@ -285,28 +335,7 @@ def run_gumshoe(preset_names: list[str], repeats: int = 3,
             continue
 
         llm_fn = make_llm_fn(preset.model_id)
-        per_case: dict[str, float] = {}
-        total_steps = total_llm_steps = total_invalid = total_forced = 0
-        for case in cases:
-            hits = 0
-            for _ in range(repeats):
-                trace = run_case(llm_fn, case)
-                hits += 1 if check_trace(case, trace) else 0
-                total_steps += len(trace["steps"])
-                total_llm_steps += trace["llm_steps"]
-                total_invalid += trace["json_invalid"]
-                total_forced += 1 if trace["forced"] else 0
-                time.sleep(0.5)
-            per_case[case["id"]] = round(hits / repeats, 3)
-            log(f"  {case['id']}: {hits}/{repeats}")
-        n_runs = len(cases) * repeats
-        metrics = {
-            "case_hit_rate": round(sum(per_case.values()) / len(per_case), 3),
-            "json_valid_rate": round(1 - total_invalid / total_llm_steps, 4) if total_llm_steps else 0,
-            "mean_steps": round(total_steps / n_runs, 2),
-            "forced_final_rate": round(total_forced / n_runs, 3),
-            "per_case": per_case,
-        }
+        metrics = _gumshoe_cases(cases, repeats, llm_fn, log)
         rec = store.make_record(
             "gumshoe", name, store.REPO_ROOT / "models" / f"{name}.toml", metrics, rid,
             extra={"model_file": preset.model.file, "cases_path": str(cases_path),

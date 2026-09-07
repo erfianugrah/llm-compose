@@ -35,10 +35,11 @@ def load_manifests(tasks_dir: Path = TASKS_DIR) -> list[dict[str, Any]]:
     return [json.loads(p.read_text()) for p in sorted(tasks_dir.glob("*.json"))]
 
 
-def materialize_harness(manifest: dict[str, Any], model_id: str) -> dict[str, Any]:
+def materialize_harness(manifest: dict[str, Any], model_id: str,
+                        rung_prefix: str = "llama-server") -> dict[str, Any]:
     """Task manifest -> full loop harness.json (model rung + resolved paths)."""
     h = {k: v for k, v in manifest.items() if k not in ("name", "fixture", "probe")}
-    h["models"] = [f"llama-server/{model_id}"]
+    h["models"] = [f"{rung_prefix}/{model_id}"]
     sensors = []
     for s in manifest.get("sensors", []):
         s = dict(s)
@@ -91,8 +92,8 @@ def parse_report(workdir: Path) -> dict[str, Any]:
 
 
 def run_task(manifest: dict[str, Any], model_id: str, verify_only: bool,
-             log: LogFn) -> dict[str, Any]:
-    harness = materialize_harness(manifest, model_id)
+             log: LogFn, rung_prefix: str = "llama-server") -> dict[str, Any]:
+    harness = materialize_harness(manifest, model_id, rung_prefix=rung_prefix)
     workdir = setup_workdir(manifest["fixture"], manifest.get("probe", ""), harness)
     try:
         full_env = {**os.environ, "PI_COMPACT_FRACTION": "0.95"}
@@ -118,6 +119,58 @@ def run_task(manifest: dict[str, Any], model_id: str, verify_only: bool,
         return metrics
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def run_tasks_external(url: str, model_id: str, label: str,
+                       runs: int = 1, tasks: Optional[list[str]] = None,
+                       verify_only: bool = False,
+                       rid: Optional[str] = None, log: LogFn = print) -> int:
+    """Task suite against an external OpenAI endpoint (no proxy lock/switch).
+
+    The loop harness rung becomes `external/<model_id>`, resolved via the
+    `external` provider in pi's models.json (baseUrl 127.0.0.1:8001) -
+    external services must bind that port. verify_only uses the same gate.
+    """
+    manifests = load_manifests()
+    if tasks:
+        wanted = set(tasks)
+        manifests = [m for m in manifests if m.get("name") in wanted]
+        if not manifests:
+            log(f"no manifests matched: {', '.join(tasks)}")
+            return 2
+    rid = rid or store.run_id()
+    rc = 0
+    log(f"\n=== {label} (external {url}, {len(manifests)} tasks x {runs}) ===")
+    if not verify_only and not wait_ready(model_id, proxy=url):
+        log("  FAIL: endpoint did not answer")
+        return 1
+    if verify_only:
+        results = []
+        for m in manifests:
+            res = run_task(m, model_id, verify_only=True, log=log, rung_prefix="external")
+            results.append({"task": res["task"], "ok": res["verify_ok"]})
+            log(f"  {res['task']}: verify {'OK' if res['verify_ok'] else 'STUCK'}")
+            if not res["verify_ok"]:
+                rc = 1
+                log(res.get("verify_output", ""))
+        store.append(store.make_record(
+            "verify", label, None, {"tasks": results}, rid,
+            extra={"model_file": model_id, "external": url}))
+        return rc
+    for m in manifests:
+        for i in range(runs):
+            res = run_task(m, model_id, verify_only=False, log=log, rung_prefix="external")
+            tp = res.get("pass")
+            log(f"  {res['task']} run {i + 1}: {'PASS' if tp else 'FAIL'} "
+                f"in {res.get('wall_s')}s, {res.get('iterations', '?')} iterations")
+            store.append(store.make_record(
+                "task", label, None,
+                {k: v for k, v in res.items() if k != "tail"}, rid,
+                extra={"model_file": model_id, "external": url}))
+            if not tp:
+                rc = 1
+                log(f"    tail: {res.get('tail', '')[-400:]}")
+    return rc
 
 
 def run_tasks(preset_names: list[str], runs: int = 1,

@@ -15,9 +15,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="bench_command")
 
     sp = sub.add_parser("perf", help="TTFT/throughput/VRAM through the proxy")
-    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--presets", help="comma-separated preset names")
     sp.add_argument("--runs", type=int, default=1, help="sample multiplier (default 1 = 5 TTFT + 3 throughput)")
     sp.add_argument("--no-whisper-stop", action="store_true", help="do not stop whisper GPU services first")
+    sp.add_argument("--external", metavar="URL", help="external OpenAI endpoint base (skips proxy lock/switch)")
+    sp.add_argument("--model-id", help="model id for --external")
+    sp.add_argument("--label", help="store label for --external (default: ext-<model-id>)")
+    sp.add_argument("--ctx", type=int, default=0, help="context size to record for --external")
+    sp.add_argument("--slots", type=int, default=1, help="slot count to record for --external")
 
     sp = sub.add_parser("report", help="tables + comparison from the result store")
     sp.add_argument("--last", type=int, default=0, help="show last K raw records")
@@ -31,16 +36,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bfcl", action="store_true", help="BFCL full non_live collection")
 
     sp = sub.add_parser("gumshoe", help="research-agent protocol suite (18 cases, stub tools)")
-    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--presets", help="comma-separated preset names")
     sp.add_argument("--repeats", type=int, default=3, help="runs per case (selection is a rate)")
     sp.add_argument("--cases", help="path to the fixtures JSON (default: gumshoe repo copy)")
+    sp.add_argument("--external", metavar="URL", help="external OpenAI endpoint base (skips proxy lock/switch)")
+    sp.add_argument("--model-id", help="model id for --external")
+    sp.add_argument("--label", help="store label for --external (default: ext-<model-id>)")
 
     sp = sub.add_parser("tasks", help="sensor-gated loop-task suite (bench/tasks/*.json)")
-    sp.add_argument("--presets", required=True, help="comma-separated preset names")
+    sp.add_argument("--presets", help="comma-separated preset names")
     sp.add_argument("--runs", type=int, default=1, help="runs per task")
     sp.add_argument("--tasks", help="comma-separated task names (default: all)")
     sp.add_argument("--verify-only", action="store_true",
                     help="run loop verify-sensors per task (canary gate), no model scoring")
+    sp.add_argument("--external", metavar="URL", help="external OpenAI endpoint base (skips proxy lock/switch)")
+    sp.add_argument("--model-id", help="model id for --external")
+    sp.add_argument("--label", help="store label for --external (default: ext-<model-id>)")
 
     sp = sub.add_parser("context", help="context occupancy sweep")
     sp.add_argument("--preset", required=True, help="base preset name")
@@ -57,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     if args.bench_command == "perf":
+        if args.external:
+            if not args.model_id:
+                build_parser().error("--external requires --model-id")
+            return perf.run_perf_external(
+                args.external, args.model_id,
+                label=args.label or f"ext-{args.model_id}",
+                ctx=args.ctx, slots=args.slots,
+                runs=args.runs, no_whisper_stop=args.no_whisper_stop,
+            )
+        if not args.presets:
+            build_parser().error("perf requires --presets or --external")
         return perf.run_perf(
             [p.strip() for p in args.presets.split(",") if p.strip()],
             runs=args.runs,
@@ -73,16 +95,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             bfcl=args.bfcl,
         )
     if args.bench_command == "gumshoe":
+        if args.external:
+            if not args.model_id:
+                build_parser().error("--external requires --model-id")
+            return gumshoe.run_gumshoe_external(
+                args.external, args.model_id,
+                label=args.label or f"ext-{args.model_id}",
+                repeats=args.repeats, cases_path=args.cases,
+            )
+        if not args.presets:
+            build_parser().error("gumshoe requires --presets or --external")
         return gumshoe.run_gumshoe(
             [p.strip() for p in args.presets.split(",") if p.strip()],
             repeats=args.repeats,
             cases_path=args.cases,
         )
     if args.bench_command == "tasks":
+        task_list = [t.strip() for t in args.tasks.split(",")] if args.tasks else None
+        if args.external:
+            if not args.model_id:
+                build_parser().error("--external requires --model-id")
+            return tasks.run_tasks_external(
+                args.external, args.model_id,
+                label=args.label or f"ext-{args.model_id}",
+                runs=args.runs, tasks=task_list, verify_only=args.verify_only,
+            )
+        if not args.presets:
+            build_parser().error("tasks requires --presets or --external")
         return tasks.run_tasks(
             [p.strip() for p in args.presets.split(",") if p.strip()],
             runs=args.runs,
-            tasks=[t.strip() for t in args.tasks.split(",")] if args.tasks else None,
+            tasks=task_list,
             verify_only=args.verify_only,
         )
     if args.bench_command == "context":
