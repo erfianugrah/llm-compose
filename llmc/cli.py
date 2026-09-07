@@ -568,7 +568,7 @@ def cmd_models(args: argparse.Namespace) -> int:
             "display_name": p.display_name,
             "vram_gb": p.vram_gb,
             "vision": p.has_vision,
-            "context": p.runtime.context_size,
+            "context": p.effective_context,
         } for p in presets.values()])
         return EXIT_OK
     rows = [
@@ -576,7 +576,7 @@ def cmd_models(args: argparse.Namespace) -> int:
             p.name,
             f"{p.vram_gb:.1f}",
             "yes" if p.has_vision else "no",
-            str(p.runtime.context_size),
+            str(p.effective_context),
             p.display_name,
         ]
         for p in presets.values()

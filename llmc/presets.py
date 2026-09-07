@@ -167,7 +167,20 @@ class Preset:
 
     @property
     def has_vision(self) -> bool:
+        """Engine-aware: llama.cpp gets vision from an mmproj projection file,
+        NInfer from a serve flag (the tower is inside the artifact)."""
+        if self.engine == "ninfer" and self.ninfer is not None:
+            return self.ninfer.vision
         return self.mmproj.is_set
+
+    @property
+    def effective_context(self) -> int:
+        """The context the engine will actually serve. runtime.context_size is
+        the llama.cpp knob; a ninfer preset never reads it and would otherwise
+        display the 65536 default instead of its real max_context."""
+        if self.engine == "ninfer" and self.ninfer is not None:
+            return self.ninfer.max_context
+        return self.runtime.context_size
 
 
 # Schema definition for validation. Maps section → allowed keys with types.

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -341,5 +342,149 @@ func TestRewriteModelAddsFieldWhenAbsent(t *testing.T) {
 	out := rewriteModel([]byte(`{"max_tokens":8}`), "served")
 	if got := peekModel(out); got != "served" {
 		t.Errorf("model = %q, want served", got)
+	}
+}
+
+// ── per-request effort injection ────────────────────────────────────────
+
+// For NInfer, thinking effort is a per-request field, not a serve flag. A
+// client that sends none gets the chat template's default, which is xhigh and
+// produced 30k+ token thinking traces for a single tool call (2026-09-07). So
+// the preset declares the effort and the proxy injects it when absent.
+func TestInjectIfAbsentAddsEffort(t *testing.T) {
+	out := injectIfAbsent([]byte(`{"model":"m","max_tokens":8}`), "reasoning_effort", "medium")
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "medium" {
+		t.Errorf("reasoning_effort = %v", got["reasoning_effort"])
+	}
+}
+
+// An explicit client choice must win: the proxy sets a default, not a policy.
+func TestInjectIfAbsentRespectsExplicitValue(t *testing.T) {
+	out := injectIfAbsent([]byte(`{"reasoning_effort":"xhigh"}`), "reasoning_effort", "medium")
+	var got map[string]any
+	json.Unmarshal(out, &got)
+	if got["reasoning_effort"] != "xhigh" {
+		t.Errorf("overwrote the client's value: %v", got["reasoning_effort"])
+	}
+}
+
+// "none" disables thinking and is a legitimate explicit choice, so it must not
+// be treated as absent.
+func TestInjectIfAbsentRespectsNone(t *testing.T) {
+	out := injectIfAbsent([]byte(`{"reasoning_effort":"none"}`), "reasoning_effort", "medium")
+	var got map[string]any
+	json.Unmarshal(out, &got)
+	if got["reasoning_effort"] != "none" {
+		t.Errorf("overwrote none: %v", got["reasoning_effort"])
+	}
+}
+
+func TestInjectIfAbsentLeavesNonJSONAlone(t *testing.T) {
+	for _, body := range [][]byte{nil, {}, []byte("not json"), []byte(`[1]`)} {
+		if out := injectIfAbsent(body, "reasoning_effort", "medium"); string(out) != string(body) {
+			t.Errorf("body %q altered to %q", body, out)
+		}
+	}
+}
+
+func TestInjectIfAbsentPreservesOtherFields(t *testing.T) {
+	out := injectIfAbsent([]byte(`{"temperature":0.70,"top_p":0.95}`), "reasoning_effort", "medium")
+	for _, frag := range []string{`"temperature":0.70`, `"top_p":0.95`} {
+		if !strings.Contains(string(out), frag) {
+			t.Errorf("lost %s from %s", frag, out)
+		}
+	}
+}
+
+// The engine rejects "high" with reasoning_effort_not_supported, so a preset
+// that would inject it must fail at load rather than at request time.
+func TestNinferPresetRejectsHighEffort(t *testing.T) {
+	_, err := loadInline(t, `name="x"
+vram_gb=5
+engine="ninfer"
+[model]
+repo="r"
+file="f.ninfer"
+id="x-id"
+[runtime]
+reasoning_effort="high"
+[ninfer]
+max_context=1024
+max_concurrency=1`)
+	if err == nil || !strings.Contains(err.Error(), "reasoning_effort") {
+		t.Fatalf("want a reasoning_effort rejection, got %v", err)
+	}
+}
+
+func TestNinferPresetAcceptsMediumEffort(t *testing.T) {
+	p, err := loadInline(t, `name="x"
+vram_gb=5
+engine="ninfer"
+[model]
+repo="r"
+file="f.ninfer"
+id="x-id"
+[runtime]
+reasoning_effort="medium"
+[ninfer]
+max_context=1024
+max_concurrency=1`)
+	if err != nil {
+		t.Fatalf("medium must be accepted: %v", err)
+	}
+	if p.Runtime.ReasoningEffort != "medium" {
+		t.Errorf("effort = %q", p.Runtime.ReasoningEffort)
+	}
+}
+
+// The shipped preset must actually carry the effort, or the injection is dead
+// code and clients silently get xhigh.
+func TestShippedNinferPresetDeclaresEffort(t *testing.T) {
+	p := loadStagedNinfer(t)
+	if p.Runtime.ReasoningEffort == "" {
+		t.Fatal("models/qwen38-ninfer.toml must declare runtime.reasoning_effort")
+	}
+	if p.Runtime.ReasoningEffort == "high" {
+		t.Fatal("high is rejected by the engine")
+	}
+}
+
+// ── engine-aware display metadata ───────────────────────────────────────
+
+// The CLI reads these from the proxy when it is up, so fixing only the Python
+// side left `llmc models` still showing a ninfer preset as context 65536 and
+// vision "no" (2026-09-07).
+func TestEffectiveContextIsEngineAware(t *testing.T) {
+	llama, err := LoadPreset("../../../models/qwen38.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if llama.EffectiveContext() != llama.Runtime.ContextSize {
+		t.Errorf("llama context = %d, want %d", llama.EffectiveContext(), llama.Runtime.ContextSize)
+	}
+	n := loadStagedNinfer(t)
+	if n.EffectiveContext() != n.Ninfer.MaxContext {
+		t.Errorf("ninfer context = %d, want %d", n.EffectiveContext(), n.Ninfer.MaxContext)
+	}
+	if n.EffectiveContext() == n.Runtime.ContextSize {
+		t.Error("ninfer context must not fall back to the llama runtime default")
+	}
+}
+
+func TestHasVisionIsEngineAware(t *testing.T) {
+	n := loadStagedNinfer(t)
+	if !n.Ninfer.Vision {
+		t.Fatal("fixture must have vision on")
+	}
+	if !n.HasVision() {
+		t.Error("ninfer vision comes from the serve flag, not an mmproj asset")
+	}
+	n.Ninfer.Vision = false
+	if n.HasVision() {
+		t.Error("vision off must report off")
 	}
 }

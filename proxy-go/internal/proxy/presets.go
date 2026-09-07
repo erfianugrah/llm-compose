@@ -159,7 +159,25 @@ func (p *Preset) ModelID() string { return p.Model.ID() }
 
 func (p *Preset) MMProjFilename() string   { return p.MMProj.Filename(p.Name, "-mmproj.gguf") }
 func (p *Preset) TemplateFilename() string { return p.Template.Filename(p.Name, "-template.jinja") }
-func (p *Preset) HasVision() bool          { return p.MMProj.IsSet() }
+
+// HasVision is engine-aware: llama.cpp gets vision from an mmproj projection
+// file, NInfer from a serve flag (the tower ships inside the artifact).
+func (p *Preset) HasVision() bool {
+	if p.Engine == EngineNinfer && p.Ninfer != nil {
+		return p.Ninfer.Vision
+	}
+	return p.MMProj.IsSet()
+}
+
+// EffectiveContext is the context the engine will actually serve.
+// runtime.context_size is the llama.cpp knob; a ninfer preset never reads it
+// and would otherwise report the 65536 default instead of its max_context.
+func (p *Preset) EffectiveContext() int {
+	if p.Engine == EngineNinfer && p.Ninfer != nil {
+		return p.Ninfer.MaxContext
+	}
+	return p.Runtime.ContextSize
+}
 
 func (p *Preset) HasCapability(cap string) bool {
 	for _, c := range p.Capabilities {
@@ -324,6 +342,13 @@ func LoadPreset(path string) (*Preset, error) {
 	}
 	var ninfer *NinferSpec
 	if engine == EngineNinfer {
+		// The artifact's chat template exposes low|medium|xhigh and rejects
+		// "high" with reasoning_effort_not_supported. Catch it at load rather
+		// than on every request.
+		if rt.ReasoningEffort == "high" {
+			return nil, presetErr("%s: runtime.reasoning_effort: the NInfer chat "+
+				"template rejects \"high\"; use low, medium or xhigh", path)
+		}
 		var wrapper struct {
 			Ninfer NinferSpec `toml:"ninfer"`
 		}

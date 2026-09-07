@@ -167,7 +167,7 @@ func (s *Server) handleModels(w http.ResponseWriter) {
 				"name":            p.DisplayName,
 				"preset":          p.Name,
 				"loaded":          p.Name == snap.Model,
-				"context":         p.Runtime.ContextSize,
+				"context":         p.EffectiveContext(),
 				"reasoning":       p.Runtime.Reasoning == "on",
 				"vram_gb":         p.VRAMGB,
 				"mode":            snap.Mode,
@@ -540,6 +540,37 @@ func rewriteModel(body []byte, id string) []byte {
 	return out
 }
 
+// injectIfAbsent sets key to value only when the JSON object body does not
+// already carry it, leaving every other field byte-exact. An explicit client
+// choice always wins - the proxy supplies a default, not a policy.
+//
+// Needed because NInfer takes thinking effort as a per-request field rather
+// than a serve flag: a client that sends none gets the chat template's
+// default (xhigh), which produced 30k+ token thinking traces for a single
+// tool call. The preset declares the effort; this puts it on the wire.
+func injectIfAbsent(body []byte, key, value string) []byte {
+	if len(body) == 0 || value == "" {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	if _, present := fields[key]; present {
+		return body
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return body
+	}
+	fields[key] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // peekModel best-effort extracts the "model" field from a JSON request body.
 // Access logging only; routing never depends on it.
 func peekModel(body []byte) string {
@@ -597,6 +628,12 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 				if served := p.ModelID(); served != "" && model != served {
 					body = rewriteModel(body, served)
 					note += " model-rewritten"
+				}
+				if eff := p.Runtime.ReasoningEffort; eff != "" {
+					if patched := injectIfAbsent(body, "reasoning_effort", eff); len(patched) != len(body) {
+						body = patched
+						note += " effort=" + eff
+					}
 				}
 			}
 		}

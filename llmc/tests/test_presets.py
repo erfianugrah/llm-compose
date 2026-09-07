@@ -397,3 +397,34 @@ class TestEngineSelection(unittest.TestCase):
         p = self._load(_NINFER_TOML)
         with self.assertRaises(PresetError):
             preset_to_env(p)
+
+
+class TestEngineAwareDisplayFields(unittest.TestCase):
+    """`llmc models` read context from runtime.context_size and vision from the
+    mmproj asset - both llama-only. A ninfer preset therefore showed context
+    65536 (the runtime default it never uses) and vision "no" (it has no mmproj
+    file; vision is a serve flag). Observed 2026-09-07."""
+
+    def setUp(self):
+        self.llama = load_preset(MODELS_DIR / "qwen38.toml")
+        self.ninfer = load_preset(MODELS_DIR / "qwen38-ninfer.toml")
+
+    def test_llama_context_unchanged(self):
+        self.assertEqual(self.llama.effective_context, self.llama.runtime.context_size)
+
+    def test_ninfer_context_comes_from_the_ninfer_section(self):
+        self.assertEqual(self.ninfer.effective_context, self.ninfer.ninfer.max_context)
+        self.assertEqual(self.ninfer.effective_context, 262144)
+        self.assertNotEqual(self.ninfer.effective_context, self.ninfer.runtime.context_size)
+
+    def test_llama_vision_still_derives_from_mmproj(self):
+        self.assertEqual(self.llama.has_vision, self.llama.mmproj.is_set)
+
+    def test_ninfer_vision_comes_from_the_serve_flag(self):
+        self.assertTrue(self.ninfer.ninfer.vision, "fixture must have vision on")
+        self.assertTrue(self.ninfer.has_vision)
+
+    def test_ninfer_vision_off_is_reported_off(self):
+        from dataclasses import replace
+        off = replace(self.ninfer, ninfer=replace(self.ninfer.ninfer, vision=False))
+        self.assertFalse(off.has_vision)

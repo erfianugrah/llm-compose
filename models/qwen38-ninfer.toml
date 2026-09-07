@@ -64,5 +64,14 @@ host_state_slots = 0
 host_kv_mib = 0
 device_state_slots = 0
 
+# For this engine reasoning_effort is a PER-REQUEST field, not a serve flag,
+# and the chat template rejects "high". The proxy injects this value when a
+# request does not carry one - without it clients get the template default
+# (xhigh), measured at 35,747 output tokens for a single tool call. medium was
+# adopted 2026-08-19 for the llama presets on a task-suite A/B: quality-neutral
+# at 10-20x fewer thinking tokens. An explicit client value always wins.
+[runtime]
+reasoning_effort = "medium"
+
 [bench]
 tokenizer = "unsloth/Qwen3.8-27B-GGUF"
