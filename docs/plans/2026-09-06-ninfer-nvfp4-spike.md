@@ -325,7 +325,20 @@ comparison needs the same task run both ways.
 Adoption shipped; these are the open threads, in the order I would spend time
 on them. Nothing here blocks daily use of `qwen38-ninfer`.
 
-### 7.1 Cross-request prefix caching is unavailable (the big lever)
+### 7.1 Cross-request prefix caching is unavailable - DECIDED: keep the context
+
+**Decision 2026-09-07: context wins. Do not trade 262K for retention slots.**
+One-shot requests keep paying a full re-prefill (~20s TTFT at 84K); that is
+accepted. Conversational traffic is unaffected either way, and that is the
+dominant shape.
+
+The one lever left that costs no context is dropping `--vision`: its weights
+and Vision-specific unified-workspace extent are not allocated without the
+flag (serving.md), and our own matrix shows 196K x 1 without vision at 28.6 GB
+against 262K x 1 + vision at 31.7 GB - so vision is worth low single-digit GB.
+Whether that is enough for a useful checkpoint pool is unmeasured, and it is
+only worth measuring if local multimodal input is genuinely unused. Parked
+behind that question rather than the VRAM one.
 
 Measured, not inferred: four one-shot requests at 84K ctx, including a
 byte-identical repeat, each logged `cache 0 (0.0%)` and paid ~20s TTFT at
@@ -357,7 +370,7 @@ probe (cold / identical repeat / prefix-modified / suffix-modified) and compare
 the section 6 notes; keep `reasoning_effort: none` so decode volume does not
 confound TTFT.
 
-### 7.2 The 6.2% sub-100 tok/s tail: narrowed, unresolved
+### 7.2 The 6.2% sub-100 tok/s tail: narrowed, PARKED (2026-09-07)
 
 Controlled probes (2026-09-07) rule out the obvious causes:
 
@@ -378,7 +391,7 @@ whole shape rather than vary one dimension - i.e. a real loop soak with the
 engine log correlated per request, not another probe. That is deliberate GPU
 time.
 
-### 7.3 Unmeasured: DFlash2
+### 7.3 Unmeasured: DFlash2 - PARKED (2026-09-07)
 
 The README states Qwen3.8-27B artifacts with DFlash2 companion weights accept
 `--spec dflash2 --draft-tokens 7` (draft counts 1..15) where we run
@@ -411,4 +424,44 @@ N3 cell if 7.1 frees any VRAM headroom, since both compete for it.
     Non-trivial writing, not a paste of AGENTS.md.
 - `~/infra/secretctl/AGENTS.md` does not mention that sops input format is now
   content-sniffed and that binary envelopes are supported (2026-09-07 fix).
+
+### 7.5 pi integration: done automatically, plus one leftover
+
+Found by querying memledger (`#pi:709`, 2026-08-27) rather than by reading
+config: `~/dotfiles/.pi/agent/extensions/llama-server-dynamic.ts` fetches the
+proxy's `GET /v1/models` at startup and registers the `llama-server` provider
+from LIVE metadata, precisely so the static list in `models.json` cannot
+drift. So a new preset reaches pi with zero manual edits - `qwen38-ninfer`
+included, verified with `pi --model llama-server/qwen38-ninfer`.
+
+It only worked once the published metadata was right, and two fields were not:
+
+- `meta.context` came from `runtime.context_size` (the llama knob a ninfer
+  preset never reads) and `meta.vision` from the mmproj asset. Both fixed by
+  the engine-aware `EffectiveContext()` / `HasVision()` change.
+- `meta.reasoning` is `p.Runtime.Reasoning == "on"`, and the preset had no
+  `reasoning` key, so a thinking model registered in pi as non-reasoning.
+  Fixed by adding `reasoning = "on"` - it is not a serve flag for this engine,
+  it exists purely to publish correct metadata.
+
+**Why pi's default effort is rejected** (the mechanism, since it looks like a
+bug and is not): NInfer resolves prompt capabilities from the
+`frontend/chat_template.jinja` embedded in the artifact, and Qwen3.8's
+template exposes `low|medium|xhigh`. The OpenAI protocol defines
+`minimal|low|medium|high|max`. The sets overlap at low/medium and diverge at
+the top - Qwen says `xhigh`, OpenAI says `high` - and the engine validates
+against the template rather than translating, returning
+`reasoning_effort_not_supported` before prompt preparation instead of guessing
+which template branch `high` meant. pi's `defaultThinkingLevel` is `high`, so
+every request through the llama-server provider 400'd until the proxy learned
+to coerce it. Note this cannot be fixed preset-side: the template ships INSIDE
+the 23 GB artifact, so the froggeric fixed-template work (2026-08-23) does not
+carry to this engine.
+
+**Leftover:** the static `external` provider in `models.json` is now redundant
+- same endpoint as `llama-server`, one model, addressed by served alias
+instead of preset stem. Retiring it requires updating lockstep's five harness
+manifests (`.pi/harness-m1.json`, `-m2.json`, `-m2-finish.json`, `-m2b.json`,
+`-m3.json`), which all name `external/qwen3.8-27b-nvfp4:medium` as rung 0.
+Do both in one change or the manifests break.
 

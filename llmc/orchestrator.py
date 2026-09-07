@@ -77,7 +77,7 @@ NINFER_SERVICE = GpuService(
     name="ninfer_server",
     hostname="ninfer-server",
     mode="llm",
-    image=os.environ.get("LLMC_NINFER_IMAGE", "ninfer:local"),
+    image=os.environ.get("LLMC_NINFER_IMAGE", "erfianugrah/ninfer:cuda13.1-sm120a-487f897"),
     internal_port=8080,
     health_path="/health",
 )

@@ -23,12 +23,19 @@ LLAMA_IMAGE   := erfianugrah/llama-server:cuda12.8-sm120
 # Built on the sm_120 dev box, pulled on an always-on Pascal host.
 LLAMA_PASCAL_IMAGE := erfianugrah/llama-server:cuda12.8-sm61
 COMFYUI_IMAGE := erfianugrah/comfyui:cuda12.8-sm120
+# NInfer is built from a pinned upstream checkout in .ninfer/src/ninfer, not
+# from a Dockerfile in this repo. NINFER_COMMIT is read from that checkout so
+# the tag cannot drift from what was actually built.
+NINFER_SRC     := .ninfer/src/ninfer
+NINFER_COMMIT  := $(shell git -C $(NINFER_SRC) rev-parse --short HEAD 2>/dev/null)
+NINFER_IMAGE   := erfianugrah/ninfer:cuda13.1-sm120a
+NINFER_PINNED  := $(NINFER_IMAGE)-$(NINFER_COMMIT)
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
 .PHONY: help setup up verify _poll-health down restart status shell audit install-timer test test-audit test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
-        pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train \
+        pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train push-ninfer build-ninfer \
         release ship ship-proxy ship-proxy-go deploy clean \
         logs-proxy logs-webui logs-llama logs-comfyui logs-train \
         gpu health metrics
@@ -241,6 +248,21 @@ smoke-proxy-go:
 
 build-llama:
 	docker build -t $(LLAMA_IMAGE) -f llama-server.Dockerfile .
+
+## Build NInfer from the pinned upstream checkout, then re-tag with the
+## attribution Apache-2.0 requires (upstream's runtime stage ships neither the
+## license nor a notice). Two tags: a moving one matching the llama-server
+## naming convention, and an immutable commit-pinned one.
+build-ninfer:
+	@test -n "$(NINFER_COMMIT)" || { echo "no checkout at $(NINFER_SRC)"; exit 2; }
+	docker build -t ninfer:local $(NINFER_SRC)
+	docker build -f images/ninfer-redistribute.Dockerfile \
+		--build-arg NINFER_COMMIT=$(NINFER_COMMIT) \
+		-t $(NINFER_IMAGE) -t $(NINFER_PINNED) images/
+
+push-ninfer:
+	docker push $(NINFER_PINNED)
+	docker push $(NINFER_IMAGE)
 
 ## Pascal/sm_61 build for a GTX 1070 (cross-compiled on the sm_120 dev box).
 build-llama-pascal:

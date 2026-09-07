@@ -1,0 +1,14 @@
+NInfer
+Copyright the NInfer authors (https://github.com/Neroued/ninfer)
+
+Licensed under the Apache License, Version 2.0. A copy of the License is
+provided alongside this file at /usr/share/licenses/ninfer/LICENSE.
+
+This image is an UNMODIFIED build of upstream source at the commit recorded in
+the image label org.opencontainers.image.revision. It is repackaged for a
+private homelab registry and is not an official upstream release. No upstream
+source files were changed; the only additions are this notice, the license
+copy, and OCI metadata labels.
+
+Vendored third-party dependencies inside the upstream tree retain their own
+license files, as stated in the upstream README.

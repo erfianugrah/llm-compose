@@ -38,7 +38,7 @@ var (
 // NinferService serves the same mode as llama.cpp: both are the LLM and the
 // GPU holds one workload at a time. It is deliberately NOT in Services (which
 // maps mode -> service 1:1); resolve it from the preset via LLMServiceFor.
-var NinferService = GpuService{Name: "ninfer_server", Hostname: "ninfer-server", Mode: "llm", Image: envOr("LLMC_NINFER_IMAGE", "ninfer:local"), InternalPort: 8080, HealthPath: "/health"}
+var NinferService = GpuService{Name: "ninfer_server", Hostname: "ninfer-server", Mode: "llm", Image: envOr("LLMC_NINFER_IMAGE", "erfianugrah/ninfer:cuda13.1-sm120a-487f897"), InternalPort: 8080, HealthPath: "/health"}
 
 // LLMServiceFor returns the container that serves this preset. Two engines
 // share mode "llm", so the mode alone cannot decide - the preset does.

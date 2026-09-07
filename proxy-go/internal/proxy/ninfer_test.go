@@ -536,3 +536,22 @@ func TestCoerceEffortLeavesNonJSONAlone(t *testing.T) {
 		}
 	}
 }
+
+// The default image must be registry-qualified. It was `ninfer:local`, which
+// exists only where it was built - and on 2026-09-07 Docker reclaimed it under
+// disk pressure once the last container referencing it was removed, so a swap
+// failed with "image not found" and the proxy could not recover. A pullable
+// default turns that into a pull. Commit-pinned on purpose: upstream is young
+// enough that tracking a moving tag risks a silent engine change.
+func TestNinferDefaultImageIsPullable(t *testing.T) {
+	img := NinferService.Image
+	if !strings.Contains(img, "/") {
+		t.Errorf("default image %q has no registry path, so it cannot be pulled", img)
+	}
+	if strings.HasSuffix(img, ":local") {
+		t.Errorf("default image %q is a local-only tag", img)
+	}
+	if !strings.Contains(img, "-") {
+		t.Errorf("default image %q looks unpinned; prefer a commit-pinned tag", img)
+	}
+}
