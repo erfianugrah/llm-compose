@@ -136,7 +136,12 @@ type Scheduler struct {
 	logf    func(string, ...any)
 
 	events chan any
-	done   chan struct{}
+
+	// Cached Docker view, guarded only by the single event-loop goroutine.
+	// See gpuMode(): state alone cannot tell whether an engine is resident.
+	gpuModeVal string
+	gpuModeAt  time.Time
+	done       chan struct{}
 
 	// Loop-owned state (never touched off the loop goroutine):
 	st            *State
@@ -299,6 +304,45 @@ func (s *Scheduler) Status() StatusSnapshot {
 	return <-ev.reply
 }
 
+// gpuModeTTL bounds how stale the cached Docker view may be. Short enough
+// that a dead engine is noticed within a couple of requests, long enough that
+// a burst of acquires costs one Docker call rather than one each.
+const gpuModeTTL = 2 * time.Second
+
+// llmResident reports whether state claims `name` is loaded AND a GPU service
+// is actually running.
+//
+// State alone is not evidence: a failed swap, a `docker stop`, a crashed
+// container or a lost Docker socket all leave state saying mode=llm
+// model=name with nothing behind it. Granting on that basis sends requests
+// to a dead upstream and makes `switch name` a no-op, because the fast path
+// considers it already satisfied (reproduced live 2026-09-07).
+func (s *Scheduler) llmResident(name string) bool {
+	if s.st.Mode != "llm" || s.st.Model != name {
+		return false
+	}
+	return s.gpuMode() == "llm"
+}
+
+// gpuMode is CurrentMode() behind a short TTL. Safe without locking: every
+// scheduler field is touched only from the single event-loop goroutine
+// (Status() routes through the event channel for exactly this reason).
+func (s *Scheduler) gpuMode() string {
+	if !s.gpuModeAt.IsZero() && time.Since(s.gpuModeAt) < gpuModeTTL {
+		return s.gpuModeVal
+	}
+	s.gpuModeVal = s.orch.CurrentMode()
+	s.gpuModeAt = time.Now()
+	return s.gpuModeVal
+}
+
+// invalidateGpuMode drops the cached view after anything that changes which
+// containers are running, so the next check re-reads instead of trusting a
+// snapshot taken before the swap.
+func (s *Scheduler) invalidateGpuMode() {
+	s.gpuModeAt = time.Time{}
+}
+
 // ── acquire paths ───────────────────────────────────────────────────
 
 func (s *Scheduler) handleAcquire(ev *evAcquire) {
@@ -422,7 +466,7 @@ func (s *Scheduler) acquireLLM(ev *evAcquire, now time.Time) {
 			}
 			return
 		}
-		if s.st.Mode == "llm" && s.st.Model == p.Name {
+		if s.llmResident(p.Name) {
 			s.refreshLockExpiry(now)
 			s.grant(ev, p.Name, "")
 			return
@@ -433,7 +477,7 @@ func (s *Scheduler) acquireLLM(ev *evAcquire, now time.Time) {
 
 	// Unlocked.
 	if p != nil {
-		if s.st.Mode == "llm" && s.st.Model == p.Name {
+		if s.llmResident(p.Name) {
 			s.grant(ev, p.Name, "")
 			return
 		}
@@ -453,7 +497,7 @@ func (s *Scheduler) acquireLLM(ev *evAcquire, now time.Time) {
 				fmt.Sprintf("no preset advertises capability %q and no model was specified", ev.req.Capability))
 			return
 		}
-		if s.st.Mode == "llm" && s.st.Model == target.Name {
+		if s.llmResident(target.Name) {
 			s.grant(ev, target.Name, "")
 			return
 		}
@@ -737,6 +781,21 @@ func (s *Scheduler) handleSwapDone(ev *evSwapDone) {
 	}
 	if ev.err != nil {
 		s.logf("swap to %s failed: %v", target, ev.err)
+		// spawn() stops the outgoing GPU service BEFORE creating the new one,
+		// so after a failure the previous model is no longer running and the
+		// pre-swap state is a lie. Leaving it in place made the same-model
+		// guard treat `switch <old model>` as already-satisfied, so the proxy
+		// reported a model loaded with no container behind it and refused to
+		// respawn (observed 2026-09-07: how a deleted engine image hid).
+		//
+		// Re-derive from Docker rather than assuming "idle": a health-check
+		// timeout leaves a container up but unhealthy, and guessing either
+		// way would be wrong in one of the two cases.
+		s.invalidateGpuMode()
+		s.st.Mode = s.orch.CurrentMode()
+		s.gpuModeVal, s.gpuModeAt = s.st.Mode, time.Now()
+		s.persist()
+		s.logf("state re-derived after failure: mode=%s model=%s", s.st.Mode, s.st.Model)
 		for _, w := range p.waiters {
 			s.reject(w, 503, "server_error", ev.err.Error())
 		}
@@ -745,6 +804,7 @@ func (s *Scheduler) handleSwapDone(ev *evSwapDone) {
 		if p.mode == "llm" && p.preset != nil {
 			s.st.Model = p.preset.Name
 		}
+		s.invalidateGpuMode()
 		s.persist()
 		s.logf("swap complete: mode=%s model=%s", s.st.Mode, s.st.Model)
 		key := p.mode

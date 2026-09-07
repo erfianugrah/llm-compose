@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,8 +20,15 @@ type fakeOrch struct {
 	mode        string
 	llamaCalls  []*Preset
 	ninferCalls []*Preset
-	comfyCalls  int
-	trainCalls  int
+	// spawnErr makes the next spawn fail AFTER the outgoing service has been
+	// stopped, which is what the real spawn() does: stopGPU() first, then
+	// create. Without this the failure path was untestable.
+	spawnErr error
+	// modeCalls counts CurrentMode() calls so a test can assert the reality
+	// check is cached rather than hit once per acquire.
+	modeCalls  int
+	comfyCalls int
+	trainCalls int
 }
 
 func newFakeOrch(mode string) *fakeOrch { return &fakeOrch{mode: mode} }
@@ -28,6 +36,7 @@ func newFakeOrch(mode string) *fakeOrch { return &fakeOrch{mode: mode} }
 func (f *fakeOrch) CurrentMode() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.modeCalls++
 	return f.mode
 }
 
@@ -53,6 +62,11 @@ func (f *fakeOrch) SpawnLlama(p *Preset) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.llamaCalls = append(f.llamaCalls, p)
+	if f.spawnErr != nil {
+		// The GPU service is already down at this point in the real flow.
+		f.mode = "idle"
+		return f.spawnErr
+	}
 	f.mode = "llm"
 	return nil
 }
@@ -1145,4 +1159,128 @@ func TestGreedyServeDoesNotStarveSwap(t *testing.T) {
 		t.Fatal("grace timeout did not force the swap past the greedy grant")
 	}
 	e.s.Release(gRes.Key)
+}
+
+// A failed swap stops the outgoing engine and then errors, so state that still
+// claims the old model is loaded is a lie - and the same-model guard turns the
+// obvious recovery (`llmc switch <old model>`) into a no-op, leaving the proxy
+// reporting a model as loaded with no container running. Observed live
+// 2026-09-07: it is how a deleted engine image went unnoticed.
+func TestFailedSwapDoesNotClaimTheOldModelIsLoaded(t *testing.T) {
+	orch := newFakeOrch("llm")
+	e := startSched(t, orch, newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	orch.mu.Lock()
+	orch.spawnErr = errors.New("image not found")
+	orch.mu.Unlock()
+
+	pB := e.s.presets.ByName("b")
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pB})
+	if res.OK && res.Granted {
+		t.Fatal("a failing spawn must not be granted")
+	}
+
+	if got := e.s.Status().Mode; got == "llm" {
+		t.Errorf("after a failed swap Status().Mode = %q; nothing is running, so it "+
+			"must not still report llm", got)
+	}
+}
+
+// The user-visible half: recovery must actually respawn.
+func TestRecoveryAfterFailedSwapRespawns(t *testing.T) {
+	orch := newFakeOrch("llm")
+	e := startSched(t, orch, newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	orch.mu.Lock()
+	orch.spawnErr = errors.New("image not found")
+	orch.mu.Unlock()
+	pB := e.s.presets.ByName("b")
+	e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pB})
+
+	// Engine fixed; now switch back to the model state still names.
+	orch.mu.Lock()
+	orch.spawnErr = nil
+	before := len(orch.llamaCalls)
+	orch.mu.Unlock()
+
+	pA := e.s.presets.ByName("a")
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !res.OK || !res.Granted {
+		t.Fatalf("recovery acquire refused: %+v", res)
+	}
+	defer e.s.Release(res.Key)
+
+	orch.mu.Lock()
+	after := len(orch.llamaCalls)
+	orch.mu.Unlock()
+	if after <= before {
+		t.Error("switching back to the state-named model was a no-op: the guard " +
+			"trusted stale state instead of respawning")
+	}
+}
+
+// State claiming a model is resident is not evidence that it is. A `docker
+// stop`, a crashed container, a lost Docker socket or a failed swap all leave
+// state saying mode=llm model=X with nothing running, and the same-model fast
+// path then grants immediately instead of respawning - so the proxy serves
+// requests into a dead upstream and `switch X` is a no-op. Reproduced live
+// 2026-09-07 by stopping llama_server behind the proxy's back.
+func TestStaleStateDoesNotSatisfyTheSameModelFastPath(t *testing.T) {
+	// Start consistent - state and Docker agree that "a" is resident. The
+	// scheduler reconciles at startup, so a divergence present before it
+	// starts is not the bug; the bug is reality changing underneath a
+	// running proxy.
+	orch := newFakeOrch("llm")
+	e := startSched(t, orch, newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	// Now the container dies behind the proxy's back (docker stop, crash,
+	// OOM, socket loss). State still says mode=llm model=a.
+	orch.mu.Lock()
+	orch.mode = "idle"
+	orch.mu.Unlock()
+
+	pA := e.s.presets.ByName("a")
+	res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+	if !res.OK || !res.Granted {
+		t.Fatalf("acquire refused: %+v", res)
+	}
+	defer e.s.Release(res.Key)
+
+	orch.mu.Lock()
+	calls := len(orch.llamaCalls)
+	orch.mu.Unlock()
+	if calls == 0 {
+		t.Error("granted from stale state without spawning: the fast path trusted " +
+			"state over reality, so requests would go to a dead upstream")
+	}
+}
+
+// The fast path must still be fast when the model really is resident: no
+// spawn, and the Docker check must not be consulted on every single acquire.
+func TestResidentModelStillTakesTheFastPath(t *testing.T) {
+	orch := newFakeOrch("llm")
+	e := startSched(t, orch, newTestStore(t, map[string]string{"a": tomlA, "b": tomlB}),
+		&State{Mode: "llm", Model: "a"}, SchedulerConfig{})
+
+	pA := e.s.presets.ByName("a")
+	for i := 0; i < 5; i++ {
+		res := e.s.Acquire(ctx(), AcquireRequest{Mode: "llm", Preset: pA})
+		if !res.OK || !res.Granted {
+			t.Fatalf("acquire %d refused: %+v", i, res)
+		}
+		e.s.Release(res.Key)
+	}
+	orch.mu.Lock()
+	calls, modeCalls := len(orch.llamaCalls), orch.modeCalls
+	orch.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("respawned a resident model %d time(s)", calls)
+	}
+	if modeCalls > 2 {
+		t.Errorf("CurrentMode() consulted %d times for 5 acquires; the reality "+
+			"check must be cached, not per-request", modeCalls)
+	}
 }
