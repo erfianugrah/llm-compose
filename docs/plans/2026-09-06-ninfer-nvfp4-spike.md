@@ -16,11 +16,19 @@ Outstanding: the unexplained 6.2% slow tail in section 6; the proxy does not
 yet inject the per-request `reasoning_effort`, so a client that sends none
 gets the template default (xhigh) and its 10-30k-token thinking traces.
 
-Resume: take `llama_server` down first (the GPU holds one workload), then
-`docker start ninfer-spike`. There is NO ninfer service in `compose.yaml`
-- section 2's compose sketch was never implemented; the spike ran as a
-bare `docker run`. The exact serving config behind every number in
-section 6, recovered from `docker inspect`:
+How to run it now: `llmc switch qwen38-ninfer`. The proxy stops
+`llama_server`, starts `ninfer_server` and renders the flags itself; switch
+to any llama preset to go back. There is still NO ninfer service in
+`compose.yaml` (section 2's sketch was never implemented), and the
+hand-started `ninfer-spike` container no longer exists - it was removed once
+the proxy owned the lifecycle, and its artifact moved from the repo's
+`.ninfer/models/` to `~/docker-volumes/ninfer/models/`, where the
+`llmc-ninfer-models` volume points.
+
+The exact serving config behind every number in section 6 - originally
+recovered from `docker inspect` on the spike container, and now what
+`NinferCommand` emits, verified byte-identical the first time the proxy
+started the engine:
 
 ```
 ninfer-serve /models/qwen3_8_27b_nvfp4.ninfer
