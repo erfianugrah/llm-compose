@@ -389,11 +389,26 @@ N3 cell if 7.1 frees any VRAM headroom, since both compete for it.
 
 - `README.md` volume table still lists only the llama volumes; AGENTS.md has
   the `llmc-ninfer-models` row and the "Engines" section, README does not.
-- No lexicanum page covers the local inference stack. If one is written, the
-  engine-selection model (one preset names one engine, both share mode `llm`,
-  the proxy resolves the upstream from the active preset) is the part worth
-  explaining, and it should cross-link the existing docs the authoring
-  contract requires rather than landing standalone.
+- **lexicanum: two existing pages need updating, not a new one** (corrected
+  2026-09-07 - an earlier draft of this note wrongly said no page covered it):
+  - `reference/qwen38-agentic-tuning.mdx` is the page whose conclusion this
+    spike QUALIFIES. It currently states MTP "degrades to ~0.5 tok/s within
+    about 10 minutes of agentic task traffic... Not usable for loops". True on
+    llama.cpp; on NInfer MTP is what makes it fast, sustained - 45-64% draft
+    acceptance across a whole four-milestone build-out, decode flat 141 -> 136
+    tok/s from 30K to 100K ctx. The finding is that the failure was
+    ENGINE-specific, not model-specific, which is a different claim from the
+    one on the page. Its reasoning-effort section also gains operational
+    evidence: at xhigh one tool call cost 35,747 output tokens, and
+    inherited-xhigh plus pi's 16,384 default output cap produced two silent
+    zero-write loop iterations.
+  - `reference/local-model-bench.mdx` documents the bench harness; the
+    `--external URL --model-id ID` arm added during this spike lets it target
+    a non-preset endpoint, which is how every N3/N4 number here was taken.
+  - Editing either means the authoring contract in `~/lexicanum/AGENTS.md`:
+    voice calibrated off the two named exemplars, 2-4 inline cross-links,
+    IEEE-style footnotes, ASCII punctuation, and the MDX `<`/`$` traps.
+    Non-trivial writing, not a paste of AGENTS.md.
 - `~/infra/secretctl/AGENTS.md` does not mention that sops input format is now
   content-sniffed and that binary envelopes are supported (2026-09-07 fix).
 

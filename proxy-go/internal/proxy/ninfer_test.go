@@ -488,3 +488,51 @@ func TestHasVisionIsEngineAware(t *testing.T) {
 		t.Error("vision off must report off")
 	}
 }
+
+// pi's defaultThinkingLevel is "high", which this engine's chat template
+// rejects outright (it exposes none|low|medium|xhigh). Once the model is
+// registered under the llama-server provider by the dynamic-registration
+// extension, pi sends "high" and every request 400s - so the model is
+// unusable from pi without an explicit :medium suffix. Injecting only when
+// ABSENT does not help; an explicit unsupported value has to be coerced.
+// Found 2026-09-07 by actually calling `pi --model llama-server/qwen38-ninfer`.
+func TestCoerceEffortReplacesUnsupportedValues(t *testing.T) {
+	out := coerceEffort([]byte(`{"reasoning_effort":"high","max_tokens":8}`), "medium")
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "medium" {
+		t.Errorf("reasoning_effort = %v, want medium", got["reasoning_effort"])
+	}
+	if got["max_tokens"] == nil {
+		t.Error("other fields must survive")
+	}
+}
+
+// Values the template accepts are the client's business and must pass through.
+func TestCoerceEffortLeavesSupportedValuesAlone(t *testing.T) {
+	for _, eff := range []string{"none", "low", "medium", "xhigh"} {
+		out := coerceEffort([]byte(`{"reasoning_effort":"`+eff+`"}`), "medium")
+		var got map[string]any
+		json.Unmarshal(out, &got)
+		if got["reasoning_effort"] != eff {
+			t.Errorf("%s was rewritten to %v", eff, got["reasoning_effort"])
+		}
+	}
+}
+
+func TestCoerceEffortIgnoresAbsentField(t *testing.T) {
+	body := []byte(`{"max_tokens":8}`)
+	if out := coerceEffort(body, "medium"); string(out) != string(body) {
+		t.Errorf("absent effort must be left to injectIfAbsent, got %s", out)
+	}
+}
+
+func TestCoerceEffortLeavesNonJSONAlone(t *testing.T) {
+	for _, body := range [][]byte{nil, {}, []byte("nope"), []byte(`[1]`)} {
+		if out := coerceEffort(body, "medium"); string(out) != string(body) {
+			t.Errorf("body %q altered to %q", body, out)
+		}
+	}
+}

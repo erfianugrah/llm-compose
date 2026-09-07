@@ -571,6 +571,50 @@ func injectIfAbsent(body []byte, key, value string) []byte {
 	return out
 }
 
+// ninferEfforts is what the artifact's chat template accepts. Notably absent:
+// "high", which is pi's defaultThinkingLevel - so an unmapped pi request is
+// rejected outright with reasoning_effort_not_supported.
+var ninferEfforts = map[string]bool{"none": true, "low": true, "medium": true, "xhigh": true}
+
+// coerceEffort replaces an explicit reasoning_effort the engine cannot accept
+// with the preset's declared value, leaving supported values and absent fields
+// untouched.
+//
+// injectIfAbsent covers the "client said nothing" case; this covers "client
+// said something this engine rejects", which is the common one: once the
+// dynamic-registration extension publishes the model under the llama-server
+// provider, pi sends its default "high" and every request 400s. Falling back
+// to the preset's effort rather than the closest-looking value is deliberate -
+// the preset chose medium for this engine, and silently escalating to xhigh
+// would reinstate the 30k-token thinking traces that choice exists to avoid.
+func coerceEffort(body []byte, presetEffort string) []byte {
+	if len(body) == 0 || presetEffort == "" {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return body
+	}
+	raw, present := fields["reasoning_effort"]
+	if !present {
+		return body
+	}
+	var eff string
+	if err := json.Unmarshal(raw, &eff); err != nil || ninferEfforts[eff] {
+		return body
+	}
+	encoded, err := json.Marshal(presetEffort)
+	if err != nil {
+		return body
+	}
+	fields["reasoning_effort"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // peekModel best-effort extracts the "model" field from a JSON request body.
 // Access logging only; routing never depends on it.
 func peekModel(body []byte) string {
@@ -630,9 +674,14 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 					note += " model-rewritten"
 				}
 				if eff := p.Runtime.ReasoningEffort; eff != "" {
-					if patched := injectIfAbsent(body, "reasoning_effort", eff); len(patched) != len(body) {
+					// bytes.Equal, not a length compare: a same-length
+					// substitution is invisible to the latter.
+					if patched := injectIfAbsent(body, "reasoning_effort", eff); !bytes.Equal(patched, body) {
 						body = patched
 						note += " effort=" + eff
+					} else if patched := coerceEffort(body, eff); !bytes.Equal(patched, body) {
+						body = patched
+						note += " effort-coerced=" + eff
 					}
 				}
 			}
