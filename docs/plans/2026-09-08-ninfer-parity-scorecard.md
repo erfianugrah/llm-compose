@@ -50,27 +50,45 @@ was sharing the engine at the time (max_concurrency=1), so that pass was
 contention, not a clean quality signal; but t3 is hard enough that it fails
 uncontended too (every prior model shows this).
 
-## Tool calls - MEASURED
+## Tool calls - MEASURED (BFCL non_live, 2026-09-08)
 
-- BFCL is wired (`llmc bench eval --presets qwen38-ninfer --bfcl`) but NOT
-  yet run on this engine. DEFERRED (GPU released).
-- Indirect: the lockstep v1 build-out and this session's t1-t6 + needle
-  loop all drove tool calls through the OpenAI-compatible endpoint with
-  zero parse failures logged. 336 requests, 0 errors in the spike run.
+`llmc bench eval --presets qwen38-ninfer --bfcl` (full non_live collection,
+image bench-eval, against the live proxy). Per-category AST accuracy:
+
+| category | accuracy |
+|---|---|
+| simple_python | 68.25% |
+| simple_javascript | 48.00% |
+| simple_java | 40.00% |
+| parallel | 76.50% |
+| parallel_multiple | 73.00% |
+| multiple | 76.00% |
+
+The `overall` aggregate is null in the record because BFCL's leaderboard
+aggregator crashed on a None score from the `irrelevance` category
+(TypeError: NoneType * int) - a harness display bug, not a model failure.
+Function-calling is clearly functional (the multi/parallel categories the
+agent loop actually exercises are 73-76%); simple_java/js are the weak
+categories.
+
+Indirect corroboration: the lockstep v1 build-out and this session's t1-t6
++ needle loop drove tool calls through the OpenAI-compatible endpoint with
+zero parse failures logged (336 requests, 0 errors in the spike run).
 
 ## Long-context - PARTIAL
 
 - Speed under occupancy: proven flat to 262K (spike).
-- Quality under occupancy: the probe now EXISTS - `llmc bench needle`
-  (this session) splices a codeword at a depth fraction of a filled
-  context and scores retrieval. **But it is blocked on NInfer**: the probe
-  (like the context sweep) sizes its filler via llama.cpp's `/tokenize`
-  endpoint, and NInfer has no tokenizer endpoint (404). The fix is a
-  local-tokenizer fallback in `llmc/bench/context.py::make_tokenizer` -
-  the `[bench] tokenizer` field (e.g. `unsloth/Qwen3.8-27B-GGUF`) is
-  already declared per preset and is the HF repo to tokenize with; today
-  only eval.py's HellaSwag uses it. Until that fallback exists, needle and
-  the context sweep run on llama presets only.
+- Quality under occupancy: the probe exists - `llmc bench needle`
+  splices a codeword at a depth fraction of a filled context and scores
+  retrieval. The tokenizer blocker is FIXED (776fa17: local-HF-tokenizer
+  fallback when the engine has no `/tokenize`, GGUF repos map to the
+  Qwen3-0.6B tokenizer). The REMAINING blocker is structural: needle
+  sweeps ctx via an ephemeral `needle-<ctx>` preset + lock+switch, which
+  assumes a hot-swappable llama.cpp engine. NInfer is single-resident and
+  the ephemeral preset is not a loadable artifact - the swap timed out and
+  tore the engine down (2026-09-08). needle-on-NInfer needs a no-swap
+  probe mode (probe the resident model at its current ctx across depths);
+  spec'd in the accuracy runbook, not yet built.
 
 ## Churn stability - NOT YET MEASURED
 
@@ -79,12 +97,20 @@ t1-t6 is short-horizon. The 6.2% sub-100 tok/s tail (worst 33.9, clustered
 66-72K ctx) is still unexplained and is the strongest known quality/
 robustness caveat - see the preset description.
 
-## Standardized accuracy - NOT YET MEASURED
+## Standardized accuracy - MEASURED (HumanEval, 2026-09-08)
 
-`llmc bench eval --presets qwen38-ninfer --humaneval --bfcl --hellaswag N`
-is wired and the eval image builds; it has not been run on this engine.
-DEFERRED (GPU released). This is the row that compares against published
-Qwen3.8 numbers.
+`llmc bench eval --presets qwen38-ninfer --humaneval` (evalplus, greedy,
+164 problems, through the live proxy):
+
+- **HumanEval pass@1 = 0.598** (n=164), HumanEval+ pass@1 = 0.591.
+- This is the FIRST working eval number this stack has produced - the two
+  2026-08-17 llama.cpp rows in runs.jsonl errored at parse time
+  (`no eval_results.json`), so there is no same-stack llama.cpp baseline to
+  compare against. Treat 0.598 as the reference point future presets/
+  engines run against, not as a delta.
+- HellaSwag (language-modeling, loglikelihood) not yet run: needs the
+  `[bench] tokenizer` field, which is set, so `--hellaswag 1000` is
+  runnable next time the GPU is up.
 
 ## Frontier anchor - NOT YET MEASURED
 

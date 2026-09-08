@@ -1,0 +1,14 @@
+{
+  "label": "qwen38-ninfer",
+  "base_url": "http://host.docker.internal:11434/v1",
+  "model": "qwen3.8-27b-nvfp4",
+  "humaneval": {
+    "pass@1": 0.598,
+    "pass@1_plus": 0.591,
+    "n": 164
+  },
+  "bfcl": {
+    "overall": null,
+    "raw_tail": "eted: simple_python. \ud83c\udfaf Accuracy: 68.25%\n\ud83d\udd0d Running test: simple_javascript\n\u2705 Test completed: simple_javascript. \ud83c\udfaf Accuracy: 48.00%\n\ud83d\udd0d Running test: simple_java\n\u2705 Test completed: simple_java. \ud83c\udfaf Accuracy: 40.00%\n\ud83d\udd0d Running test: parallel_multiple\n\u2705 Test completed: parallel_multiple. \ud83c\udfaf Accuracy: 73.00%\n\ud83d\udd0d Running test: parallel\n\u2705 Test completed: parallel. \ud83c\udfaf Accuracy: 76.50%\n\ud83d\udd0d Running test: multiple\n\u2705 Test completed: multiple. \ud83c\udfaf Accuracy: 76.00%\n\ud83d\udcc8 Aggregating data to generate leaderboard score table...\n"
+  }
+}
