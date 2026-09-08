@@ -210,6 +210,11 @@ make smoke-proxy-go   # live hurl suite (edit base var if testing a non-default 
 
 Cutover done (2026-08-19): pi's provider, the llmc CLI default port, and
 all land on the Go proxy. `llmc/proxy.py` remains for rollback only.
+**Decision (2026-09-08): the rollback lane is engine-blind.** `proxy.py`
+carries NInfer support that drifts from the Go proxy and is NOT kept in
+lockstep - it handles the llama.cpp path only. If you ever roll back you
+lose NInfer until you fix forward. That is the accepted trade: maintaining
+two proxies is not worth it for a lane that has never been needed.
 
 Architecture: single-goroutine scheduler event loop
 (`internal/proxy/scheduler.go`) owns lock/queue/in-flight state; swaps

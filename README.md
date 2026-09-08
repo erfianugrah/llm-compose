@@ -264,6 +264,7 @@ compose.
 | `llmc-state`                 | `~/docker-volumes/state` — proxy state + secrets       |
 | `llmc-llama-cache`           | `~/docker-volumes/llama-server` — HF cache             |
 | `llmc-llama-models`          | `~/docker-volumes/llama-server/models` — GGUFs         |
+| `llmc-ninfer-models`         | `~/docker-volumes/ninfer/models` - NInfer .ninfer artifacts (weights + tokenizer + chat template + MTP head) |
 | `llmc-comfyui-models`        | `~/docker-volumes/comfyui/models`                      |
 | `llmc-comfyui-output`        | `~/docker-volumes/comfyui/output`                      |
 | `llmc-comfyui-input`         | `~/docker-volumes/comfyui/input`                       |
