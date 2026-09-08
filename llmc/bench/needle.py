@@ -129,6 +129,7 @@ def run_needle(
     proxy: str = "http://127.0.0.1:11434",
     log: Callable[[str], None] = print,
     tokenize_fn: Optional[Callable[[str], list]] = None,
+    no_swap: bool = False,
 ) -> int:
     presets = load_all(ctx_mod.MAIN_MODELS_DIR)
     base = next((p for p in presets.values() if p.name == preset_name), None)
@@ -136,6 +137,21 @@ def run_needle(
         log(f"error: base preset {preset_name!r} not found")
         return 1
 
+    if no_swap:
+        # Probe the ALREADY-RESIDENT model at its configured context, no
+        # ephemeral preset, no lock, no swap. For single-resident engines
+        # (NInfer) whose ephemeral needle-<ctx> preset is not a loadable
+        # artifact - the swap path times out and tears the engine down
+        # (2026-09-08). ctxs is overridden to the preset's effective context.
+        eff = base.effective_context()
+        if ctx_sizes != [eff]:
+            log(f"no-swap: overriding --ctxs to the resident context {eff}")
+        ctx_sizes = [eff]
+        if getattr(base, "engine", "llama") == "ninfer":
+            served_id = base.model_id  # ninfer serves the declared model id
+        else:
+            served_id = base.name
+        log(f"no-swap: probing resident model {served_id} at ctx={eff} (no switch)")
     tokenize_fn = tokenize_fn or ctx_mod.make_tokenizer(proxy, hf_repo=base.bench.get("tokenizer"))
     cells = expand_cells(ctx_sizes, depths, runs)
     max_fill = max((cell_filler_target(c, d, gen_tokens, tokenize_fn) for c, d, _ in cells), default=0)
@@ -156,13 +172,17 @@ def run_needle(
     client = ProxyClient(host=_p.hostname, port=_p.port)
     try:
         for ctx in ctx_sizes:
-            sweep_id = ephemeral_name(ctx)
-            # Same ephemeral mechanism as the context sweep (in-memory only).
-            ctx_mod._register_ephemeral(proxy, sweep_id, base, ctx, 1)
-            client.set_lock(sweep_id, owner="bench-needle", wait=True)
-            client.set_mode("llm", model=sweep_id, owner="bench-needle")
-            log(f"switched to {sweep_id} (ctx={ctx})")
-            ctx_mod._chat(proxy, sweep_id, "hi", max_tokens=1, timeout=900)  # warm-up
+            if no_swap:
+                sweep_id = served_id
+                log(f"probing resident {served_id} (ctx={ctx})")
+            else:
+                sweep_id = ephemeral_name(ctx)
+                # Same ephemeral mechanism as the context sweep (in-memory only).
+                ctx_mod._register_ephemeral(proxy, sweep_id, base, ctx, 1)
+                client.set_lock(sweep_id, owner="bench-needle", wait=True)
+                client.set_mode("llm", model=sweep_id, owner="bench-needle")
+                log(f"switched to {sweep_id} (ctx={ctx})")
+                ctx_mod._chat(proxy, sweep_id, "hi", max_tokens=1, timeout=900)  # warm-up
 
             for depth, run in [cd for c, cd in ((c, (d, r)) for c, d, r in cells) if c == ctx]:
                 word = NEEDLE_WORDS[(ctx_sizes.index(ctx) * len(depths) + depths.index(depth)) % len(NEEDLE_WORDS)]
@@ -185,17 +205,19 @@ def run_needle(
                 results.append(metrics)
                 log(f"  ctx={ctx} depth={depth} run={run}: {'HIT' if hit else 'MISS'} "
                     f"({probe['latency_s']}s) {probe['response_excerpt'][:60]!r}")
-            client.set_lock(False, owner="bench-needle")
-            ctx_mod._delete_ephemeral(proxy, sweep_id)
+            if not no_swap:
+                client.set_lock(False, owner="bench-needle")
+                ctx_mod._delete_ephemeral(proxy, sweep_id)
     except Exception as e:
         log(f"error: {e}")
         return 1
     finally:
-        try:
-            client.set_lock(False, owner="bench-needle")
-            client.set_mode("llm", model=preset_name)  # restore
-        except Exception:
-            pass
+        if not no_swap:
+            try:
+                client.set_lock(False, owner="bench-needle")
+                client.set_mode("llm", model=preset_name)  # restore
+            except Exception:
+                pass
 
     _print_grid(log, ctx_sizes, depths, results, runs)
     failed = {("ctx", r["ctx"], "depth", r["depth"]) for r in results if r["hit"] == 0}
@@ -212,6 +234,8 @@ def main() -> int:
     p.add_argument("--ctxs", required=True, help="comma-separated context sizes")
     p.add_argument("--runs", type=int, default=1, help="repetitions per (ctx, depth) cell")
     p.add_argument("--gen-tokens", type=int, default=64, help="max generation tokens per probe")
+    p.add_argument("--no-swap", action="store_true",
+                   help="probe the already-resident model at its configured ctx; no ephemeral preset, lock, or swap (for single-resident engines like NInfer)")
     args = p.parse_args()
     return run_needle(
         args.preset,
@@ -219,6 +243,7 @@ def main() -> int:
         ctx_sizes=[int(x) for x in args.ctxs.split(",") if x.strip()],
         runs=args.runs,
         gen_tokens=args.gen_tokens,
+        no_swap=args.no_swap,
     )
 
 

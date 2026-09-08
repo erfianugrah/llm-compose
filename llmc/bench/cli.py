@@ -67,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ctxs", required=True, help="comma-separated context sizes")
     sp.add_argument("--runs", type=int, default=1, help="repetitions per (ctx, depth) cell")
     sp.add_argument("--gen-tokens", type=int, default=64, help="max generation tokens per probe")
+    sp.add_argument("--no-swap", action="store_true", help="probe resident model, no ephemeral swap (single-resident engines)")
 
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
@@ -151,6 +152,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ctx_sizes=[int(x) for x in args.ctxs.split(",") if x.strip()],
             runs=args.runs,
             gen_tokens=args.gen_tokens,
+            no_swap=args.no_swap,
         )
     if args.bench_command == "watch":
         return watch.run_watch()

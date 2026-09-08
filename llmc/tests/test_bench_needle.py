@@ -176,6 +176,45 @@ class TestRunNeedle(unittest.TestCase):
                               log=lambda *_: None, tokenize_fn=tok4)
             self.assertEqual(rc, 1)
 
+    def _preset_noswap(self, name="qwen38-ninfer"):
+        """no-swap path reads effective_context(), engine, model_id."""
+        p = MagicMock()
+        p.name = name
+        p.engine = "ninfer"
+        p.model_id = "qwen3.8-27b-nvfp4"
+        p.effective_context.return_value = 262144
+        return p
+
+    def test_no_swap_uses_resident_ctx_and_skips_switch(self):
+        from contextlib import ExitStack
+        # Corpus must cover the resident ctx target: no-swap probes at 262144,
+        # so tok4 (1 token per 4 chars) needs a source long enough to fill ~261K.
+        big_corpus = "x" * (262144 * 4 + 10000)  # >= target tokens at 4 chars/token
+        with patch("llmc.bench.needle.load_all", return_value={"qwen38-ninfer": self._preset_noswap()}), \
+             patch("llmc.bench.needle.ProxyClient") as mock_client_cls, \
+             patch("llmc.bench.needle.store") as mock_store, \
+             ExitStack() as stack:
+            (mock_corpus, mock_chat, mock_register, mock_delete) = (stack.enter_context(x) for x in self._ctx_patches())
+            mock_corpus.return_value = big_corpus
+            mock_store.make_record.side_effect = lambda kind, preset, path, metrics, rid: {}
+            mock_chat.side_effect = lambda proxy, model, prompt, max_tokens, timeout: \
+                {"choices": [{"message": {"content": "The codeword is brazos."}}]}
+
+            logs = []
+            rc = N.run_needle("qwen38-ninfer", [0.5], [4096], gen_tokens=64,
+                              log=logs.append, tokenize_fn=tok4, no_swap=True)
+            self.assertEqual(rc, 0)
+            # no ephemeral registration, no lock, no mode switch
+            mock_register.assert_not_called()
+            mock_delete.assert_not_called()
+            mock_client_cls.return_value.set_lock.assert_not_called()
+            mock_client_cls.return_value.set_mode.assert_not_called()
+            # ctx overridden to the resident effective context
+            joined = "\n".join(logs)
+            self.assertIn("262144", joined)
+            # probe went to the served model id, not an ephemeral needle-<ctx> id
+            self.assertTrue(all(c.args[1] == "qwen3.8-27b-nvfp4" for c in mock_chat.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()
