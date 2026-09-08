@@ -80,15 +80,20 @@ zero parse failures logged (336 requests, 0 errors in the spike run).
 - Speed under occupancy: proven flat to 262K (spike).
 - Quality under occupancy: the probe exists - `llmc bench needle`
   splices a codeword at a depth fraction of a filled context and scores
-  retrieval. The tokenizer blocker is FIXED (776fa17: local-HF-tokenizer
-  fallback when the engine has no `/tokenize`, GGUF repos map to the
-  Qwen3-0.6B tokenizer). The REMAINING blocker is structural: needle
-  sweeps ctx via an ephemeral `needle-<ctx>` preset + lock+switch, which
-  assumes a hot-swappable llama.cpp engine. NInfer is single-resident and
-  the ephemeral preset is not a loadable artifact - the swap timed out and
-  tore the engine down (2026-09-08). needle-on-NInfer needs a no-swap
-  probe mode (probe the resident model at its current ctx across depths);
-  spec'd in the accuracy runbook, not yet built.
+  retrieval. Tokenizer blocker FIXED (776fa17: local-HF-tokenizer fallback
+  for engines with no `/tokenize`). Structural blocker FIXED (`--no-swap`
+  mode, a8bbaa5 + later: probe the resident model at its configured ctx, no
+  ephemeral preset/lock/switch).
+- **NEW finding, 2026-09-08: the effective serving ceiling is below the
+  configured 262144.** A prompt whose TOTAL (filler + needle + question +
+  template wrapper) reaches ~261.5K returns 400 `exceeds Engine max_context
+  262144`. A fresh engine serves 261000 and even 262000 in a simple
+  one-message test, but the needle probe's multi-part prompt 400s at ~261.5K
+  - the ceiling is state/content dependent (KV-page layout, prefix cache)
+  and the GPU was fuller than usual (other apps). So: speed flat to 262K is
+  a *capacity* claim; a single maxed-out *request* tops out nearer 261K in
+  practice. The needle probe carries CEILING_SLACK=2048 to stay under it.
+  The retrieval probe itself has not yet completed a clean run.
 
 ## Churn stability - NOT YET MEASURED
 
