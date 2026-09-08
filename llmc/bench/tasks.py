@@ -36,7 +36,7 @@ def load_manifests(tasks_dir: Path = TASKS_DIR) -> list[dict[str, Any]]:
 
 
 def materialize_harness(manifest: dict[str, Any], model_id: str,
-                        rung_prefix: str = "llama-server") -> dict[str, Any]:
+                        rung_prefix: str = "llmc") -> dict[str, Any]:
     """Task manifest -> full loop harness.json (model rung + resolved paths)."""
     h = {k: v for k, v in manifest.items() if k not in ("name", "fixture", "probe")}
     h["models"] = [f"{rung_prefix}/{model_id}"]
@@ -92,7 +92,7 @@ def parse_report(workdir: Path) -> dict[str, Any]:
 
 
 def run_task(manifest: dict[str, Any], model_id: str, verify_only: bool,
-             log: LogFn, rung_prefix: str = "llama-server") -> dict[str, Any]:
+             log: LogFn, rung_prefix: str = "llmc") -> dict[str, Any]:
     harness = materialize_harness(manifest, model_id, rung_prefix=rung_prefix)
     workdir = setup_workdir(manifest["fixture"], manifest.get("probe", ""), harness)
     try:
