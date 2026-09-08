@@ -177,12 +177,15 @@ class TestRunNeedle(unittest.TestCase):
             self.assertEqual(rc, 1)
 
     def _preset_noswap(self, name="qwen38-ninfer"):
-        """no-swap path reads effective_context(), engine, model_id."""
+        """no-swap path reads the effective_context property, engine, model_id."""
         p = MagicMock()
         p.name = name
         p.engine = "ninfer"
         p.model_id = "qwen3.8-27b-nvfp4"
-        p.effective_context.return_value = 262144
+        # effective_context is a @property on the real Preset - a plain
+        # attribute on the mock, NOT .return_value (which makes it callable
+        # and hides the property-vs-method confusion that bit the first run).
+        type(p).effective_context = property(lambda self: 262144)
         return p
 
     def test_no_swap_uses_resident_ctx_and_skips_switch(self):
@@ -209,7 +212,7 @@ class TestRunNeedle(unittest.TestCase):
             mock_delete.assert_not_called()
             mock_client_cls.return_value.set_lock.assert_not_called()
             mock_client_cls.return_value.set_mode.assert_not_called()
-            # ctx overridden to the resident effective context
+            # ctx overridden to the full resident effective context (262144)
             joined = "\n".join(logs)
             self.assertIn("262144", joined)
             # probe went to the served model id, not an ephemeral needle-<ctx> id

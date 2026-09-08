@@ -88,6 +88,9 @@ def ephemeral_name(ctx: int) -> str:
 
 def _probe(proxy: str, model: str, filler: str, needle: str, question: str,
            gen_tokens: int) -> dict:
+    # needle is spliced INTO the filler at depth*target (proper depth testing);
+    # that breaks prefix-cache reuse across depths, so each cell pays its own
+    # prefill. At 262K that is minutes per cell - acceptable for a 5-cell grid.
     prompt = filler + "\n" + needle + "\n" + question
     t0 = time.monotonic()
     resp = ctx_mod._chat(proxy, model, prompt, gen_tokens, ctx_mod.GEN_TIMEOUT)
@@ -138,14 +141,22 @@ def run_needle(
         return 1
 
     if no_swap:
-        # Probe the ALREADY-RESIDENT model at its configured context, no
+        # Probe the ALREADY-RESIDENT model at its full configured context, no
         # ephemeral preset, no lock, no swap. For single-resident engines
         # (NInfer) whose ephemeral needle-<ctx> preset is not a loadable
         # artifact - the swap path times out and tears the engine down
         # (2026-09-08). ctxs is overridden to the preset's effective context.
-        eff = base.effective_context()
+        #
+        # Probe at the FULL configured context. Verified 2026-09-08: the
+        # engine serves 261568 and 262000 fine (OK in ~85s); the earlier
+        # 400/502 failures were cold-cache prefill exceeding a 600s client
+        # cap under eval contention, NOT a context-window rejection. The
+        # probe's GEN_TIMEOUT (3600s) is enough. The HF tokenizer's 131072
+        # warning is Qwen3-0.6B max_position_embeddings metadata - token
+        # counting does not touch positional tables, so it does not limit us.
+        eff = base.effective_context
         if ctx_sizes != [eff]:
-            log(f"no-swap: overriding --ctxs to the resident context {eff}")
+            log(f"no-swap: probing at the full resident context {eff}")
         ctx_sizes = [eff]
         if getattr(base, "engine", "llama") == "ninfer":
             served_id = base.model_id  # ninfer serves the declared model id
