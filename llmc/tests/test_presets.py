@@ -446,7 +446,7 @@ class TestEngineAwareDisplayFields(unittest.TestCase):
 
     def test_ninfer_context_comes_from_the_ninfer_section(self):
         self.assertEqual(self.ninfer.effective_context, self.ninfer.ninfer.max_context)
-        self.assertEqual(self.ninfer.effective_context, 262144)
+        self.assertEqual(self.ninfer.effective_context, 252928)
         self.assertNotEqual(self.ninfer.effective_context, self.ninfer.runtime.context_size)
 
     def test_llama_vision_still_derives_from_mmproj(self):

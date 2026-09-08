@@ -409,7 +409,7 @@ class TestNinferCommand(unittest.TestCase):
 
     def test_measured_flags_present(self):
         pairs = {
-            "--max-context": "262144",
+            "--max-context": "252928",
             "--max-concurrency": "1",
             "--kv-dtype": "fp8",
             "--spec": "mtp",

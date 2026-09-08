@@ -59,7 +59,7 @@ id = "qwen3.8-27b-nvfp4-low"
 # Exactly the configuration behind every number quoted above, recovered from
 # `docker inspect` on the validated spike container.
 [ninfer]
-max_context = 262144
+max_context = 252928
 max_concurrency = 1
 kv_dtype = "fp8"
 spec = "mtp"
