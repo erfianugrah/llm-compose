@@ -49,14 +49,11 @@ id = "qwen3.8-27b-nvfp4"
 # Exactly the configuration behind every number quoted above, recovered from
 # `docker inspect` on the validated spike container.
 [ninfer]
-# 262144 is the model's architecture limit, NOT what fits on a 32 GB 5090
-# with these weights resident. NInfer's own published eval for this exact
-# artifact (Qwen3.8-27B NVFP4) uses 252,928 "to fit the RTX 5090 after
-# weights". An explicit 262144 KV pool fits on startup (324 MiB free) but a
-# maxed-out request 400s at ~261.5K (MTP draft reserve + fp8 page rounding);
-# setting --kv-capacity=auto to self-resolve FAILS to start (minimum runtime
-# reservation exceeds what is free after weights at that size). So 252928 is
-# the honest advertised limit for this artifact on this GPU.
+# The advertised ceiling. NInfer's own published eval for this exact artifact
+# (Qwen3.8-27B NVFP4) uses 252,928 "to fit the RTX 5090 after weights". The
+# engine's usable window shrinks further under desktop GPU load - a maxed-out
+# request then 400s and the client retries smaller. This is the documented
+# limit, not a guarantee under contention.
 max_context = 252928
 max_concurrency = 1
 kv_dtype = "fp8"
