@@ -85,15 +85,18 @@ zero parse failures logged (336 requests, 0 errors in the spike run).
   mode, a8bbaa5 + later: probe the resident model at its configured ctx, no
   ephemeral preset/lock/switch).
 - **NEW finding, 2026-09-08: the effective serving ceiling is below the
-  configured 262144.** A prompt whose TOTAL (filler + needle + question +
-  template wrapper) reaches ~261.5K returns 400 `exceeds Engine max_context
-  262144`. A fresh engine serves 261000 and even 262000 in a simple
-  one-message test, but the needle probe's multi-part prompt 400s at ~261.5K
-  - the ceiling is state/content dependent (KV-page layout, prefix cache)
-  and the GPU was fuller than usual (other apps). So: speed flat to 262K is
-  a *capacity* claim; a single maxed-out *request* tops out nearer 261K in
-  practice. The needle probe carries CEILING_SLACK=2048 to stay under it.
-  The retrieval probe itself has not yet completed a clean run.
+  configured 262144, and it is load-dependent.** The preset now advertises
+  252928 - NInfer's own published eval value for this exact artifact
+  ("to fit the RTX 5090 after weights"). The KV pool fits at startup
+  (~324-633 MiB free), but a single maxed-out request 400s when the draft
+  reserve + fp8 page rounding + prefix-cache state push the total over, and
+  the usable window shrinks further under desktop GPU load (browsers,
+  terminals on the same 5090). The engine returns 400 and the client
+  retries smaller - that IS the behaviour, not a bug. Speed flat to 262K is
+  a capacity claim; a single maxed-out request tops out at whatever the
+  current free KV allows. The needle retrieval probe at the ceiling has not
+  completed a clean run (every attempt 400'd at a different point as load
+  varied); it needs a quiet GPU.
 
 ## Churn stability - NOT YET MEASURED
 
