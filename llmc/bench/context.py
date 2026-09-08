@@ -108,13 +108,58 @@ def build_corpus(tokenize_fn: Callable[[str], list], min_tokens: int, log) -> st
 
 # ── Proxy / tokenizer plumbing ─────────────────────────────────────────
 
-def make_tokenizer(proxy: str) -> Callable[[str], list]:
+def _hf_tokenizer(hf_repo: str) -> Callable[[str], list]:
+    """Local HuggingFace tokenizer, lazily imported and cached per repo.
+
+    Used when the serving engine has no /tokenize endpoint (NInfer 404s it;
+    only llama.cpp serves one). The repo comes from the preset's
+    [bench] tokenizer field - the same field HellaSwag uses. transformers is
+    a heavy optional dep, so the import is deferred and the error names the
+    install command rather than dying on ImportError.
+    """
+    try:
+        from transformers import AutoTokenizer  # noqa: PLC0415 - deferred heavy import
+    except ImportError as e:  # pragma: no cover - environment-dependent
+        raise RuntimeError(
+            "local tokenizer fallback needs transformers: "
+            "uv pip install 'transformers>=4.45' (or run inside the eval image)"
+        ) from e
+    tok = AutoTokenizer.from_pretrained(hf_repo)
+
+    # AutoTokenizer.__call__ returns a BatchEncoding; ["input_ids"] is the list.
+    def tok_fn(text: str) -> list:
+        return tok(text)["input_ids"]
+
+    return tok_fn
+
+
+def make_tokenizer(proxy: str, hf_repo: Optional[str] = None) -> Callable[[str], list]:
+    """Tokenize via the engine's /tokenize endpoint, falling back to a local
+    HF tokenizer (hf_repo, from the preset's [bench] tokenizer) when the
+    engine has no such endpoint (NInfer 404s; only llama.cpp serves one).
+
+    The fallback is chosen once, on the first call: a 404 (or any connection
+    error) on /tokenize switches the returned callable to the local tokenizer
+    for its lifetime, so a NInfer sweep does not pay a failed HTTP request
+    per call. Without hf_repo the original behaviour is kept (raise).
+    """
+    state: dict = {"local": None}
+
     def tok(text: str) -> list:
+        if state["local"] is not None:
+            return state["local"](text)
         body = json.dumps({"content": text}).encode()
         req = urllib.request.Request(
             f"{proxy}/tokenize", data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=TOKENIZE_TIMEOUT) as r:
-            return json.loads(r.read())["tokens"]
+        try:
+            with urllib.request.urlopen(req, timeout=TOKENIZE_TIMEOUT) as r:
+                return json.loads(r.read())["tokens"]
+        except Exception:
+            if not hf_repo:
+                raise
+            state["local"] = _hf_tokenizer(hf_repo)
+            return state["local"](text)
+
     return tok
 
 
@@ -206,7 +251,7 @@ def run_context_sweep(
         log("[dry-run] no docker/proxy/preset changes made")
         return 0
 
-    tokenize_fn = tokenize_fn or make_tokenizer(proxy)
+    tokenize_fn = tokenize_fn or make_tokenizer(proxy, hf_repo=base.bench.get("tokenizer"))
     client = ProxyClient()
     rid = run_id()
     max_fill = max((occupancy_target(c, f, gen_tokens) for c in ctx_sizes for f in occupancies), default=0)

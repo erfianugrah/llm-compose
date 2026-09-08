@@ -1,4 +1,6 @@
 import unittest
+import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import os
@@ -112,6 +114,54 @@ class TestRunContextSweep(unittest.TestCase):
             # locked, unlocked, and restored the source preset
             self.assertTrue(client.set_lock.called)
             client.set_mode.assert_any_call("llm", model="qwen38")
+
+
+class TestMakeTokenizerFallback(unittest.TestCase):
+    """make_tokenizer: llama.cpp /tokenize first, local HF tokenizer on 404.
+
+    transformers is not installed on the host, so the HF path is exercised by
+    stubbing _hf_tokenizer; the real AutoTokenizer path is covered by the
+    eval container, not here.
+    """
+
+    def test_proxy_path_used_when_available(self):
+        from llmc.bench import context as C
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"tokens": [1, 2, 3]}).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=resp):
+            tok = C.make_tokenizer("http://proxy", hf_repo="x/y")
+            self.assertEqual(tok("hello"), [1, 2, 3])
+
+    def test_404_falls_back_to_hf_repo(self):
+        from llmc.bench import context as C
+        fake_hf = MagicMock(return_value=[9, 9])
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "u", 404, "nf", {}, None)), \
+             patch.object(C, "_hf_tokenizer", return_value=fake_hf) as hf:
+            tok = C.make_tokenizer("http://proxy", hf_repo="unsloth/Qwen3.8-27B-GGUF")
+            self.assertEqual(tok("hello"), [9, 9])
+            hf.assert_called_once_with("unsloth/Qwen3.8-27B-GGUF")
+
+    def test_fallback_is_sticky(self):
+        """After the first 404 the local tokenizer is reused, no re-request."""
+        from llmc.bench import context as C
+        fake_hf = MagicMock(return_value=[1])
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "u", 404, "nf", {}, None)) as http, \
+             patch.object(C, "_hf_tokenizer", return_value=fake_hf):
+            tok = C.make_tokenizer("http://proxy", hf_repo="x/y")
+            tok("a"); tok("b"); tok("c")
+            self.assertEqual(http.call_count, 1)
+
+    def test_no_hf_repo_reraises(self):
+        from llmc.bench import context as C
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "u", 404, "nf", {}, None)):
+            tok = C.make_tokenizer("http://proxy")
+            with self.assertRaises(urllib.error.HTTPError):
+                tok("x")
 
 
 if __name__ == "__main__":

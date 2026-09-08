@@ -136,7 +136,7 @@ def run_needle(
         log(f"error: base preset {preset_name!r} not found")
         return 1
 
-    tokenize_fn = tokenize_fn or ctx_mod.make_tokenizer(proxy)
+    tokenize_fn = tokenize_fn or ctx_mod.make_tokenizer(proxy, hf_repo=base.bench.get("tokenizer"))
     cells = expand_cells(ctx_sizes, depths, runs)
     max_fill = max((cell_filler_target(c, d, gen_tokens, tokenize_fn) for c, d, _ in cells), default=0)
     if max_fill <= 0:
