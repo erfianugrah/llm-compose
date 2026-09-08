@@ -29,15 +29,16 @@ from llmc.bench import store
 from llmc.presets import load_all
 from llmc.cli import ProxyClient
 
-NEEDLE_HEADROOM = 512  # tokens reserved for needle + question at the end
+# tokens reserved for needle + question at the end
+NEEDLE_HEADROOM = 512
 
 # The engine rejects a prompt whose TOTAL (filler + needle + question +
 # template wrapper) exceeds its effective serving ceiling, which is below the
-# configured --max-context 262144: measured 2026-09-08, a 261570-token total
-# returns 400 'exceeds Engine max_context 262144'. fill_to_tokens is also
-# approximate (can land a few tokens over its target). Reserve enough that the
-# total stays under the observed-good 261000 boundary.
-CEILING_SLACK = 2048
+# configured max_context/KV pool. Measured 2026-09-08 against qwen38-ninfer
+# (KV pool 252,928): a 250,268-token total 400s, 250,000 serves OK - the
+# ~2900-token gap is the MTP draft reserve + fp8 page rounding. Reserve
+# enough that the probe's total lands under the measured-good boundary.
+CEILING_SLACK = 3072
 NEEDLE_STORE = store.RESULTS_DIR / "needle-runs.jsonl"
 
 # 8 uncommon-but-pronounceable codewords, one per cell (deterministic).
