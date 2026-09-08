@@ -140,9 +140,20 @@ class TestMakeTokenizerFallback(unittest.TestCase):
         with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
                 "u", 404, "nf", {}, None)), \
              patch.object(C, "_hf_tokenizer", return_value=fake_hf) as hf:
-            tok = C.make_tokenizer("http://proxy", hf_repo="unsloth/Qwen3.8-27B-GGUF")
+            tok = C.make_tokenizer("http://proxy", hf_repo="Qwen/Qwen3-32B")
             self.assertEqual(tok("hello"), [9, 9])
-            hf.assert_called_once_with("unsloth/Qwen3.8-27B-GGUF")
+            hf.assert_called_once_with("Qwen/Qwen3-32B")
+
+    def test_gguf_repo_falls_through_to_tokenizer_model(self):
+        """A -GGUF repo ships no HF tokenizer config; use the Qwen3 fallback."""
+        from llmc.bench import context as C
+        fake_hf = MagicMock(return_value=[7])
+        with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                "u", 404, "nf", {}, None)), \
+             patch.object(C, "_hf_tokenizer", return_value=fake_hf) as hf:
+            tok = C.make_tokenizer("http://proxy", hf_repo="unsloth/Qwen3.8-27B-GGUF")
+            self.assertEqual(tok("hello"), [7])
+            hf.assert_called_once_with(C.GGUF_TOKENIZER_FALLBACK)
 
     def test_fallback_is_sticky(self):
         """After the first 404 the local tokenizer is reused, no re-request."""

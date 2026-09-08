@@ -133,6 +133,12 @@ def _hf_tokenizer(hf_repo: str) -> Callable[[str], list]:
     return tok_fn
 
 
+# Tokenizer-only HF model used when a preset's [bench] tokenizer is a GGUF
+# repo (which ships no HF tokenizer config). Same Qwen3 BPE family, so token
+# counts match for sizing filler. Mirrors run-evals.py's HellaSwag default.
+GGUF_TOKENIZER_FALLBACK = "Qwen/Qwen3-0.6B"
+
+
 def make_tokenizer(proxy: str, hf_repo: Optional[str] = None) -> Callable[[str], list]:
     """Tokenize via the engine's /tokenize endpoint, falling back to a local
     HF tokenizer (hf_repo, from the preset's [bench] tokenizer) when the
@@ -142,6 +148,8 @@ def make_tokenizer(proxy: str, hf_repo: Optional[str] = None) -> Callable[[str],
     error) on /tokenize switches the returned callable to the local tokenizer
     for its lifetime, so a NInfer sweep does not pay a failed HTTP request
     per call. Without hf_repo the original behaviour is kept (raise).
+    A GGUF repo carries no HF tokenizer config, so a name ending in -GGUF
+    falls through to GGUF_TOKENIZER_FALLBACK (a Qwen3 tokenizer-only model).
     """
     state: dict = {"local": None}
 
@@ -157,7 +165,8 @@ def make_tokenizer(proxy: str, hf_repo: Optional[str] = None) -> Callable[[str],
         except Exception:
             if not hf_repo:
                 raise
-            state["local"] = _hf_tokenizer(hf_repo)
+            repo = GGUF_TOKENIZER_FALLBACK if hf_repo.endswith("-GGUF") else hf_repo
+            state["local"] = _hf_tokenizer(repo)
             return state["local"](text)
 
     return tok

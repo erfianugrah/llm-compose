@@ -146,7 +146,14 @@ def run_needle(
 
     rid = store.run_id()
     results: list[dict] = []
-    client = ProxyClient()
+    # Derive the control-plane client from the same proxy URL the probes use:
+    # ProxyClient() defaults to 127.0.0.1, which inside a container is the
+    # container itself, not the host running the proxy (caught running needle
+    # from the bench-eval image: every set_lock/set_mode hit Connection
+    # refused). The proxy arg is the one source of truth.
+    from urllib.parse import urlparse
+    _p = urlparse(proxy)
+    client = ProxyClient(host=_p.hostname, port=_p.port)
     try:
         for ctx in ctx_sizes:
             sweep_id = ephemeral_name(ctx)
