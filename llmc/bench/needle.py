@@ -29,7 +29,11 @@ from llmc.bench import store
 from llmc.presets import load_all
 from llmc.cli import ProxyClient
 
-NEEDLE_HEADROOM = 512  # tokens reserved for needle + question at the end
+# tokens reserved for needle + question + chat-template wrapper at the end.
+# 512 was not enough at the true ceiling: a 262144 probe 400'd when filler +
+# needle + the 8-token template wrapper totalled 261577, just over the
+# verified-passing 261568 (2026-09-08). 576 lands the total just under it.
+NEEDLE_HEADROOM = 576
 NEEDLE_STORE = store.RESULTS_DIR / "needle-runs.jsonl"
 
 # 8 uncommon-but-pronounceable codewords, one per cell (deterministic).
