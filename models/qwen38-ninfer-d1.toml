@@ -1,0 +1,89 @@
+name = "Qwen3.8 27B NVFP4 on NInfer - draft=1 no-lm-head (262K ceiling probe)"
+description = """
+The same model as the qwen38 presets, served by NInfer instead of
+llama.cpp. Adopted from the 2026-09-06 spike
+(docs/plans/2026-09-06-ninfer-nvfp4-spike.md): 2.2x decode and ~3x prefill
+over llama.cpp, and - the reason it exists - decode stays FLAT as context
+fills (p50 141 tok/s at 30-50K vs 136 at 70-100K) where llama.cpp collapses
+122 -> 69. That decay is what disqualified draft-mtp and ngram-mod.
+
+Validated by driving a whole four-milestone Rust+TS build-out to
+all-sensors-green: 336 requests, 0 errors, 0 restarts, decode p5 95.2 /
+p50 139.7 / p95 182.0 tok/s at contexts up to 89K.
+
+Engine constraints worth knowing before switching to this preset:
+
+- One resident model, no runtime model discovery. NInfer cannot hot-swap
+  the way llama.cpp does; the proxy stops the container and starts a new
+  one, same as any other GPU service handoff.
+- sm_120a only (RTX 5090). The build rejects every other CUDA arch.
+- Only five registered Qwen artifact identities exist upstream, so this
+  engine can never serve the Gemma or LFM presets. llama.cpp remains the
+  multi-model engine.
+- Thinking effort is a PER-REQUEST field for this engine
+  (`reasoning_effort`), not a serve flag, and the chat template exposes
+  only low|medium|xhigh - it rejects "high" outright. Clients should send
+  medium for unattended work; see runtime notes in qwen38.toml for why
+  (2026-08-19 A/B: quality-neutral at 10-20x fewer thinking tokens).
+
+Known open issue: 6.2% of requests in the validation run decoded below
+100 tok/s (worst 33.9), clustered at 66-72K context with substantial
+outputs. MTP acceptance only drops 65.6% -> 56.5% on those, which does not
+explain a 4x slowdown. Unexplained; do not use this preset for anything
+latency-critical until it is.
+
+vram_gb is the 22.08 GiB artifact (weights only). Measured PEAK including
+fp8 KV, MTP head and the vision tower at 262K was 31.7 GB on the 32 GB
+card - roughly 900 MiB spare, and no room for a second lane at that
+context.
+"""
+vram_gb = 22.1
+engine = "ninfer"
+capabilities = ["vision", "code"]
+
+[model]
+repo = "neroued/Qwen3.8-27B-nvfp4-NInfer"
+file = "qwen3_8_27b_nvfp4.ninfer"
+id = "qwen3.8-27b-nvfp4-d1"
+
+# Exactly the configuration behind every number quoted above, recovered from
+# `docker inspect` on the validated spike container.
+[ninfer]
+max_context = 262144
+max_concurrency = 1
+kv_dtype = "fp8"
+spec = "mtp"
+draft_tokens = 1
+lm_head_draft = false
+preserve_thinking = true
+vision = true
+# Pinned-host allocation (cudaMallocHost) OOMs under WSL2 Docker Desktop -
+# the spike plan's anticipated risk, confirmed. Zeroing these three costs no
+# measurable decode at 1-2 lanes.
+host_state_slots = 0
+host_kv_mib = 0
+device_state_slots = 0
+
+# For this engine reasoning_effort is a PER-REQUEST field, not a serve flag,
+# and the chat template rejects "high". The proxy injects this value when a
+# request does not carry one - without it clients get the template default
+# (xhigh), measured at 35,747 output tokens for a single tool call. medium was
+# adopted 2026-08-19 for the llama presets on a task-suite A/B: quality-neutral
+# at 10-20x fewer thinking tokens. An explicit client value always wins.
+[runtime]
+# reasoning = "on" is not a serve flag for this engine (thinking is on by
+# default and controlled per request), but the proxy publishes it as
+# meta.reasoning in GET /v1/models, and pi's llama-server-dynamic extension
+# registers the model from that metadata. Omitting it registered a thinking
+# model as non-reasoning in pi (caught 2026-09-07).
+reasoning = "on"
+reasoning_effort = "medium"
+# Per-preset max-output cap, published as meta.max_output in /v1/models.
+# pi's dynamic registration reads it and registers maxTokens from it;
+# without this field the extension pins pi's default 16384, which truncated
+# a 35,747-token response mid-thought on 2026-09-07 (two silent zero-write
+# loop iterations). 65536 matches what pi's external/ entry already sent.
+max_output_tokens = 65536
+
+[bench]
+tokenizer = "unsloth/Qwen3.8-27B-GGUF"
