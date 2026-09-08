@@ -5,9 +5,9 @@ import argparse
 from typing import Optional, Sequence
 
 from llmc.bench import eval as bench_eval
-from llmc.bench import gumshoe, perf, report, tasks, watch, context
+from llmc.bench import gumshoe, needle, perf, report, tasks, watch, context
 
-NATIVE = {"perf", "report", "watch", "eval", "gumint", "gumshoe", "tasks", "context"}
+NATIVE = {"perf", "report", "watch", "eval", "gumint", "gumshoe", "tasks", "context", "needle"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--gen-tokens", type=int, default=200, help="generation tokens")
     sp.add_argument("--dry-run", action="store_true", help="do not modify environment")
     sp.add_argument("--slots", type=int, default=1, help="parallel slots")
+
+    sp = sub.add_parser("needle", help="needle-in-context accuracy probe")
+    sp.add_argument("--preset", required=True, help="base preset name")
+    sp.add_argument("--depths", required=True, help="comma-separated needle depths as fractions of ctx (e.g. 0.05,0.5,0.95)")
+    sp.add_argument("--ctxs", required=True, help="comma-separated context sizes")
+    sp.add_argument("--runs", type=int, default=1, help="repetitions per (ctx, depth) cell")
+    sp.add_argument("--gen-tokens", type=int, default=64, help="max generation tokens per probe")
 
     sub.add_parser("watch", help="staleness report vs llama.cpp pin + preset hashes")
     return p
@@ -136,6 +143,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             occupancies=[float(x) for x in args.occupancy.split(",")],
             gen_tokens=args.gen_tokens,
             dry_run=args.dry_run,
+        )
+    if args.bench_command == "needle":
+        return needle.run_needle(
+            args.preset,
+            depths=[float(x) for x in args.depths.split(",") if x.strip()],
+            ctx_sizes=[int(x) for x in args.ctxs.split(",") if x.strip()],
+            runs=args.runs,
+            gen_tokens=args.gen_tokens,
         )
     if args.bench_command == "watch":
         return watch.run_watch()

@@ -48,3 +48,4 @@ docker-volumes/
 
 # NInfer spike: 22GB artifact + upstream source checkout
 .ninfer/
+.pi/harness-*.json

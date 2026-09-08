@@ -155,7 +155,14 @@ How the two differ, and what the proxy does about it:
   `llama-server/qwen38-ninfer` now log `max output 65,536` at the engine.
   (History: the extension used to pin pi's 16,384 default for every model,
   which truncated a 35,747-token thinking response mid-chain; the agent then
-  exited 0 having done nothing.) The proxy
+  exited 0 having done nothing.) **The effort ladder is low|medium|xhigh -
+  there is NO "high"** (the template rejects it with
+  `reasoning_effort_not_supported`); pi's default "high" is coerced to the
+  preset's declared effort so an unmapped request does not 400. To run a
+  different effort, switch presets: `qwen38-ninfer-low` / `qwen38-ninfer` /
+  `qwen38-ninfer-xhigh` all share one container (same model id) and differ
+  only in the served default effort - a per-request field, so an explicit
+  client `reasoning_effort` still wins. The proxy
   does not yet inject it, so a client that sends nothing gets the template
   default (xhigh) and 10-30k-token thinking traces.
 - **Artifacts are placed by hand.** `ensure_preset_assets` only downloads

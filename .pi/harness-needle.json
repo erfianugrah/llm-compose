@@ -1,0 +1,58 @@
+{
+  "task": "Implement the task in docs/needle-task.md (copy at /tmp/needle-task.md is identical): add a `llmc bench needle` subcommand - needle-in-context accuracy probe. Follow the existing bench module patterns (llmc/bench/context.py). Sensors below are the gate.",
+  "maxIterations": 10,
+  "models": [
+    "external/qwen3.8-27b-nvfp4:medium",
+    "anthropic/claude-sonnet-5"
+  ],
+  "stallPatience": 3,
+  "tools": [
+    "read",
+    "edit",
+    "write",
+    "bash"
+  ],
+  "writeScope": [
+    "llmc/bench/needle.py",
+    "llmc/bench/cli.py",
+    "llmc/bench/__init__.py",
+    "llmc/tests/test_bench_needle.py",
+    "AGENTS.md"
+  ],
+  "timeoutMs": 900000,
+  "agentTimeoutMs": 3600000,
+  "humanGate": true,
+  "guide": [
+    "AGENTS.md",
+    "/tmp/needle-task.md"
+  ],
+  "rules": [
+    "read llmc/bench/context.py and llmc/bench/cli.py BEFORE writing code; match their patterns",
+    "no whole-file rewrites; exact oldText from a fresh read",
+    "no new dependencies",
+    "do NOT commit; leave the tree dirty for review",
+    "do NOT touch llmc/bench/perf.py, gumshoe.py, tasks.py, or any other bench module except context.py (small generalisations only)",
+    "if make test fails for a PRE-EXISTING reason, stop and report it verbatim; do not fix unrelated code",
+    "GOCACHE/GOMODCACHE under /tmp",
+    "do NOT run `llmc bench needle` yourself yet - the GPU is busy with the t1-t6 parity suite until told otherwise; the smoke run happens after, outside this loop"
+  ],
+  "sensors": [
+    {
+      "name": "unit",
+      "cmd": "python3 -m unittest llmc.tests.test_bench_needle -v",
+      "timeoutMs": 120000,
+      "hint": "write llmc/tests/test_bench_needle.py covering needle construction, depth->offset math, hit scoring (word-boundary, case), and cell-grid expansion",
+      "expect": "fail",
+      "canary": "mkdir -p llmc/tests && printf 'import unittest\\nclass T(unittest.TestCase):\\n    def test_ok(self):\\n        self.assertTrue(True)\\n' > llmc/tests/test_bench_needle.py && touch llmc/tests/__init__.py"
+    },
+    {
+      "name": "suite",
+      "after": [
+        "unit"
+      ],
+      "cmd": "make test",
+      "timeoutMs": 600000,
+      "hint": "the full 247-test suite must stay green; a pre-existing failure means stop, not fix"
+    }
+  ]
+}
