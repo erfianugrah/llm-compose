@@ -23,19 +23,32 @@ Results land in bench/results/ and feed `llmc bench report`. Compare against
 the published Qwen3.8-27B numbers and the llama.cpp Q4_K_M rows already in
 runs.jsonl.
 
-## 2. Long-context QUALITY (blocked - needs a code change first)
+## 2. Long-context QUALITY (needle) - tokenizer fixed; NInfer needs a no-swap probe mode
 
-`llmc bench needle` 404s on NInfer: it sizes filler via llama.cpp's
-`/tokenize`, which NInfer doesn't serve. Fix BEFORE running:
+The tokenizer blocker is FIXED: `make_tokenizer` now falls back to a local
+HF tokenizer when the engine has no `/tokenize` (commit 776fa17), and a
+`*-GGUF` repo name (which ships no HF tokenizer config) maps to the Qwen3
+tokenizer-only model `Qwen/Qwen3-0.6B` (same BPE family). So the probe can
+tokenize against NInfer.
 
-- Add a local-tokenizer fallback in `llmc/bench/context.py::make_tokenizer`:
-  when the preset's engine is ninfer (or `/tokenize` 404s), tokenize locally
-  with the HF tokenizer named by the preset's `[bench] tokenizer` field
-  (`unsloth/Qwen3.8-27B-GGUF`) via `transformers.AutoTokenizer`. The field is
-  already declared on every preset; only eval.py's HellaSwag reads it today.
-- Then: `llmc bench needle --preset qwen38-ninfer --depths 0.05,0.25,0.5,0.75,0.95 --ctxs 4096,16384,32768,65536 --runs 2`
+But there is a SECOND, structural blocker for NInfer. needle sweeps context
+sizes by registering an ephemeral preset per ctx (`needle-<ctx>`) and
+locking+switching the proxy to it. That swap path assumes a hot-swappable
+llama.cpp engine whose GGUF the ephemeral preset points at. NInfer keeps
+ONE resident model, cannot hot-swap, and the ephemeral preset's model_id
+(`needle-4096`) is not a loadable NInfer artifact - the swap timed out and
+tore the engine down (proxy log 2026-09-08 03:12). It also collided with a
+concurrently-running eval on the same engine. Do NOT run
+`llmc bench needle --preset qwen38-ninfer` as-is.
 
-This is a good loop task (the needle loop pattern already proved itself).
+To measure NInfer long-context quality, drive it WITHOUT the ephemeral
+swap: probe the already-resident `qwen38-ninfer` at its configured
+max_context (262144) across depths, no per-ctx re-registration. That means
+a new probe mode (a proposed `--no-swap` flag, NOT yet implemented): probe
+the loaded model at depth fractions of its CURRENT context, skipping the
+ephemeral/lock/switch block, reusing the 776fa17 tokenizer fallback. Good
+loop task - and run it SERIALLY, never alongside an eval on the same
+engine.
 
 ## 3. Churn stability (the spike's open p6)
 
