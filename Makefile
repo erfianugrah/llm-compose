@@ -30,12 +30,17 @@ NINFER_SRC     := .ninfer/src/ninfer
 NINFER_COMMIT  := $(shell git -C $(NINFER_SRC) rev-parse --short HEAD 2>/dev/null)
 NINFER_IMAGE   := erfianugrah/ninfer:cuda13.1-sm120a
 NINFER_PINNED  := $(NINFER_IMAGE)-$(NINFER_COMMIT)
+# The commit this repo has REVIEWED and ships. Bumping it is a deliberate
+# re-validation of the engine, not a side effect of a source checkout that
+# moved. check-ninfer-drift fails the build when the checkout disagrees.
+# Lives at repo root (tracked); .ninfer/ is gitignored.
+NINFER_APPROVED := $(shell cat NINFER_PIN 2>/dev/null)
 TRAIN_IMAGE   := erfianugrah/lora-train:latest
 
 .PHONY: help setup up verify _poll-health down restart status shell audit install-timer test test-audit test-docker test-integration test-proxy-go smoke-proxy-go \
         build build-proxy build-proxy-go build-llama build-llama-pascal build-comfyui build-train \
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
-        pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train push-ninfer build-ninfer \
+        pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train push-ninfer build-ninfer check-ninfer-drift \
         release ship ship-proxy ship-proxy-go deploy clean \
         logs-proxy logs-webui logs-llama logs-comfyui logs-train \
         gpu health metrics
@@ -253,12 +258,31 @@ build-llama:
 ## attribution Apache-2.0 requires (upstream's runtime stage ships neither the
 ## license nor a notice). Two tags: a moving one matching the llama-server
 ## naming convention, and an immutable commit-pinned one.
-build-ninfer:
+build-ninfer: check-ninfer-drift
 	@test -n "$(NINFER_COMMIT)" || { echo "no checkout at $(NINFER_SRC)"; exit 2; }
 	docker build -t ninfer:local $(NINFER_SRC)
 	docker build -f images/ninfer-redistribute.Dockerfile \
 		--build-arg NINFER_COMMIT=$(NINFER_COMMIT) \
 		-t $(NINFER_IMAGE) -t $(NINFER_PINNED) images/
+
+## Upstream-drift guard: the engine is a security- and correctness-relevant
+## binary built from pinned upstream source. This fails when the local
+## checkout's HEAD moved away from the reviewed commit in NINFER_PIN
+## (someone pulled upstream without re-validating), or when the checkout is
+## dirty. Bump NINFER_PIN to re-approve after a deliberate re-validation.
+check-ninfer-drift:
+	@test -n "$(NINFER_COMMIT)" || { echo "no checkout at $(NINFER_SRC)"; exit 2; }
+	@test -n "$(NINFER_APPROVED)" || { echo "NINFER_PIN is empty"; exit 2; }
+	@full=$$(git -C $(NINFER_SRC) rev-parse HEAD); \
+	if [ "$$full" != "$(NINFER_APPROVED)" ]; then \
+		echo "NInfer DRIFT: checkout at $$full, approved $(NINFER_APPROVED)"; \
+		echo "  re-validate the engine, then: git -C $(NINFER_SRC) log --oneline -5"; \
+		exit 1; \
+	fi
+	@test -z "$$(git -C $(NINFER_SRC) status --porcelain)" || { \
+		echo "NInfer DRIFT: checkout has uncommitted changes"; \
+		git -C $(NINFER_SRC) status --short; exit 1; }
+	@echo "NInfer pin OK: $(NINFER_COMMIT) == NINFER_PIN"
 
 push-ninfer:
 	docker push $(NINFER_PINNED)

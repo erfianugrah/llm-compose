@@ -172,6 +172,15 @@ How the two differ, and what the proxy does about it:
 - **Coverage is bounded.** Upstream registers five Qwen artifact identities
   and the build is sm_120a-only, so this engine can never serve the Gemma or
   LFM presets. llama.cpp remains the multi-model engine.
+- **Upstream drift is guarded.** The engine builds from a pinned checkout in
+  `.ninfer/src/ninfer`; the reviewed commit is recorded in `NINFER_PIN`
+  (repo root, tracked). `make build-ninfer` runs `check-ninfer-drift` first
+  and fails the build if the checkout's HEAD moved off the approved commit
+  or the tree is dirty. To adopt a new upstream commit, re-validate the
+  engine and bump NINFER_PIN in the same change. The redistributed image tag
+  carries the commit (`ninfer:cuda13.1-sm120a-<sha>`), so the label cannot
+  drift from what was built. The runtime artifact's bytes are audited
+  separately by `llmc audit` against upstream sha256.
 
 Known gaps: `llmc models` shows a ninfer preset's context as the `runtime`
 default rather than `ninfer.max_context`, and its vision column as `no`
