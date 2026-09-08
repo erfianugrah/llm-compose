@@ -42,7 +42,7 @@ TRAIN_IMAGE   := erfianugrah/lora-train:latest
         rebuild-proxy rebuild-proxy-go rebuild-llama rebuild-llama-pascal rebuild-comfyui rebuild-train \
         pull push push-proxy push-proxy-go push-llama push-llama-pascal push-comfyui push-train push-ninfer build-ninfer check-ninfer-drift \
         release ship ship-proxy ship-proxy-go deploy clean \
-        logs-proxy logs-webui logs-llama logs-comfyui logs-train \
+        logs-proxy logs-llama logs-comfyui logs-train \
         gpu health metrics
 
 # ── Stack lifecycle (pure shell — no Python startup) ──────────────────
@@ -52,9 +52,9 @@ TRAIN_IMAGE   := erfianugrah/lora-train:latest
 setup:
 	@$(LLMC) setup
 
-## Start proxy + Open WebUI. Pre-flights .env and bind directories so the
+## Start proxy. Pre-flights .env and bind directories so the
 ## error message points at `make setup` instead of compose's cryptic
-## "${WEBUI_SECRET_KEY:?...}" or a daemon-side "source path not found".
+## daemon-side "source path not found".
 ## Then VERIFIES the proxy actually answers - `docker compose up -d`
 ## returning 0 only means the daemon accepted the request, not that the
 ## container survived init (see `verify` below).
@@ -128,9 +128,9 @@ down:
 	fi
 	docker compose down
 
-## Force-recreate proxy + Open WebUI (keep any running GPU service)
+## Force-recreate proxy (keep any running GPU service)
 restart:
-	docker compose up -d --force-recreate model-proxy-go open-webui
+	docker compose up -d --force-recreate model-proxy-go
 	@$(MAKE) --no-print-directory verify
 
 ## Show stack + active mode + active model.
@@ -157,8 +157,8 @@ shell:
 	@$(LLMC) volumes shell
 
 ## Stop the stack. The bind directories at $HOME/docker-volumes/* keep
-## your GGUFs / LoRAs / WebUI DB on disk — `make down` doesn't touch them.
-## To wipe a specific subdir (e.g. WebUI accounts): `llmc webui reset --yes`.
+## your GGUFs / LoRAs on disk — `make down` doesn't touch them.
+## To wipe a specific subdir: `rm -rf ~/docker-volumes/<name>`.
 clean: down
 	@echo "Stack stopped. Bind data at $$HOME/docker-volumes/ preserved."
 	@echo "To wipe specific data: rm -rf $$HOME/docker-volumes/<name>"
@@ -168,10 +168,6 @@ clean: down
 ## Follow proxy logs
 logs-proxy:
 	docker logs -f --tail=100 model_proxy_go
-
-## Follow Open WebUI logs
-logs-webui:
-	docker logs -f --tail=100 open_webui
 
 ## Follow llama-server logs (only when LLM mode is active)
 logs-llama:
@@ -378,7 +374,7 @@ ship-proxy-go: build-proxy-go push-proxy-go restart
 
 ## Full bootstrap: setup + build all + start
 deploy: setup build up
-	@echo "Stack deployed. Configure WebUI: llmc webui configure"
+	@echo "Stack deployed."
 
 # ── Help ─────────────────────────────────────────────────────────────
 
@@ -388,16 +384,15 @@ help:
 	@echo "Stack lifecycle:"
 	@echo "  make setup           First-time: generate .env + create volumes"
 	@echo "  make deploy          Full bootstrap: setup + build + up"
-	@echo "  make up              Start proxy + Open WebUI"
+	@echo "  make up              Start proxy"
 	@echo "  make down            Stop the stack (incl. any running GPU service)"
-	@echo "  make restart         Recreate proxy + WebUI (keep GPU service)"
+	@echo "  make restart         Recreate proxy (keep GPU service)"
 	@echo "  make status          Show stack + GPU mode + active model"
 	@echo "  make shell           Busybox with every named volume at /vol/<name>"
 	@echo "  make clean           Stop + remove volumes (preserves bind-mount data)"
 	@echo ""
 	@echo "Logs (direct docker — no Python startup):"
 	@echo "  make logs-proxy      Follow proxy logs"
-	@echo "  make logs-webui      Follow Open WebUI logs"
 	@echo "  make logs-llama      Follow llama-server logs"
 	@echo "  make logs-comfyui    Follow ComfyUI logs"
 	@echo "  make logs-train      Follow lora-train logs"

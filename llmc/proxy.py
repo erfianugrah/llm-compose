@@ -98,7 +98,7 @@ class ProxyContext:
     # Model lock: when set (a preset name), the proxy refuses anything that
     # would evict the locked model - model swaps, comfyui/train mode swaps,
     # unknown-model passthrough. Protects unattended multi-hour runs (loop
-    # engine) from cross-client GPU eviction (whisper bot, Open WebUI).
+    # engine) from cross-client GPU eviction (whisper bot, any client).
     # In-memory only: a proxy restart clears the lock.
     lock_model: Optional[str] = None
     lock_owners: set[str] = field(default_factory=set)
@@ -837,7 +837,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         """CORS preflight — answer locally with permissive headers. Forwarding
         OPTIONS to the backend would trigger a GPU mode swap on every browser
-        preflight (e.g. Open WebUI hitting /comfyui while LLM is active),
+        preflight (e.g. any client hitting /comfyui while LLM is active),
         silently stopping llama-server."""
         origin = self.headers.get("Origin", "*")
         req_method = self.headers.get("Access-Control-Request-Method", "GET, POST, OPTIONS")

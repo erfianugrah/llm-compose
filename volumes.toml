@@ -24,7 +24,7 @@
 root = "${HOME}/docker-volumes"
 
 [volumes.llmc-state]
-# Proxy state: active.toml, webui secret, swap locks
+# Proxy state: active.toml, swap locks
 path = "state"
 
 [volumes.llmc-llama-cache]
@@ -73,9 +73,6 @@ path = "comfyui/user"
 # LoRA-training: datasets, configs, captions, raw images, output adapters.
 path = "training-data"
 
-[volumes.llmc-webui-data]
-# Open WebUI state: SQLite DB, user accounts, chat history.
-path = "webui"
 
 [volumes.llmc-bench-cache]
 # Benchmark eval outputs / cached runs.

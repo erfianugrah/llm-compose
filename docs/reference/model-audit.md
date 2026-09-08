@@ -119,5 +119,5 @@ journalctl --user -u llmc-model-audit.service -n 40
 It does not repoint presets or download replacements. A `diff` or `gone`
 verdict is a decision for a human: switching quant changes `model_id` (the
 GGUF stem), which is the id advertised on `/v1/models` and pinned in
-`webui/models.json`, and any quant change wants a `llmc bench tasks` A/B
+the model TOML files, and any quant change wants a `llmc bench tasks` A/B
 before adoption.

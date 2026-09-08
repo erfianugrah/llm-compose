@@ -38,7 +38,6 @@ class TestVolumeLoading(unittest.TestCase):
             "llmc-llama-models",
             "llmc-comfyui-models",
             "llmc-training-data",
-            "llmc-webui-data",
         ):
             self.assertIn(required, registry.volumes,
                           f"volumes.toml missing required volume {required!r}")

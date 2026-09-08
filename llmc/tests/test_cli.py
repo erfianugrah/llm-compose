@@ -172,8 +172,8 @@ class TestParser(unittest.TestCase):
         self.assertEqual(ns.services, [])
 
     def test_logs_with_multiple_services(self):
-        ns = self.parser.parse_args(["logs", "model-proxy", "open-webui"])
-        self.assertEqual(ns.services, ["model-proxy", "open-webui"])
+        ns = self.parser.parse_args(["logs", "model-proxy", "model-proxy-go"])
+        self.assertEqual(ns.services, ["model-proxy", "model-proxy-go"])
 
     def test_json_flag(self):
         ns = self.parser.parse_args(["--json", "status"])

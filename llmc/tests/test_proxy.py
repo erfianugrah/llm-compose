@@ -275,7 +275,7 @@ class TestProxyEndpoints(unittest.TestCase):
                     load_all(Path(__file__).resolve().parents[2] / "models").values()}
         ids = {m["id"] for m in payload["data"]}
         self.assertEqual(ids, expected)
-        # Each entry has the metadata Open WebUI expects
+        # Each entry has the metadata a client expects
         for entry in payload["data"]:
             self.assertIn("meta", entry)
             self.assertIn("capabilities", entry["meta"])
@@ -408,7 +408,7 @@ class TestProxyEndpoints(unittest.TestCase):
         ctx.orchestrator.spawn_comfyui.assert_not_called()
 
     def test_get_comfyui_route_does_not_trigger_swap(self):
-        """Same as /train but for /comfyui/* — common case: Open WebUI
+        """Same as /train but for /comfyui/* — common case: any client
         polling /comfyui/history/{id} while in LLM mode shouldn't stop
         llama-server."""
         ctx = self._make_ctx(current_mode="llm")

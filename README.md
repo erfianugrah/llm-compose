@@ -8,7 +8,7 @@ image generation to ComfyUI, and training to a kohya sd-scripts service
 Built for an **RTX 5090** (32 GB VRAM) on **WSL2**. All inside Docker.
 
 ```
-                Open WebUI / OpenCode / curl
+                OpenCode / curl
                          │
               ┌──────────▼──────────┐
               │   llmc proxy :11434  │ ── routes by URL prefix
@@ -44,7 +44,7 @@ Or step-by-step:
 ```bash
 make setup    # generate .env, create named volumes
 make pull     # pull images from Docker Hub (~17 GB) or `make build` to compile
-make up       # start proxy + Open WebUI
+make up       # start proxy
 ```
 
 Chat UI: <http://localhost:3000>
@@ -72,7 +72,7 @@ docker/curl/nvidia-smi call — fast targets that don't need Python's
 | make target | does |
 |---|---|
 | `up` / `down` / `restart` | pre-flight check + docker compose |
-| `logs-{proxy,webui,llama,comfyui,train}` | `docker logs -f` |
+| `logs-{proxy,llama,comfyui,train}` | `docker logs -f` |
 | `gpu` / `health` / `metrics` | nvidia-smi + curl |
 | `build` / `build-X` / `push-X` | docker build / docker push |
 | `build-proxy-go` / `test-proxy-go` / `smoke-proxy-go` | Go proxy (proxy-go/, soak on :11435): build / go test -race / live hurl suite |
@@ -91,7 +91,6 @@ validation, or HTTP coordination:
 | `train *` / `dataset *` | training + caption job lifecycle |
 | `eval *` / `bench *` | pass-through to eval/run.py / bench scripts |
 | `volumes ls / create / refresh / shell` | named volume admin |
-| `webui configure / reset` | Open WebUI workspace setup |
 
 `make help` for the make surface, `llmc --help` for the CLI.
 
@@ -185,8 +184,6 @@ llmc volumes create        create all volumes from volumes.toml
 llmc volumes refresh       drop+recreate volumes (Docker Desktop snapshot fix)
 llmc volumes shell         busybox with all volumes mounted at /vol/<name>
 
-llmc webui configure       import workspace models from webui/models.json
-llmc webui reset --yes     nuke webui data (accounts, chats)
 llmc comfyui open          print direct ComfyUI URL (auto-swaps mode)
 
 llmc train status / logs / cancel / list / cleanup / deploy <name>
@@ -250,7 +247,6 @@ compose.
 | Service | Port | Network IP | Notes |
 |---------|------|------------|-------|
 | `model-proxy` | 11434 | 172.29.0.4 | Routes + spawns GPU services |
-| `open-webui`  | 3000  | dynamic    | Chat UI                       |
 
 ### GPU services (spawned by the proxy)
 
@@ -275,7 +271,6 @@ compose.
 | `llmc-comfyui-user`          | `~/docker-volumes/comfyui/user`                        |
 | `llmc-comfyui-loras`         | `~/docker-volumes/comfyui/models/loras`                |
 | `llmc-training-data`         | `~/docker-volumes/training-data`                       |
-| `llmc-webui-data`            | `~/docker-volumes/webui`                               |
 | `llmc-bench-cache`           | `~/docker-volumes/bench-cache`                         |
 
 Edit `volumes.toml` to point any volume at a different host path before
@@ -320,8 +315,8 @@ make ship-proxy         # Python rollback-lane image only; deprecated for daily 
 make ship               # full release: build all + push all + restart stack
 ```
 
-Both `ship-proxy-go` and `ship` end with a restart of model-proxy-go +
-open-webui so the running stack picks up the new proxy image.
+Both `ship-proxy-go` and `ship` end with a restart of model-proxy-go
+so the running stack picks up the new proxy image.
 GPU services (llama-server, comfyui, lora-train) aren't restarted — they're
 spawned on demand and the next mode swap will use the freshly-pushed image
 automatically.
@@ -378,7 +373,6 @@ backed by the same bind paths, no copying needed.
 | `image not found: erfianugrah/...` | `make pull` (or `make build` to compile locally) |
 | Mode swap hangs >2 min on first model | First-time GGUF load (~17–22 GB) — wait |
 | `VRAM exceeded` error | Preset's vram_gb > LIMIT−RESERVE budget |
-| Open WebUI port 3000 in use | `WEBUI_PORT=3001` in `.env`, restart |
 | ComfyUI UI not reachable on :8188 | Only bound when comfyui mode is active |
 | Container start fails with `no such file or directory` for a path under `/run/desktop/mnt/.../docker-desktop-bind-mounts/` | Docker Desktop's bind-mount snapshot is stale (volumes were created against a path that's since been reorganised). `llmc down && llmc volumes refresh && llmc up`. Data is preserved — only Docker's volume metadata is rewritten. |
 

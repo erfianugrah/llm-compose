@@ -13,7 +13,7 @@ benchmarking, and operational improvements.
 - Bug fixes with a clear repro path
 - Better default proxy behaviour (mode swapping, GGUF caching, health checks)
 - Additional benchmark suites (`bench/`) — anything reproducible
-- Better Open WebUI / OpenCode integration patterns
+- Better OpenCode integration patterns
 - Documentation, README clarifications, examples
 - Compose tweaks that improve portability (more env-driven config,
   fewer hardcoded paths)
