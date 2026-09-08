@@ -53,9 +53,12 @@ class TestOffsetAndFillerMath(unittest.TestCase):
                          ctx - gen - N.NEEDLE_HEADROOM - tail)
 
     def test_filler_target_negative_when_ctx_too_small(self):
-        # target = ctx - gen - 512; tail is 31 tokens (tok4) at this ctx/depth
-        self.assertLessEqual(N.cell_filler_target(607, 0.5, 64, tok4), 0)
-        self.assertGreater(N.cell_filler_target(608, 0.5, 64, tok4), 0)
+        # target = ctx - gen - NEEDLE_HEADROOM; tail is 31 tokens (tok4) at
+        # this ctx/depth. Boundary moves with the headroom constant.
+        hr = N.NEEDLE_HEADROOM
+        # gen=64, tail=31 -> fits iff ctx > 64 + hr + 31
+        self.assertLessEqual(N.cell_filler_target(64 + hr + 31, 0.5, 64, tok4), 0)
+        self.assertGreater(N.cell_filler_target(64 + hr + 32, 0.5, 64, tok4), 0)
 
 
 class TestScoreHit(unittest.TestCase):
