@@ -30,6 +30,14 @@ from llmc.presets import load_all
 from llmc.cli import ProxyClient
 
 NEEDLE_HEADROOM = 512  # tokens reserved for needle + question at the end
+
+# The engine rejects a prompt whose TOTAL (filler + needle + question +
+# template wrapper) exceeds its effective serving ceiling, which is below the
+# configured --max-context 262144: measured 2026-09-08, a 261570-token total
+# returns 400 'exceeds Engine max_context 262144'. fill_to_tokens is also
+# approximate (can land a few tokens over its target). Reserve enough that the
+# total stays under the observed-good 261000 boundary.
+CEILING_SLACK = 2048
 NEEDLE_STORE = store.RESULTS_DIR / "needle-runs.jsonl"
 
 # 8 uncommon-but-pronounceable codewords, one per cell (deterministic).
@@ -64,7 +72,7 @@ def cell_filler_target(ctx: int, depth: float, gen_tokens: int,
 
     Returns <=0 when the ctx leaves no room.
     """
-    target = ctx - gen_tokens - NEEDLE_HEADROOM
+    target = ctx - gen_tokens - NEEDLE_HEADROOM - CEILING_SLACK
     tail = len(tokenize_fn(needle_sentence(ctx, depth, "word") + "\n" + needle_question(ctx, depth)))
     return target - tail
 

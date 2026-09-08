@@ -50,15 +50,17 @@ class TestOffsetAndFillerMath(unittest.TestCase):
         tail = len(tok4(N.needle_sentence(ctx, 0.5, "word") + "\n"
                         + N.needle_question(ctx, 0.5)))
         self.assertEqual(N.cell_filler_target(ctx, 0.5, gen, tok4),
-                         ctx - gen - N.NEEDLE_HEADROOM - tail)
+                         ctx - gen - N.NEEDLE_HEADROOM - N.CEILING_SLACK - tail)
 
     def test_filler_target_negative_when_ctx_too_small(self):
-        # target = ctx - gen - NEEDLE_HEADROOM; tail is 31 tokens (tok4) at
-        # this ctx/depth. Boundary moves with the headroom constant.
-        hr = N.NEEDLE_HEADROOM
-        # gen=64, tail=31 -> fits iff ctx > 64 + hr + 31
-        self.assertLessEqual(N.cell_filler_target(64 + hr + 31, 0.5, 64, tok4), 0)
-        self.assertGreater(N.cell_filler_target(64 + hr + 32, 0.5, 64, tok4), 0)
+        # target = ctx - gen - NEEDLE_HEADROOM - CEILING_SLACK; derive the
+        # boundary from the constants + the actual tail at a large ctx.
+        reserve = N.NEEDLE_HEADROOM + N.CEILING_SLACK
+        big = 64 + reserve + 100  # comfortably positive
+        tail = len(tok4(N.needle_sentence(big, 0.5, "word") + "\n" + N.needle_question(big, 0.5)))
+        # fits iff ctx - 64 - reserve - tail > 0  <=>  ctx > 64 + reserve + tail
+        self.assertLessEqual(N.cell_filler_target(64 + reserve + tail, 0.5, 64, tok4), 0)
+        self.assertGreater(N.cell_filler_target(64 + reserve + tail + 8, 0.5, 64, tok4), 0)
 
 
 class TestScoreHit(unittest.TestCase):
