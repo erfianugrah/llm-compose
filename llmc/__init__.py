@@ -1,4 +1,4 @@
-"""llmc — llm-compose orchestration package.
+"""llmc -- llmc orchestration package.
 
 Stdlib-only Python (plus `docker` package in proxy runtime).
 Public modules:

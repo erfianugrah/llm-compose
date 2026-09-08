@@ -3,7 +3,7 @@
 #
 # Add this directory to PATH so `llmc <command>` works from anywhere:
 #
-#     export PATH="$HOME/llm-compose/bin:$PATH"
+#     export PATH="$HOME/llmc/bin:$PATH"
 #
 # (Drop into ~/.zshrc or ~/.bashrc.)
 #

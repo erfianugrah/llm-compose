@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
-# llm-compose v2 stack — proxy.
+# llmc v2 stack -- proxy.
 #
 # GPU services (llama-server, comfyui, lora-train) are NOT in this file.
 # The proxy spawns them on-demand via the Docker Engine API and labels
@@ -129,7 +129,7 @@ services:
 
 # ── Network ──────────────────────────────────────────────────────────
 # `name: llmc` overrides Docker compose's default project-prefixed name
-# (would otherwise be `llm-compose_llmc`). The proxy spawns GPU services
+# (would otherwise be `llmc_llmc`). The proxy spawns GPU services
 # onto this network by name, so an unprefixed name keeps that simple.
 networks:
   llmc:

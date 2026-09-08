@@ -14,7 +14,7 @@ loops.
 
 ```bash
 # Add the llmc wrapper to PATH (one-time)
-export PATH="\/infra/ai/llm-compose/bin:\"   # then: llmc --help
+export PATH="\/infra/ai/llmc/bin:\"   # then: llmc --help
 
 # Stack lifecycle (pure shell)
 make setup              # generate .env + create named volumes
@@ -519,7 +519,7 @@ in `/v1/models`. `gemma-4-26B-A4B-it-Q4_K_M` is the stem of
 `summarizer.toml`'s `file = "gemma-4-26B-A4B-it-Q4_K_M.gguf"`, NOT the
 human `name` title. (The proxy's `preset_by_name` also accepts the `name`
 title as an alias, but whisper uses the stem.) Change that `file` and
-whisper's vision/synthesis calls silently 404 — nothing on the llm-compose
+whisper's vision/synthesis calls silently 404 — nothing on the llmc
 side flags it. Confirm advertised IDs with `llmc models` after any edit.
 
 **Teardown footgun.** The `llmc` network is compose-owned *here* (no
@@ -569,7 +569,7 @@ name.
 
 ## No tests for application code
 
-`llm-compose` itself has no application code beyond the llmc package.
+`llmc` itself has no application code beyond the llmc package.
 There's a test suite (`make test`) for the orchestration logic. There's
 no separate frontend / API / DB stack to lint or build. Verification is
 unit tests + Docker build + runtime behavior.

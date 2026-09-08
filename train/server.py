@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LoRA training HTTP API server for llm-compose.
+LoRA training HTTP API server for llmc.
 
 Runs inside the lora-train container, wraps kohya sd-scripts with a
 simple REST API so the proxy (and MCP tools) can start/monitor/cancel

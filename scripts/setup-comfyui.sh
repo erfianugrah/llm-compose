@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download ComfyUI models and assets for the llm-compose stack.
+# Download ComfyUI models and assets for the llmc stack.
 # Idempotent — skips already-downloaded files.
 #
 # Base models downloaded (~9.8 GB):

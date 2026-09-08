@@ -11,7 +11,7 @@ Tools:
   comfyui_status    — Check current GPU mode and ComfyUI queue
   comfyui_history   — Get results of a previous generation
 
-The server talks to the llm-compose proxy at COMFYUI_PROXY_URL
+The server talks to the llmc proxy at COMFYUI_PROXY_URL
 (default: http://localhost:11434). The proxy handles GPU mode
 switching automatically — when this server hits /comfyui/*, the
 proxy stops llama-server and starts ComfyUI.

@@ -1,4 +1,4 @@
-module github.com/erfianugrah/llm-compose/proxy-go
+module github.com/erfianugrah/llmc/proxy-go
 
 go 1.26.6
 

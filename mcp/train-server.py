@@ -16,7 +16,7 @@ Tools:
   train_datasets — List available datasets
   train_deploy   — Copy a trained LoRA to ComfyUI's loras dir
 
-The server talks to the llm-compose proxy at TRAIN_PROXY_URL
+The server talks to the llmc proxy at TRAIN_PROXY_URL
 (default: http://localhost:11434). The proxy handles GPU mode
 switching automatically — when this server hits /train/*, the
 proxy stops llama-server/ComfyUI and starts the lora-train service.

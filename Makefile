@@ -1,4 +1,4 @@
-# llm-compose — local LLM + image / video inference + LoRA training stack
+# llmc -- local LLM + image / video inference + LoRA training stack
 #
 # Daily use goes through the llmc CLI:
 #
@@ -379,7 +379,7 @@ deploy: setup build up
 # ── Help ─────────────────────────────────────────────────────────────
 
 help:
-	@echo "llm-compose v2 — 'llmc --help' for the full CLI surface."
+	@echo "llmc v2 -- 'llmc --help' for the full CLI surface."
 	@echo ""
 	@echo "Stack lifecycle:"
 	@echo "  make setup           First-time: generate .env + create volumes"

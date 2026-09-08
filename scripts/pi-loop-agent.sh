@@ -1,5 +1,5 @@
 #!/bin/bash
-# Loop agent wrapper: pin the llm-compose GPU model for the iteration's
+# Loop agent wrapper: pin the llmc GPU model for the iteration's
 # duration so a concurrent /mode swap (another session) can't abort the
 # stream mid-iteration. Unlock on exit. The lock is polite: anyone can
 # force past it with POST /mode {"lock": false}.

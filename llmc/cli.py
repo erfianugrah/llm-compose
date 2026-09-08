@@ -1217,7 +1217,7 @@ def _ensure_env_file() -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="llmc",
-        description="llm-compose operator CLI",
+        description="llmc operator CLI",
     )
     p.add_argument("--json", action="store_true",
                    help="machine-readable JSON output where applicable")

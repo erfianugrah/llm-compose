@@ -1,4 +1,4 @@
-# Contributing to llm-compose
+# Contributing to llmc
 
 Thanks for considering a contribution. This is a personal hobbyist
 project tuned for a single RTX 5090, but PRs are welcome — especially
@@ -46,10 +46,10 @@ are welcome — see the Dockerfiles for the targeting flags.
 ## Development setup
 
 ```bash
-git clone https://github.com/erfianugrah/llm-compose.git
-cd llm-compose
+git clone https://github.com/erfianugrah/llmc.git
+cd llmc
 # One-time: add the wrapper to PATH so `llmc` is on $PATH
-echo 'export PATH="$HOME/llm-compose/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/llmc/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 
 make deploy          # setup + build + up

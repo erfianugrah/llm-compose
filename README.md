@@ -1,4 +1,4 @@
-# llm-compose
+# llmc
 
 Local LLM + image/video inference + LoRA training stack for a single
 NVIDIA GPU. A reverse proxy routes OpenAI-compatible chat to llama.cpp,
@@ -28,11 +28,11 @@ Built for an **RTX 5090** (32 GB VRAM) on **WSL2**. All inside Docker.
 ## Quick start
 
 ```bash
-git clone https://github.com/erfianugrah/llm-compose.git
-cd llm-compose
+git clone https://github.com/erfianugrah/llmc.git
+cd llmc
 
 # Add the llmc wrapper to your PATH (one-time)
-echo 'export PATH="$HOME/llm-compose/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/llmc/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 
 # Bootstrap (~10 min on first run for image pulls)

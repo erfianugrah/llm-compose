@@ -1,5 +1,5 @@
 {
-  "name": "llm-compose-scraper",
+  "name": "llmc-scraper",
   "version": "1.0.0",
   "type": "module",
   "description": "Web scraper for training data collection (images, text)",

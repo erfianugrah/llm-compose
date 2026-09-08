@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/erfianugrah/llm-compose/proxy-go/internal/proxy"
+	"github.com/erfianugrah/llmc/proxy-go/internal/proxy"
 )
 
 func main() {
