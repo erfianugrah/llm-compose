@@ -44,11 +44,11 @@ regression:
 
 The llama.cpp baseline also goes 4/6 with the same two misses. NInfer at
 medium matches its own-weights llama.cpp baseline on the suite that most
-resembles the work it was adopted for. One t3 failure carried
+resembles the work it was adopted for. One t3 failure's run output carried
 `inference request expired while waiting for admission` - the needle loop
-was sharing the engine at the time (max_concurrency=1), so that iteration
-is contention, not a clean quality signal; the t3 task is hard enough that
-it fails uncontended too (every prior model).
+was sharing the engine at the time (max_concurrency=1), so that pass was
+contention, not a clean quality signal; but t3 is hard enough that it fails
+uncontended too (every prior model shows this).
 
 ## Tool calls - MEASURED
 
@@ -64,9 +64,13 @@ it fails uncontended too (every prior model).
 - Quality under occupancy: the probe now EXISTS - `llmc bench needle`
   (this session) splices a codeword at a depth fraction of a filled
   context and scores retrieval. **But it is blocked on NInfer**: the probe
-  (like the context sweep) tokenizes via llama.cpp's `/tokenize` endpoint,
-  and NInfer has no tokenizer endpoint (404). Needle currently runs on
-  llama presets only. A NInfer tokenizer path is the follow-up.
+  (like the context sweep) sizes its filler via llama.cpp's `/tokenize`
+  endpoint, and NInfer has no tokenizer endpoint (404). The fix is a
+  local-tokenizer fallback in `llmc/bench/context.py::make_tokenizer` -
+  the `[bench] tokenizer` field (e.g. `unsloth/Qwen3.8-27B-GGUF`) is
+  already declared per preset and is the HF repo to tokenize with; today
+  only eval.py's HellaSwag uses it. Until that fallback exists, needle and
+  the context sweep run on llama presets only.
 
 ## Churn stability - NOT YET MEASURED
 
@@ -84,9 +88,13 @@ Qwen3.8 numbers.
 
 ## Frontier anchor - NOT YET MEASURED
 
-No absolute ceiling is set. Plan: `run-evals.py --base-url
-http://127.0.0.1:4141/v1 --model gpt-5-high` (pi's own endpoint) for the
-HumanEval/BFCL anchor, plus a t1-t6 subset. DEFERRED.
+No absolute ceiling is set. There is no local GPT-5 endpoint (pi's
+providers are `llama-server`, `openrouter`, `external`; the `:4141` URL in
+an earlier draft of this section was wrong - that port is not pi). The
+anchor path is OpenRouter: point `bench/run-evals.py --base-url
+https://openrouter.ai/api/v1 --model <frontier-model>` at it with the
+OpenRouter key for the HumanEval/BFCL ceiling, plus a t1-t6 subset.
+DEFERRED.
 
 ## Ops hardening landed this session
 
