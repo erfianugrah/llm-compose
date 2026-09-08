@@ -90,6 +90,8 @@ Candidates, with the cost of each:
 Recommendation: **`llmc`**. It is the name of the thing that actually serves
 the request, and it survives adding a third engine.
 
+**DECIDED 2026-09-08: `llmc`.**
+
 Whatever is chosen, the extension file wants renaming too
 (`llama-server-dynamic.ts` -> `llmc-dynamic.ts`), and the `LLAMA_SERVICE` /
 `llama_server` container and volume names must NOT change - those describe
