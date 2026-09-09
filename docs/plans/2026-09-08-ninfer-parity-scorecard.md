@@ -28,6 +28,43 @@ canary. Run against `qwen38-ninfer` on 2026-09-08:
 
 **4/6.** Reproduce: `llmc bench tasks --presets qwen38-ninfer --runs 1`.
 
+### Interleaved A/B vs llama.cpp (2026-09-09) - the controlled number
+
+The single-run table above and the 2026-09-08 "t4/t5 regression" scare were
+both uncontrolled (docs/plans/2026-09-08-ninfer-ab-prep.md has the forensics:
+the regression was a lock-refusal artifact). This run had both engines on
+the same tasks in the same session, engine swap per leg (ABAB, order
+alternating per run), one suite alone on the GPU, unique lock owner, and -
+new that day - pi resolving the REGISTERED preset ids (`llmc/qwen38-ninfer`,
+`llmc/qwen38`). Every earlier task row used file-derived ids pi had never
+registered, so pi fell back to a "custom model id" that copied the metadata
+of whichever model the proxy listed first, and that order was random per
+call. Run `20260908-232622`, 40 rows, 0 invalid, 0 agent errors, 0 fallback
+warnings:
+
+| task | llama.cpp UD-Q4_K_M | NInfer NVFP4 | wall p50 llama / ninfer |
+|---|---|---|---|
+| t1-go-add-truncate | 5/5 | 5/5 | 63.5s / 36.6s |
+| t2-go-fix-palindrome | 5/5 | 5/5 | 33.4s / 34.8s |
+| t4-ts-add-camelcase | 5/5 | 5/5 | 31.9s / 31.8s |
+| t5-ts-fix-slugify | 5/5 | 5/5 | 30.4s / 31.8s |
+
+Over 20 runs each: llama.cpp 20 iterations, all first-try; NInfer 24
+iterations, 17 first-try. Wall p50 35.0s vs 34.1s. The four extra NInfer
+iterations are three runs that needed a second or third attempt (t1 x1,
+t4 x2); at n=20 that is not a separable difference. The same suite under
+the old (random-metadata) wiring, run `20260908-213625`, was also 20/20 vs
+20/20 with 25 vs 27 iterations.
+
+Reproduce: `llmc bench tasks --presets qwen38-ninfer,qwen38 --runs 5
+--tasks t1-go-add-truncate,t2-go-fix-palindrome,t4-ts-add-camelcase,t5-ts-fix-slugify`
+(interleave is the default with two presets).
+
+t3/t6, the test-writing tasks, were started as a second interleaved pass
+and stopped after one pair: 0/1 vs 0/1, NInfer losing in 885s, llama.cpp in
+3128s. They fail for every model ever benched here and cannot separate the
+engines; the remaining legs would have cost hours for nothing.
+
 ### Read on the two failures
 
 t3 and t6 are the two test-WRITING tasks, and they are the hardest in the

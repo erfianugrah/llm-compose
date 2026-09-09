@@ -1,4 +1,4 @@
-# 2026-09-08 - NInfer vs llama.cpp A/B: prep (not running yet)
+# 2026-09-08 - NInfer vs llama.cpp A/B: prep, fixes, and the clean run
 
 The question from the session: "is the test flawed?" and "is qwen dumber on
 NInfer than on llama.cpp?" The data so far is contaminated by three things:
@@ -6,31 +6,42 @@ infrastructure stubs (Model-not-found, 10s exit-1), the provider rename
 breaking the suite mid-run, and the engine being swapped under load. This doc
 is the prep for a clean run. Nothing here touches the GPU.
 
-## What the current data actually shows
+## What the 2026-09-08 data actually was (corrected 2026-09-09)
 
-Per-task pass rates, real runs only (wall > 30s = the model engaged):
+The first draft of this section split the ninfer t4/t5 rows into STUB
+(10s, Model-not-found) and REAL (61-65s, 8 iterations, 8 rollbacks) and
+read the REAL rows as "the model engaged and failed the probe 8 times". The
+proxy log says otherwise. Timeline (UTC):
 
-| task | llama.cpp | ninfer |
-|---|---|---|
-| t1 go-add-truncate | 36/36 | 5/5 |
-| t2 go-fix-palindrome | 27/27 | 5/5 |
-| t3 go-write-split-tests | 1/14 | 0/3 |
-| t4 ts-add-camelcase | 23/23 | 1/3 |
-| t5 ts-fix-slugify | 17/17 | 1/3 |
-| t6 ts-write-slug-tests | 0/13 | 0/3 |
+- 11:39 the suite was launched twice at once (a `&` and a bg task) with the
+  stale `llama-server/` rung: 48 Model-not-found rows, both engines.
+- 11:52 the corrected suite started in the background under lock owner
+  `bench`. ninfer t1 2/2, t2 2/2 clean; t3 run 1 failed at 209s.
+- 12:13:35 while that suite was still in its ninfer leg, a bare `llmc unlock`
+  cleared its lock and `llmc switch qwen38` swapped the engine. t3 run 2
+  (1005s) straddles the swap.
+- 12:14:48 a second suite started in the foreground for qwen38 under the SAME
+  owner `bench`, locked it, and swapped the GPU to llama.cpp.
+- 12:14:53 onward: every request from the first suite's ninfer leg was
+  rejected by the scheduler with 422 "model lock active on qwen38: refusing
+  to swap" BEFORE forwarding (no `req start` line in the proxy log - exactly
+  one nvfp4 request completed after this point). pi exited in ~7s, pi-loop
+  logged "(agent exited N; continuing)" and counted a rolled-back iteration;
+  eight of those is a 50-65s FAIL that looks like a real run.
+- 12:21:11 the first suite released `bench`, which also released the second
+  suite's lock (same owner).
 
-t4/t5 are the gap. But the ninfer t4/t5 numbers mix two failure modes:
-- STUB runs (10-11s, exit 1): the model never loaded - the provider rename
-  left the suite pointing at `llama-server/<id>` when the provider was
-  already `llmc`. Infrastructure, not quality.
-- REAL runs (61-65s, 8 iterations, 8 rollbacks): the model engaged and
-  failed the probe 8 times. Quality signal.
+So the ninfer t4/t5/t6 rows from 12:15 on were lock refusals, not model
+output, and the "2/4 on real runs" read was wrong too: the two REAL passes
+were historical rows from the parity run, not from that day. Valid ninfer
+data from 2026-09-08: t1 2/2, t2 2/2, t3 0/1. The t4/t5 question was OPEN
+until the interleaved run below.
 
-The two REAL ninfer t4/t5 failures are the only clean data points, and both
-came AFTER the two REAL passes (34.5s, 36.7s, 1 iteration, the first runs
-after the fix). So the honest read: 2/4 on t4/t5 real runs, not 1/3.
+The store was purged 2026-09-09: 63 uncommitted rows dropped (the 48 stubs,
+the 7 post-swap ninfer rows, and 8 llama.cpp rows from the two overlapping
+suites sharing one slot), the 5 valid ninfer rows kept.
 
-## The five things to fix before the A/B means anything
+## The five things to fix before the A/B means anything (1, 2, 3, 4-preflight, 5 landed 2026-09-09)
 
 ### 1. Purge the stub rows
 `bench/results/runs.jsonl` has the Model-not-found stubs mixed in with real
@@ -107,7 +118,7 @@ The command (after the five fixes land):
 ```
 llmc bench tasks --presets qwen38-ninfer,qwen38 --runs 5 --interleave
 ```
-(`--interleave` is the proposed new flag from item 5 - not yet implemented.)
+(`--interleave` is the default whenever 2+ presets are compared; `--no-interleave` restores AABB.)
 
 One existing data point cuts against the "dumber" hypothesis: HumanEval
 pass@1 was 0.598 on ninfer vs 0.451 on llama.cpp - but the llama.cpp number
@@ -122,3 +133,48 @@ before it counts.
 4. Items 3 (exit code + tail) - makes the next failure diagnosable, not a
    blocker for a valid number.
 5. Then the ABAB run on a quiet GPU.
+
+## Result of the clean runs (2026-09-09)
+
+Two interleaved passes of the four discriminating tasks, 5 runs each. The
+first (run `20260908-213625`) exposed a wiring bug, the second (run
+`20260908-232622`) is the number.
+
+**The wiring bug.** The harness handed pi `llmc/<model file id>`
+(`qwen3.8-27b-nvfp4`, `Qwen3.8-27B-UD-Q4_K_M`). pi's llmc provider registers
+models by PRESET NAME (`pi --list-models` shows `llmc qwen38-ninfer`), so
+every leg logged `Model "..." not found for provider "llmc". Using custom
+model id.` pi's fallback copies the first listed model's metadata, and the
+proxy's GET /v1/models was map-ordered, i.e. random per call - so each leg
+ran with a random reasoning flag, context window and output cap. Effort was
+still equal on both sides (the proxy pins medium on NInfer; llama-server
+b10472 has no `reasoning_effort` string in its binary, so it ignores the
+per-request field and takes medium from its template kwargs), and the wall
+times rule out any high-effort binge. Fixed: the rung is now the preset
+name, the row stores it (`rung`), the preflight accepts preset names, and
+the proxy sorts /v1/models.
+
+| task | llama.cpp | NInfer | (old wiring, run 213625) |
+|---|---|---|---|
+| t1-go-add-truncate | 5/5 | 5/5 | 5/5 vs 5/5 |
+| t2-go-fix-palindrome | 5/5 | 5/5 | 5/5 vs 5/5 |
+| t4-ts-add-camelcase | 5/5 | 5/5 | 5/5 vs 5/5 |
+| t5-ts-fix-slugify | 5/5 | 5/5 | 5/5 vs 5/5 |
+
+Corrected run, 20 runs per engine: iterations 20 (llama.cpp, all first-try)
+vs 24 (NInfer, 17 first-try); wall p50 35.0s vs 34.1s; 0 agent errors, 0
+fallback warnings. Parity. The "NInfer is dumber" hypothesis has no support
+on this suite; the Radarr pagination mistake that started it was one
+anecdote on one session and is the model being the model, not the engine.
+
+Phase 2 (t3, t6, interleaved, run `20260908-220907`) was stopped after one
+pair: 0/1 vs 0/1 (885s vs 3128s, the llama.cpp run had one aborted pi
+iteration, recorded as `agent_errors: 1`, below the invalid threshold).
+These tasks fail for every model benched here and cannot separate engines.
+
+What was NOT tested: sampling parity (the NInfer preset still has no
+sampling fields), KV precision parity (fp8 vs f16), HumanEval on the current
+llama.cpp preset (the 0.451 is from the old quant), and anything at long
+context. None is needed to close the regression question; they are the
+isolation steps if a gap ever shows up.
+
