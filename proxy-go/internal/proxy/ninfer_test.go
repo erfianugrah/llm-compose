@@ -65,7 +65,9 @@ func TestNinferPresetParses(t *testing.T) {
 	if p.Ninfer == nil {
 		t.Fatal("Ninfer section is nil")
 	}
-	if p.Ninfer.MaxContext != 262144 {
+	// 252928 is NInfer's own published ceiling for this artifact on a 5090
+	// (010ba88); the arch limit 262144 does not fit after weights.
+	if p.Ninfer.MaxContext != 252928 {
 		t.Errorf("max_context = %d", p.Ninfer.MaxContext)
 	}
 	if p.Ninfer.KVDtype != "fp8" || p.Ninfer.Spec != "mtp" || p.Ninfer.DraftTokens == nil || *p.Ninfer.DraftTokens != 3 {
@@ -150,7 +152,7 @@ func TestNinferCommand(t *testing.T) {
 	want := map[string]string{
 		"--model-id":           "qwen3.8-27b-nvfp4",
 		"--host":               "0.0.0.0",
-		"--max-context":        "262144",
+		"--max-context":        "252928",
 		"--max-concurrency":    "1",
 		"--kv-dtype":           "fp8",
 		"--spec":               "mtp",
