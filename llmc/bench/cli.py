@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tasks", help="comma-separated task names (default: all)")
     sp.add_argument("--verify-only", action="store_true",
                     help="run loop verify-sensors per task (canary gate), no model scoring")
+    sp.add_argument("--interleave", dest="interleave", action="store_true", default=None,
+                    help="swap engine per leg (ABAB); default when 2+ presets are compared")
+    sp.add_argument("--no-interleave", dest="interleave", action="store_false",
+                    help="old per-preset blocks (AABB)")
     sp.add_argument("--external", metavar="URL", help="external OpenAI endpoint base (skips proxy lock/switch)")
     sp.add_argument("--model-id", help="model id for --external")
     sp.add_argument("--label", help="store label for --external (default: ext-<model-id>)")
@@ -135,6 +139,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             runs=args.runs,
             tasks=task_list,
             verify_only=args.verify_only,
+            interleave=args.interleave,
         )
     if args.bench_command == "context":
         return context.run_context_sweep(

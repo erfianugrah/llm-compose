@@ -237,7 +237,7 @@ def test_materialize_harness_strips_meta_and_resolves_solutions():
          "sensors": [{"name": "probe", "cmd": "go test ./...",
                       "canary": "cp {SOLUTIONS}/t-x.go x.go"}]}
     h = bench_tasks.materialize_harness(m, "model-id")
-    assert h["models"] == ["llama-server/model-id"]
+    assert h["models"] == ["llmc/model-id"]
     assert "name" not in h and "fixture" not in h and "probe" not in h
     assert "{SOLUTIONS}" not in h["sensors"][0]["canary"]
     assert h["sensors"][0]["canary"].endswith("/t-x.go x.go")
@@ -270,5 +270,163 @@ def test_parse_report_shapes(tmp_path: Path):
     (tmp_path / ".pi" / "harness-report.json").write_text(
         '{"iterations": [{"kept": true}, {"kept": false}, {"kept": true, "escalated": true}]}')
     out = bench_tasks.parse_report(tmp_path)
-    assert out == {"iterations": 3, "rolled_back": 1, "escalations": 1}
+    assert out == {"iterations": 3, "rolled_back": 1, "escalations": 1, "agent_errors": 0}
     assert bench_tasks.parse_report(tmp_path / "nope") == {}
+
+
+def test_parse_report_counts_agent_errors(tmp_path: Path):
+    (tmp_path / ".pi").mkdir()
+    (tmp_path / ".pi" / "harness-report.json").write_text(json.dumps({"iterations": [
+        {"kept": False, "agentExit": 1},
+        {"kept": False, "agentExit": 1},
+        {"kept": True, "agentExit": 0},
+        {"kept": False, "agentExit": 124, "agentTimedOut": True},  # timeout is not an agent error
+        {"kept": False},  # older report without the field
+    ]}))
+    out = bench_tasks.parse_report(tmp_path)
+    assert out["agent_errors"] == 2
+    assert out["iterations"] == 5 and out["rolled_back"] == 4
+
+
+def test_preflight_rung_checks_provider_and_advertised(tmp_path: Path):
+    mj = tmp_path / "models.json"
+    mj.write_text(json.dumps({"providers": {"llmc": {}, "openrouter": {}}}))
+    ok = bench_tasks.preflight_rung("qwen3.8-27b-nvfp4", "llmc", ["qwen3.8-27b-nvfp4"], models_json=mj)
+    assert ok is None
+    bad_provider = bench_tasks.preflight_rung("x", "llama-server", ["x"], models_json=mj)
+    assert bad_provider and "no provider 'llama-server'" in bad_provider
+    bad_model = bench_tasks.preflight_rung("gone", "llmc", ["x"], models_json=mj)
+    assert bad_model and "does not advertise" in bad_model
+    missing = bench_tasks.preflight_rung("x", "llmc", ["x"], models_json=tmp_path / "nope.json")
+    assert missing and "cannot read" in missing
+
+
+class _FakeClient:
+    """Scripted proxy: records lock/switch calls, answers status from `state`."""
+
+    def __init__(self, state):
+        self.state = state
+        self.calls = []
+
+    def status(self):
+        return 200, self.state
+
+    def models(self):
+        return 200, {"data": [{"id": "A-id", "meta": {"preset": "A"}},
+                              {"id": "B-id", "meta": {"preset": "B"}}]}
+
+    def set_lock(self, lock, owner=None, wait=False):
+        self.calls.append(("lock", lock, owner))
+        return 200, {}
+
+    def set_mode(self, mode, model=None, owner=None):
+        self.calls.append(("switch", model))
+        return 200, {}
+
+
+def _fake_presets():
+    class P:
+        def __init__(self, name):
+            self.name = name
+            self.model_id = f"{name}-id"
+            self.model = type("M", (), {"file": f"{name}.gguf"})()
+    return {"A": P("A"), "B": P("B")}
+
+
+def _patch_run_tasks(monkeypatch, client, results):
+    import llmc.cli as cli_mod
+    monkeypatch.setattr(cli_mod, "ProxyClient", lambda: client)
+    monkeypatch.setattr(bench_tasks, "load_all", lambda _d: _fake_presets())
+    monkeypatch.setattr(bench_tasks, "wait_ready", lambda _m: True)
+    monkeypatch.setattr(bench_tasks, "load_manifests", lambda: [
+        {"name": "t1", "fixture": "fx"}, {"name": "t2", "fixture": "fx"}])
+    monkeypatch.setattr(bench_tasks.store, "append", lambda rec: results.append(rec))
+    monkeypatch.setattr(bench_tasks.store, "make_record",
+                        lambda kind, preset, path, metrics, rid, extra=None:
+                        {"kind": kind, "preset": preset, "metrics": metrics, **(extra or {})})
+
+
+def test_run_tasks_refuses_to_start_under_a_foreign_lock(monkeypatch):
+    client = _FakeClient({"locked": "qwen38", "lock_owners": ["pi-1234"], "lock_queue": []})
+    results = []
+    _patch_run_tasks(monkeypatch, client, results)
+    logs = []
+    rc = bench_tasks.run_tasks(["A", "B"], runs=1, log=logs.append)
+    assert rc == 3
+    assert any("refusing to start" in l and "pi-1234" in l for l in logs)
+    assert client.calls == [] and results == []
+
+
+def test_run_tasks_interleaves_and_uses_unique_owner(monkeypatch):
+    client = _FakeClient({"locked": None, "lock_owners": [], "lock_queue": []})
+    results = []
+    _patch_run_tasks(monkeypatch, client, results)
+    rungs = []
+    def fake_run_task(m, model_id, verify_only, log, rung_id=None):
+        rungs.append(rung_id)
+        return {"task": m["name"], "pass": True, "iterations": 1,
+                "agent_errors": 0, "invalid": False, "wall_s": 1.0, "tail": ""}
+    monkeypatch.setattr(bench_tasks, "run_task", fake_run_task)
+    rc = bench_tasks.run_tasks(["A", "B"], runs=2, rid="RID", log=lambda _s: None)
+    assert rc == 0
+    # the rung is the preset name pi registered, never the file-derived model id
+    assert set(rungs) == {"A", "B"}
+    assert all(r["rung"] in ("llmc/A", "llmc/B") for r in results)
+    # (t1,run1)=AB (t1,run2)=BA (t2,run1)=BA (t2,run2)=AB -> engine swap every leg
+    switches = [c[1] for c in client.calls if c[0] == "switch"]
+    assert switches == ["A", "B", "B", "A", "B", "A", "A", "B"]
+    owners = {c[2] for c in client.calls if c[0] == "lock"}
+    assert owners == {"bench-RID"}
+    assert all(r["owner"] == "bench-RID" and r["interleaved"] is True for r in results)
+    assert len(results) == 8
+
+
+def test_run_tasks_stops_on_invalid_run_and_keeps_tail(monkeypatch):
+    client = _FakeClient({"locked": None, "lock_owners": [], "lock_queue": []})
+    results = []
+    _patch_run_tasks(monkeypatch, client, results)
+    monkeypatch.setattr(bench_tasks, "run_task",
+                        lambda m, model_id, verify_only, log, rung_id=None: {
+                            "task": m["name"], "pass": False, "iterations": 8, "rolled_back": 8,
+                            "agent_errors": 8, "invalid": True, "wall_s": 60.0,
+                            "tail": "Error: model lock active on qwen38"})
+    logs = []
+    rc = bench_tasks.run_tasks(["A", "B"], runs=5, log=logs.append)
+    assert rc == 3
+    assert len(results) == 1 and results[0]["metrics"]["invalid"] is True
+    assert "lock active" in results[0]["metrics"]["tail"]
+    assert any("Stopping the suite" in l for l in logs)
+    # the lock was released even though the suite aborted
+    assert client.calls[-1] == ("lock", False, client.calls[0][2])
+
+
+def test_run_tasks_preflight_blocks_bad_rung(monkeypatch, tmp_path: Path):
+    client = _FakeClient({"locked": None, "lock_owners": [], "lock_queue": []})
+    results = []
+    _patch_run_tasks(monkeypatch, client, results)
+    client.models = lambda: (200, {"data": [{"id": "A-id", "meta": {"preset": "A"}}]})  # B not advertised
+    logs = []
+    rc = bench_tasks.run_tasks(["A", "B"], runs=1, log=logs.append)
+    assert rc == 3
+    assert any("preflight failed for B" in l for l in logs)
+    assert not any(c[0] == "switch" for c in client.calls)
+
+
+def test_advertised_ids_includes_preset_names():
+    payload = {"data": [{"id": "qwen3.8-27b-nvfp4", "meta": {"preset": "qwen38-ninfer"}},
+                        {"id": "auto", "meta": {"alias": True}}]}
+    assert bench_tasks.advertised_ids(payload) == ["qwen3.8-27b-nvfp4", "qwen38-ninfer", "auto"]
+
+
+def test_run_task_rung_uses_rung_id(monkeypatch, tmp_path: Path):
+    seen = {}
+    def fake_setup(fixture, probe, harness):
+        seen["models"] = harness["models"]
+        raise RuntimeError("stop here")
+    monkeypatch.setattr(bench_tasks, "setup_workdir", fake_setup)
+    m = {"name": "t", "fixture": "fx", "task": "x"}
+    try:
+        bench_tasks.run_task(m, "file-derived-id", verify_only=True, log=print, rung_id="qwen38")
+    except RuntimeError:
+        pass
+    assert seen["models"] == ["llmc/qwen38"]
