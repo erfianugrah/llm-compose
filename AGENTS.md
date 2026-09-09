@@ -72,7 +72,7 @@ make ship               # full release: build all + push all + restart stack
 make push-{proxy,llama,comfyui,train}  # per-image push
 
 # Tests
-make test               # unit + schema (~1s, no Docker)
+make test               # unit + schema via pytest (~30s, no Docker)
 make test-docker        # + daemon integration (~30s)
 make test-integration   # + GPU end-to-end (~90s, stack up + GPU)
 ```

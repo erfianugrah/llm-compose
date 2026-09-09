@@ -80,7 +80,7 @@ code edits, `make build-X` lets Docker cache handle incrementality.
 ## Tests
 
 ```bash
-make test               # unit + schema (~1s, no Docker)
+make test               # unit + schema via pytest (~30s, no Docker; pip install pytest once)
 make test-docker        # + docker daemon integration (~30s)
 make test-integration   # + end-to-end GPU swap (~90s, stack up + GPU)
 ```

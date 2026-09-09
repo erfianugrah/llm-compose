@@ -199,17 +199,21 @@ metrics:
 
 # ── Tests ────────────────────────────────────────────────────────────
 
-## Run the unit + schema test suite (no Docker required)
+## Run the unit + schema test suite (no Docker required, ~30s).
+## pytest, not `unittest discover`: llmc/tests/test_bench.py is pytest-style
+## (tmp_path / monkeypatch fixtures) and unittest never collected it, so the
+## bench-harness tests only ran when someone invoked pytest by hand. pytest
+## collects the unittest.TestCase files too. `pip install pytest` once.
 test:
-	@python3 -m unittest discover llmc.tests
+	@python3 -m pytest -q llmc/tests
 
 ## Run all tests including Docker daemon integration (~30s)
 test-docker:
-	@LLMC_TEST_DOCKER=1 python3 -m unittest discover llmc.tests
+	@LLMC_TEST_DOCKER=1 python3 -m pytest -q llmc/tests
 
 ## Run end-to-end GPU integration tests (requires stack up + GPU + ~90s)
 test-integration:
-	@LLMC_TEST_INTEGRATION=1 python3 -m unittest discover llmc.tests
+	@LLMC_TEST_INTEGRATION=1 python3 -m pytest -q llmc/tests
 
 ## Live audit drill: real HF API + a planted orphan backed up over ssh.
 ## No GPU, ~40s. Uses a scratch remote dir it removes afterwards.

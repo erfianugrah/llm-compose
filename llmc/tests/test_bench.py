@@ -50,7 +50,11 @@ def test_latest_per_preset_keeps_last(tmp_path: Path):
 
 def test_p50_p95():
     assert perf.p50([1, 2, 3, 4, 5]) == 3
-    assert perf.p95([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) == 9.5
+    # nearest-rank (lower), not interpolated: index int(0.95 * (n - 1)). Every
+    # p95 quoted in the scorecards since 2026-08-16 was computed this way.
+    assert perf.p95([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) == 9
+    assert perf.p95(list(range(1, 101))) == 95
+    assert perf.p95([]) == 0.0
     assert perf.p50([]) == 0.0 and perf.p95([]) == 0.0
 
 
@@ -181,7 +185,11 @@ def test_parse_action_variants():
 def test_ordered_subsequence_with_alts():
     assert gumshoe._ordered_subsequence(["a", "x", "b"], [{"a"}, {"b"}])
     assert gumshoe._ordered_subsequence(["a", "b"], [{"a"}, {"b"}, {"c"}]) is False
-    assert gumshoe._ordered_subsequence(["osint_url"], [{"any": ["osint_domain", "osint_url"]}])
+    # {"any": [...]} is the CASE-FILE spelling; check_trace expands it to a set
+    # via _expand_alts before matching, so the matcher only ever sees sets.
+    alts = gumshoe._expand_alts([{"any": ["osint_domain", "osint_url"]}])
+    assert alts == [{"osint_domain", "osint_url"}]
+    assert gumshoe._ordered_subsequence(["osint_url"], alts)
     assert gumshoe._ordered_subsequence(["web_search"], [{"any": ["osint_domain"]}]) is False
 
 
@@ -193,7 +201,7 @@ def test_check_trace_sequence_args_answer():
     case = _case({"tools": ["web_search"], "args": {"q": "nginx"}})
     good = {"steps": [{"tool": "web_search", "args": {"query": "nginx"}}], "answer": "done"}
     bad_seq = {"steps": [{"tool": "fetch", "args": {}}], "answer": "x"}
-    no_final = {"steps": [{"tool": "web_search", "args": {"nginx"}}], "answer": ""}
+    no_final = {"steps": [{"tool": "web_search", "args": {"q": "nginx"}}], "answer": ""}
     assert gumshoe.check_trace(case, good)
     assert not gumshoe.check_trace(case, bad_seq)
     assert not gumshoe.check_trace(case, no_final)

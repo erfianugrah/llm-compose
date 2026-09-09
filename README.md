@@ -290,7 +290,7 @@ Page-cache warm: 5–10 s per swap.
 ### Tests
 
 ```bash
-make test              # unit + schema (no Docker, ~1s)
+make test              # unit + schema via pytest (no Docker, ~30s)
 make test-docker       # + Docker daemon integration (~30s)
 make test-integration  # + end-to-end GPU swap correctness (~90s, stack must be up)
 ```
