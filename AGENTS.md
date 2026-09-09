@@ -42,7 +42,7 @@ llmc lock [preset] [--owner id] [--wait]  # pin a preset: refuse GPU-evicting sw
 #   queue and polls until the current owners drain (swap to your preset is lazy,
 #   on first request after the grant). A contended lock NEVER hijacks the
 #   running model (pre-2026-08-17 it did - that bug killed a loop mid-iteration).
-llmc unlock [--owner id]        # release one owner (also drops its queue entry); no owner = force-clear all
+llmc unlock --owner id          # release one owner (also drops its queue entry); ownerless needs --force = clear all
 llmc lock --renew [--owner id]  # heartbeat the lock TTL (LLMC_LOCK_TTL_S, 900s). Grants under the
 #   lock refresh the TTL on their own; a leg that makes NO requests for >TTL (long local
 #   thinking, waiting in the FIFO queue) lapses the lock without this. `llmc status` and
@@ -272,14 +272,15 @@ model mid-generation. The lock persists via the state file
 a proxy restart no longer clears it. Consequence: a loop that exits
 without unlocking leaves the pinned model RESIDENT, holding VRAM
 indefinitely (observed 2026-08-13: Gemma 26B squatting 22.5 GiB hours
-after the loop ended). `llmc unlock` to release and free the GPU.
+after the loop ended). `llmc unlock --owner <id>` to release and free the GPU.
 The lock survives deletion of the locked preset's TOML (the running
 model stays servable by name).
 
 The lock is SHARED with named owners: each consumer locks with a
 distinct `--owner` (e.g. the pi session id) and releases only itself;
 the preset stays pinned until the last owner releases. Ownerless unlock
-force-clears everything (admin escape hatch). `GET /mode` and
+needs `--force` and clears everything (admin escape hatch: on 2026-09-08 a
+bare unlock handed the GPU away under a running bench and faked a regression). `GET /mode` and
 `llmc status` show `lock_owners`. Concurrent loops: share ONE preset
 (`loop` runs `parallel_slots = 1`, 262144 ctx - Qwen3.8 Dense KV is
 45.1 KiB/token so 2 wide slots no longer fit the 32 GB card), one git

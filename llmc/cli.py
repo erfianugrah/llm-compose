@@ -382,6 +382,11 @@ def cmd_lock(args: argparse.Namespace) -> int:
 
 
 def cmd_unlock(args: argparse.Namespace) -> int:
+    if not args.owner and not args.force:
+        _err("unlock without --owner force-clears EVERY owner's lock and queue entry. "
+             "On 2026-09-08 that handed the GPU away under a running bench. "
+             "Pass --owner <id> to release your own, or --force if you mean it.")
+        return EXIT_USER_ERROR
     client = ProxyClient()
     try:
         status, payload = client.set_lock(False, owner=args.owner)
@@ -1254,8 +1259,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          "(or keep your FIFO queue entry alive)")
     sp.set_defaults(func=cmd_lock)
 
-    sp = sub.add_parser("unlock", help="clear the model lock (also drops your queue entry)")
+    sp = sub.add_parser("unlock", help="release your model lock (also drops your queue entry)")
     sp.add_argument("--owner", help="identity of the owner to unlock")
+    sp.add_argument("--force", action="store_true",
+                    help="no --owner: force-clear every owner (evicts running loops/benches)")
     sp.set_defaults(func=cmd_unlock)
 
     sp = sub.add_parser("models", help="list available LLM presets")

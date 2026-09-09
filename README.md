@@ -60,7 +60,7 @@ llmc status                # show what's running
 llmc lock loop             # pin a preset against GPU-evicting swaps
 llmc lock qwen38 --wait    # another preset pinned? queue FIFO until it drains (never hijacks)
 # Concurrent loops: loops can share one preset concurrently (lock with a distinct --owner per session, e.g. the pi session id); loops on different presets queue with --wait; when looping the same repo use a separate git worktree per loop; loop sensors must never rebuild/restart the stack that serves them.
-llmc unlock                # clear the lock (also drops your queue entry)
+llmc unlock --owner <id>   # release your lock (ownerless needs --force: evicts everyone)
 ```
 
 ### Tool boundary
@@ -174,7 +174,7 @@ llmc lock <preset> --owner <id> [--wait]   pin a preset against evicting swaps
                            (--wait joins the FIFO queue on contention instead of 409)
 llmc lock --renew [--owner id]             heartbeat the lock TTL (900s; a leg
                            that makes no requests for >TTL lapses without this)
-llmc unlock [--owner id]   release one owner; ownerless = force-clear all
+llmc unlock --owner id     release one owner; ownerless requires --force (clears all)
 
 llmc up / down             stack lifecycle (or use `make up`/`down` for speed)
 llmc setup                 first-time: generate .env, create volumes

@@ -7,8 +7,8 @@ bench/Dockerfile.eval or bench/run-evals.py.
 ## Architecture
 
 - `llmc bench eval --presets a,b --humaneval --bfcl` switches the proxy to each
-  preset (locked, owner `bench` - fails fast with 409 if another preset is
-  pinned; no queue, rerun when the GPU is free), then runs one throwaway
+  preset (locked, owner `bench-<run id>` - unique per invocation; the task suite
+  refuses to start while anyone else holds or queues for the lock), then runs one throwaway
   container per preset from `erfianugrah/bench-eval:latest`.
 - The container entrypoint is bench/run-evals.sh -> run-evals.py, which shells
   out to `evalplus.evaluate` / `lm_eval` / `bfcl` and writes one JSON per
@@ -80,7 +80,7 @@ broken-harness runs (empty metrics) have been surgically dropped/patched
 twice already (2026-08-17: 3 phase-1 junk records dropped, humaneval numbers
 injected from run logs; 1 empty followup record dropped). When a run is
 killed mid-flight, also check for a stale `bench` lock via `llmc status` and
-clear with `llmc unlock --owner bench`.
+clear with `llmc unlock --owner bench-<run id>` (the owner is printed in the suite header and stored on every task row).
 
 ## Re-running
 
