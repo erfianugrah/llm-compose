@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -178,12 +179,26 @@ func (s *Server) handleModels(w http.ResponseWriter) {
 			"meta": meta,
 		})
 	}
+	// Deterministic order. presets.All() is a map, so the list came back in
+	// a different order on every call; pi's fallback for an unregistered
+	// model id copies the FIRST listed model's metadata (reasoning flag,
+	// context window, output cap), which made every bench leg before
+	// 2026-09-09 run with random pi model settings.
+	sort.Slice(data, func(i, j int) bool {
+		return data[i]["id"].(string) < data[j]["id"].(string)
+	})
 	if s.routes != nil {
 		if err := s.routes.Reload(); err != nil {
 			s.log(fmt.Sprintf("routes reload failed: %v", err))
 		}
 	}
-	for name, route := range s.routes.All() {
+	routeNames := make([]string, 0, len(s.routes.All()))
+	for name := range s.routes.All() {
+		routeNames = append(routeNames, name)
+	}
+	sort.Strings(routeNames)
+	for _, name := range routeNames {
+		route := s.routes.All()[name]
 		loaded := false
 		if len(route.Chain) == 0 {
 			loaded = snap.Mode == "llm" // empty chain = "whatever is resident"
