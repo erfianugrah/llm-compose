@@ -18,12 +18,13 @@ import (
 )
 
 type Server struct {
-	sched   *Scheduler
-	presets *PresetStore
-	routes  *RouteStore
-	cfg     ServerConfig
-	logf    func(string, ...any)
-	anth    *AnthropicTranslator
+	sched    *Scheduler
+	presets  *PresetStore
+	routes   *RouteStore
+	cfg      ServerConfig
+	logf     func(string, ...any)
+	anth     *AnthropicTranslator
+	watchdog *WedgeWatchdog
 }
 
 type ServerConfig struct {
@@ -48,7 +49,11 @@ var upstreamClient = &http.Client{
 }
 
 func NewServer(sched *Scheduler, presets *PresetStore, routes *RouteStore, cfg ServerConfig, logf func(string, ...any)) *Server {
-	return &Server{sched: sched, presets: presets, routes: routes, cfg: cfg, logf: logf, anth: NewAnthropicTranslator(logf)}
+	return &Server{
+		sched: sched, presets: presets, routes: routes, cfg: cfg, logf: logf,
+		anth:     NewAnthropicTranslator(logf),
+		watchdog: NewWedgeWatchdog(sched, logf),
+	}
 }
 
 func (s *Server) log(msg string) {
@@ -743,6 +748,9 @@ func (s *Server) forwardTo(w http.ResponseWriter, r *http.Request, mode, targetP
 			s.sched.NoteUpstreamDead(mode, key)
 		} else {
 			note = " client_gone"
+			if svc.Name == NinferService.Name {
+				s.watchdog.NoteClientGone(mode, key)
+			}
 		}
 		errPlain(w, 502, fmt.Sprintf("upstream error: %v", err), 502, "server_error")
 		return

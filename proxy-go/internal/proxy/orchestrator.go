@@ -88,6 +88,9 @@ func NinferCommand(p *Preset) ([]string, error) {
 		{"--host-kv-mib", n.HostKVMib},
 		{"--device-state-slots", n.DeviceStateSlots},
 		{"--default-thinking-budget", n.DefaultThinkingBudget},
+		{"--prefill-chunk", n.PrefillChunk},
+		{"--max-pending-requests", n.MaxPendingRequests},
+		{"--pending-timeout-ms", n.PendingTimeoutMs},
 	} {
 		if f.val != nil {
 			argv = append(argv, f.flag, strconv.Itoa(*f.val))

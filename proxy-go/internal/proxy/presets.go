@@ -144,6 +144,17 @@ type NinferSpec struct {
 	DeviceStateSlots      *int   `toml:"device_state_slots"`
 	DefaultThinkingBudget *int   `toml:"default_thinking_budget"`
 	KVCapacity            string `toml:"kv_capacity"`
+	// PrefillChunk splits a long prompt into N-token slices instead of one
+	// synchronous pass. Unverified whether it shortens the context-
+	// materialization window the 2026-09-10 wedge (Neroued/ninfer#184)
+	// blocks on - see docs/plans/2026-09-10-ninfer-wedge-mitigation.md.
+	PrefillChunk *int `toml:"prefill_chunk"`
+	// MaxPendingRequests / PendingTimeoutMs bound the queue ahead of
+	// processing. Do not assume PendingTimeoutMs reaches a request already
+	// inside context materialization (the wedge state) - unconfirmed
+	// against ninfer source; see the same plan doc.
+	MaxPendingRequests *int `toml:"max_pending_requests"`
+	PendingTimeoutMs   *int `toml:"pending_timeout_ms"`
 }
 
 type Preset struct {
@@ -217,6 +228,7 @@ var ninferKeys = map[string]bool{
 	"preserve_thinking": true, "vision": true, "host_state_slots": true,
 	"host_kv_mib": true, "device_state_slots": true,
 	"default_thinking_budget": true, "kv_capacity": true,
+	"prefill_chunk": true, "max_pending_requests": true, "pending_timeout_ms": true,
 }
 
 // runtimeKeys lists the allowed [runtime] keys (typed decode is done via a

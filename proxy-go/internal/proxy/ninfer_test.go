@@ -206,6 +206,46 @@ func TestUnsetOptionalsOmitted(t *testing.T) {
 	}
 }
 
+// The three flags NInfer's --help advertises but no preset used yet:
+// prefill-chunk (throughput tuning) and max-pending-requests/
+// pending-timeout-ms (queue bounds explored as a 2026-09-10 wedge
+// mitigation - Neroued/ninfer#184). Pointer fields, same zero-is-
+// meaningful contract as the slot flags above.
+func TestNinferOptionalQueueAndPrefillFlags(t *testing.T) {
+	p := loadStagedNinfer(t)
+	chunk, pending, timeout := 4096, 8, 30000
+	p.Ninfer.PrefillChunk = &chunk
+	p.Ninfer.MaxPendingRequests = &pending
+	p.Ninfer.PendingTimeoutMs = &timeout
+	argv, err := NinferCommand(p)
+	if err != nil {
+		t.Fatalf("NinferCommand: %v", err)
+	}
+	want := map[string]string{
+		"--prefill-chunk":        "4096",
+		"--max-pending-requests": "8",
+		"--pending-timeout-ms":   "30000",
+	}
+	for flag, value := range want {
+		got, ok := argvValue(argv, flag)
+		if !ok || got != value {
+			t.Errorf("%s = %q (ok=%v), want %q", flag, got, ok, value)
+		}
+	}
+}
+
+// Unset (the staged preset's default state) omits all three - they must not
+// silently default to a zero value the way the slot flags legitimately do.
+func TestNinferQueueAndPrefillFlagsOmittedWhenUnset(t *testing.T) {
+	p := loadStagedNinfer(t)
+	argv, _ := NinferCommand(p)
+	for _, flag := range []string{"--prefill-chunk", "--max-pending-requests", "--pending-timeout-ms"} {
+		if argvHas(argv, flag) {
+			t.Errorf("%s should be omitted when unset", flag)
+		}
+	}
+}
+
 func TestNinferCommandRefusesLlamaPreset(t *testing.T) {
 	p, err := LoadPreset("../../../models/qwen38.toml")
 	if err != nil {
