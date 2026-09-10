@@ -159,9 +159,13 @@ How the two differ, and what the proxy does about it:
   different effort, switch presets: `qwen38-ninfer-low` / `qwen38-ninfer` /
   `qwen38-ninfer-xhigh` all share one container (same model id) and differ
   only in the served default effort - a per-request field, so an explicit
-  client `reasoning_effort` still wins. The proxy
-  does not yet inject it, so a client that sends nothing gets the template
-  default (xhigh) and 10-30k-token thinking traces.
+  client `reasoning_effort` still wins. The proxy DOES inject the preset's
+  default when a client sends nothing (`injectIfAbsent`/`coerceEffort` in
+  server.go, added 2026-09-07) - a client that sends nothing gets the
+  preset's declared effort, not the template's xhigh default. This applies
+  to server.go's OpenAI-compatible route; anthropic.go's `/v1/messages`
+  route got the equivalent injection on 2026-09-10 (see below) - before
+  that it could not reach ninfer at all, so the gap was moot until then.
 - **Artifacts are placed by hand.** `ensure_preset_assets` only downloads
   mmproj/template URLs; the 22 GiB `.ninfer` file is put in
   `~/docker-volumes/ninfer/models/` and verified against upstream
@@ -179,11 +183,39 @@ How the two differ, and what the proxy does about it:
   drift from what was built. The runtime artifact's bytes are audited
   separately by `llmc audit` against upstream sha256.
 
-Known gaps: `llmc models` shows a ninfer preset's context as the `runtime`
-default rather than `ninfer.max_context`, and its vision column as `no`
-(derived from the llama-only mmproj asset). `LoadedLlamaModel` probes only
-llama-server, so a proxy restart with ninfer resident forces one needless
-swap.
+Known gaps: `LoadedLlamaModel` probes only llama-server, so a proxy
+restart with ninfer resident forces one needless swap. (The context/vision
+column gap noted here previously is fixed - `llmc models` now shows a
+ninfer preset's real `ninfer.max_context` and `vision = yes`.)
+
+### 2026-09-10: anthropic.go routing fix, watchdog, new ninfer-serve flags
+
+See `docs/plans/2026-09-10-ninfer-wedge-mitigation.md` for the full
+investigation (root cause: upstream Neroued/ninfer#184, a client
+disconnect during context materialization can wedge the sole
+`--max-concurrency 1` slot - NOT reproduced in 6 live attempts this
+session despite genuine effort, so treat as an open unconfirmed risk, not
+a fixed bug). Landed the same day:
+
+- `anthropic.go`'s `/v1/messages` handler hardcoded `Services["llm"]`
+  (llama.cpp) instead of `Server.activeLLMService()` and could never reach
+  ninfer regardless of the active preset. Fixed, with the same
+  reasoning_effort default-injection guard the OpenAI-compatible route
+  already had.
+- Three previously-unused `ninfer-serve` flags wired into the `[ninfer]`
+  preset schema: `prefill_chunk`, `max_pending_requests`,
+  `pending_timeout_ms`. Confirmed present via `ninfer-serve --help`
+  against the running image; none set on any live preset yet - wiring
+  only.
+- `WedgeWatchdog` (`proxy-go/internal/proxy/wedge_watchdog.go`): on a
+  `client_gone` against the ninfer engine, waits a grace period then
+  probes `GET /health`; on failure, reports via the existing
+  `NoteUpstreamDead` path so the next acquire does a full respawn.
+  **Disabled by default** - `LLMC_NINFER_WEDGE_WATCHDOG=1` to enable.
+  Untested against a real wedge (none reproduced).
+- `qwen38` and `loop` (llama.cpp presets) had no `runtime.max_output_tokens`
+  - same truncation class as the 2026-09-07 incident below, just not yet
+  triggered. Set to 65536 on both.
 
 ## proxy-go (v2 rewrite, in soak)
 
