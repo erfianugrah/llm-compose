@@ -613,11 +613,25 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 	}
 	payload["model"] = upModel
 
-	svc, ok := Services["llm"]
-	if !ok {
-		status = 500
-		anthropicErr(w, 500, "api_error", "llm service not configured")
-		return
+	// llama.cpp and NInfer share mode "llm"; Services["llm"] is the static
+	// llama.cpp entry and would forward here even while ninfer holds the GPU
+	// (server.go's OpenAI-compatible route already resolves this dynamically -
+	// this route silently could not reach ninfer at all until 2026-09-10).
+	svc := s.activeLLMService()
+	// Ninfer's chat template defaults to "xhigh" thinking when no per-request
+	// effort is given, which measured at 35,747 output tokens for a single
+	// tool call (2026-08-19). The OpenAI-compatible route already guards this
+	// with the preset's runtime.reasoning_effort; the Anthropic request shape
+	// has no equivalent field for translateRequest to carry over, so without
+	// this every /v1/messages request to a ninfer preset would hit that
+	// blowup the moment routing worked.
+	if svc.Name == NinferService.Name {
+		if p := s.presets.ByName(s.sched.Status().Model); p != nil && p.Runtime.ReasoningEffort != "" {
+			if _, present := payload["reasoning_effort"]; !present {
+				payload["reasoning_effort"] = p.Runtime.ReasoningEffort
+				note += " effort=" + p.Runtime.ReasoningEffort
+			}
+		}
 	}
 	outBody, err := json.Marshal(payload)
 	if err != nil {
@@ -650,6 +664,9 @@ func (a *AnthropicTranslator) Serve(s *Server, w http.ResponseWriter, r *http.Re
 			s.sched.NoteUpstreamDead("llm", res.Key)
 		} else {
 			note = " client_gone"
+			if svc.Name == NinferService.Name {
+				s.watchdog.NoteClientGone("llm", res.Key)
+			}
 		}
 		anthropicErr(w, 502, "api_error", fmt.Sprintf("upstream error: %v", err))
 		return
