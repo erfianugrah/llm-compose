@@ -54,6 +54,10 @@ reasoning = "on"
 reasoning_effort = "medium"
 
 context_size = 262144
+# See qwen38.toml's note: metadata-only, no server-side flag, but without
+# it pi pins its own 16384 default - worse here than on an interactive
+# model, since a loop worker has nobody watching to notice truncation.
+max_output_tokens = 65536
 parallel_slots = 1
 temperature = 1.0
 top_p = 0.95

@@ -83,6 +83,13 @@ file = "qwen38-fixed.jinja"
 [runtime]
 reasoning = "on"
 context_size = 262144  # native max; see the note above re: the old 196608 artifact
+# Published to pi as meta.max_output (proxy-go/internal/proxy/presets.go);
+# a metadata-only field, no server-side flag. Without it pi pins its own
+# default 16384, the exact truncation class the 2026-09-07 qwen38-ninfer
+# incident hit (a 35,747-token response cut mid-thought) - qwen38 and loop
+# had the same gap until 2026-09-10. 65536 matches the ninfer siblings of
+# this same model.
+max_output_tokens = 65536
 parallel_slots = 1  # whole budget to one conversation (see above)
 temperature = 1.0
 top_p = 0.95
