@@ -72,11 +72,53 @@ duration, with a real risk of leaving it wedged if the mitigations don't
 work and needing a manual `make clean` + `make deploy` to recover. Needs an
 explicit go-ahead and a window when nothing else needs the GPU.
 
+## Reproduction attempt (2026-09-10, later same day)
+
+Four attempts against the live production `qwen38-ninfer`, one accidentally
+overlapping another session's concurrent request (apologized to the user,
+no lasting damage - see below). None reproduced the wedge:
+
+| # | Size (tokens) | stream | Abort at | ninfer's own log |
+|---|---|---|---|---|
+| 1 | ~156k | false | 5s (queued behind a concurrent request from another session) | `cancelled`, clean |
+| 2 | ~180k | false | 8s | `cancelled`, clean |
+| 3 | ~179k | false | 35s | `cancelled`, clean |
+| 4 | ~179k | true | 35s | `cancelled` + `HTTP 499 client disconnected`, clean |
+
+Every attempt: ninfer's own log recorded a clean `cancelled` line and the
+next 5s throughput sample showed `running 0` immediately - slot released,
+no lingering state. Subsequent trivial requests served normally
+(~100ms). Attempt 4 specifically targeted the documented mechanism
+(SSE heartbeat during a streaming request past the point a normal request
+would still be prefilling) and still did not wedge.
+
+**One suggestive lead**: during attempt 1, `model_proxy_go` logged
+`upstream ninfer-server died mid-stream: context canceled` against the
+OTHER session's concurrently in-flight request (not mine) a few seconds
+after my client_gone landed - it still recovered (200 to that caller), but
+it is the only anomaly seen across 4 attempts, and it coincided with two
+requests contending for the engine's single `--max-concurrency 1` slot at
+once. Hypothesis for next attempt: the wedge may require genuine
+concurrent contention (a request queued behind another's materialization)
+rather than a lone client disconnecting against an otherwise-idle engine -
+which would also explain why it surfaced in real multi-session production
+use but not in these isolated single-request tests.
+
+Also reviewed while at 179,440 real tokens resident: GPU headroom was
+31,489 / 32,607 MiB used, 699 MiB free - close to but slightly tighter than
+the qwen38-ninfer.toml's documented "~900 MiB spare" peak figure. Not
+alarming (the toml already caveats the margin shrinks under contention),
+but the observed number lands on the thin side of that range.
+
 ## Next steps
 
-1. Get a go-ahead + quiet GPU window, then reproduce the wedge:
-   - Baseline: reproduce without either mitigation, confirm the wedge and
-     that respawn-only recovery (watchdog's path) does or does not clear it.
+1. Get a go-ahead + quiet GPU window, then reproduce the wedge with
+   genuine concurrent contention (two overlapping requests, one long, one
+   aborted while the other holds/awaits the slot) rather than a lone
+   client abort - the isolated-request recipe above did not trigger it in
+   4 attempts:
+   - Baseline: confirm the wedge under contention, and whether
+     respawn-only recovery (watchdog's path) does or does not clear it.
    - With `pending_timeout_ms` set: does the flag prevent the wedge from
      forming at all, or only bound something else?
    - With `LLMC_NINFER_WEDGE_WATCHDOG=1`: does detection fire, and does the
